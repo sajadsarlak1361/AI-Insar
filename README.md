@@ -87,7 +87,7 @@ that technique and computes the stage.
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
-| | Sentinel-1 SLC | File, Data | ASF search, then a local SAFE / TIFF crop or a zip download |
+| | Sentinel-1 SLC | File, Data | Open a SAFE zip, folder, or manifest; ASF search; crop one swath into the stack |
 
 Pipeline → Settings edits the date span, Goldstein α and window, coherence
 window, unwrap coherence floor, and two detection thresholds. The sample
@@ -146,15 +146,26 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
+**File → Open Sentinel-1 SAFE zip…** opens a Sentinel-1 `.zip` without
+extracting it. **Open SAFE folder…** and `manifest.safe` are optional.
+The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
+`Intensity_`), and the quick-look. Double-click a band for a decimated
+amplitude preview. **Add to SLC stack (crop…)** reads one window (default
+IW1 VV) into the `complex64` stack. The date comes from the manifest start
+time, and the wavelength from the annotation radar frequency when it is
+present. This is open and crop only: no deburst, calibration, or
+interferogram.
+
 **File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
 catalog. Search does not need a login. Import a crop from a local SAFE
-measurement TIFF or complex `.npy`, or download the SLC zip.
+zip, folder, measurement TIFF, or complex `.npy`. A downloaded zip is
+opened directly and does not need to be extracted first.
 
 Download needs an Earthdata account (`EARTHDATA_USERNAME` and
 `EARTHDATA_PASSWORD`, or a `~/.netrc` machine `urs.earthdata.nasa.gov`) and
 `pip install "ai-insar[slc]"`. Do not commit the password. A zip is often
-several gigabytes; the dialog asks first. One raster per folder is read
-(IW1 VV when several are present), using the crop you set (default
+several gigabytes; the dialog asks first. One band is read (IW1 VV unless
+you change swath and polarisation), using the crop you set (default
 256×256). The result is the same `complex64` stack. `ai-insar check` does
 not contact ASF.
 

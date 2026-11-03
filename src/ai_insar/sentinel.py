@@ -2,10 +2,12 @@
 
 Metadata search uses the public ASF Search API and does not need a login.
 Downloading the zip from the ASF datapool needs Earthdata credentials and the
-optional ``asf_search`` package. A measurement GeoTIFF or complex ``.npy`` that
-is already on disk can be cropped into the same ``complex64`` stack the rest
-of the workbench uses. Passwords are read from the environment or ``~/.netrc``
-and are never written into the stack or the log messages this module raises.
+optional ``asf_search`` package. A SAFE folder, ``manifest.safe``, product
+``.zip``, measurement GeoTIFF, or complex ``.npy`` that is already on disk
+can be cropped into the same ``complex64`` stack the rest of the workbench
+uses. SAFE metadata comes from :mod:`ai_insar.safe`. Passwords are read from
+the environment or ``~/.netrc`` and are never written into the stack or the
+log messages this module raises.
 """
 
 from __future__ import annotations
@@ -21,9 +23,20 @@ from pathlib import Path
 
 import numpy as np
 
-from ai_insar.conventions import C_BAND_WAVELENGTH_M
+from ai_insar.conventions import C_BAND_WAVELENGTH_M, SPEED_OF_LIGHT_M_S
 from ai_insar.io_stack import default_dates
 from ai_insar.pipeline.synthetic import SLCStack
+from ai_insar.safe import (
+    DEFAULT_POLARISATION,
+    DEFAULT_SWATH,
+    SafeMeasurement,
+    SafeProduct,
+    band_from_measurement_name,
+    read_annotation,
+    read_window,
+    resolve_safe,
+    select_measurement,
+)
 
 ASF_SEARCH_URL = "https://api.daac.asf.alaska.edu/services/search/param"
 EARTHDATA_HOST = "urs.earthdata.nasa.gov"
@@ -211,6 +224,20 @@ def download_sentinel1_slc(
     return sorted(path for path in directory.glob("*.zip") if path.is_file())
 
 
+@dataclass(frozen=True)
+class _SlcSource:
+    """One date to crop into the stack."""
+
+    path: Path
+    kind: str
+    date: np.datetime64 | None
+    wavelength_m: float | None
+    label: str
+    band_note: str | None = None
+    product: SafeProduct | None = None
+    measurement: SafeMeasurement | None = None
+
+
 def import_slc_paths(
     paths: list[Path],
     *,
@@ -218,76 +245,190 @@ def import_slc_paths(
     col: int = 0,
     height: int = 256,
     width: int = 256,
-    wavelength_m: float = C_BAND_WAVELENGTH_M,
+    wavelength_m: float | None = None,
+    swath: str = DEFAULT_SWATH,
+    pol: str = DEFAULT_POLARISATION,
 ) -> SLCStack:
-    """Build a ``complex64`` stack from rasters or per-date ``.npy`` planes.
+    """Build a ``complex64`` stack from rasters, SAFE products, or ``.npy`` planes.
 
     One 3-D complex ``.npy`` is loaded as a finished stack (the crop is
-    applied). Otherwise each file or SAFE folder contributes one date. A SAFE
-    folder contributes a single measurement raster: IW1 VV when several
-    subswaths are present. The same crop window is read from every date.
+    applied). Otherwise each file, SAFE folder, ``manifest.safe``, or product
+    zip contributes one date. A SAFE product contributes one measurement:
+    ``swath`` / ``pol``, default IW1 and VV. The same crop window is read
+    from every date. When the annotation has ``radarFrequency`` and
+    ``wavelength_m`` is omitted, that frequency sets the stack wavelength.
+    Manifest ``startTime`` supplies the date when it is present.
     """
     if not paths:
         raise ValueError("no SLC files were selected")
-    rasters = discover_slc_rasters([Path(path) for path in paths])
-    if len(rasters) == 1 and rasters[0].suffix.lower() == ".npy":
-        array = np.load(rasters[0])
+    sources = _expand_sources([Path(path) for path in paths], swath=swath, pol=pol)
+    if len(sources) == 1 and sources[0].path.suffix.lower() == ".npy" and sources[0].kind == "raster":
+        array = np.load(sources[0].path)
         if array.ndim == 3 and np.iscomplexobj(array):
             cropped = _crop_numpy(array, row, col, height, width)
-            dates = _dates_for_paths(rasters, count=cropped.shape[0])
+            dates = _dates_for_sources([sources[0]], count=cropped.shape[0])
             return SLCStack(
                 data=cropped,
                 dates=dates,
-                wavelength_m=wavelength_m,
-                sensor="Sentinel-1 SLC" if _looks_like_sentinel(rasters[0].name) else "imported SLC",
-                description=_import_description(rasters, row, col, cropped.shape[1], cropped.shape[2]),
+                wavelength_m=_stack_wavelength(sources, wavelength_m),
+                sensor="Sentinel-1 SLC" if _looks_like_sentinel(sources[0].label) else "imported SLC",
+                description=_import_description(
+                    [sources[0].label],
+                    row,
+                    col,
+                    cropped.shape[1],
+                    cropped.shape[2],
+                    band=sources[0].band_note,
+                ),
             )
-    rasters = _order_by_date(rasters)
-    planes: list[np.ndarray] = []
-    for path in rasters:
-        planes.append(_read_plane(path, row, col, height, width))
+    sources = _order_sources(sources)
+    planes = [_read_source(source, row, col, height, width) for source in sources]
     shapes = {plane.shape for plane in planes}
     if len(shapes) != 1:
         raise ValueError(f"cropped SLC dates do not share a shape: {sorted(shapes)}")
     data = np.stack(planes, axis=0).astype(np.complex64)
-    dates = _dates_for_paths(rasters, count=data.shape[0])
     return SLCStack(
         data=data,
-        dates=dates,
-        wavelength_m=wavelength_m,
-        sensor="Sentinel-1 SLC" if any(_looks_like_sentinel(path.name) for path in rasters) else "imported SLC",
-        description=_import_description(rasters, row, col, data.shape[1], data.shape[2]),
+        dates=_dates_for_sources(sources, count=data.shape[0]),
+        wavelength_m=_stack_wavelength(sources, wavelength_m),
+        sensor="Sentinel-1 SLC" if any(_looks_like_sentinel(source.label) for source in sources) else "imported SLC",
+        description=_import_description(
+            [source.label for source in sources],
+            row,
+            col,
+            data.shape[1],
+            data.shape[2],
+            band=next((source.band_note for source in sources if source.band_note), None),
+        ),
     )
 
 
-def discover_slc_rasters(paths: list[Path]) -> list[Path]:
-    """Expand files and SAFE folders into one raster path per date."""
+def discover_slc_rasters(
+    paths: list[Path],
+    *,
+    swath: str = DEFAULT_SWATH,
+    pol: str = DEFAULT_POLARISATION,
+) -> list[Path]:
+    """Expand files and SAFE products into one path per date.
+
+    A SAFE folder or ``manifest.safe`` contributes the selected measurement
+    GeoTIFF. A zip contributes the zip path; the measurement is chosen again
+    when the crop is read. ``swath`` and ``pol`` default to IW1 and VV.
+    """
+    sources = _expand_sources([Path(path) for path in paths], swath=swath, pol=pol)
     found: list[Path] = []
-    for path in paths:
-        if path.is_file():
-            if path.suffix.lower() not in {".npy", ".tif", ".tiff"}:
-                raise ValueError(f"{path.name} is not a .npy, .tif, or .tiff SLC")
-            found.append(path)
-            continue
-        if not path.is_dir():
-            raise ValueError(f"{path} does not exist")
-        measurements = [
-            item
-            for item in path.rglob("*")
-            if item.is_file() and item.suffix.lower() in {".tif", ".tiff"} and "measurement" in item.parts
-        ]
-        if not measurements:
-            measurements = [
-                item
-                for item in path.glob("*")
-                if item.is_file() and item.suffix.lower() in {".tif", ".tiff", ".npy"}
-            ]
-        if not measurements:
-            raise ValueError(f"no measurement TIFF or .npy SLC found under {path}")
-        found.append(_prefer_measurement(measurements))
+    for source in sources:
+        if source.kind == "safe" and source.product is not None and not source.product.is_zip and source.measurement:
+            found.append(source.product.root / source.measurement.href)
+        else:
+            found.append(source.path)
     if not found:
         raise ValueError("no SLC rasters found")
     return found
+
+
+def _expand_sources(paths: list[Path], *, swath: str, pol: str) -> list[_SlcSource]:
+    found: list[_SlcSource] = []
+    for path in paths:
+        if not path.exists():
+            raise ValueError(f"{path} does not exist")
+        if _is_safe_container(path):
+            found.append(_safe_source(path, swath=swath, pol=pol))
+            continue
+        if path.is_file() and path.suffix.lower() in {".npy", ".tif", ".tiff"}:
+            found.append(
+                _SlcSource(
+                    path=path,
+                    kind="raster",
+                    date=date_from_text(path.name),
+                    wavelength_m=None,
+                    label=path.name,
+                )
+            )
+            continue
+        if path.is_dir():
+            found.append(_legacy_folder_source(path, swath=swath, pol=pol))
+            continue
+        raise ValueError(f"{path.name} is not a .npy, .tif, .tiff, SAFE folder, manifest.safe, or .zip SLC")
+    if not found:
+        raise ValueError("no SLC rasters found")
+    return found
+
+
+def _is_safe_container(path: Path) -> bool:
+    if path.is_file():
+        return path.suffix.lower() == ".zip" or path.name.lower() == "manifest.safe"
+    return path.is_dir() and (path / "manifest.safe").is_file()
+
+
+def _safe_source(path: Path, *, swath: str, pol: str) -> _SlcSource:
+    product = resolve_safe(path)
+    measurement = select_measurement(product, swath, pol)
+    wavelength = None
+    try:
+        read_annotation(product, measurement)
+    except ValueError:
+        wavelength = None
+    else:
+        if measurement.radar_frequency:
+            wavelength = SPEED_OF_LIGHT_M_S / float(measurement.radar_frequency)
+    date = date_from_text(product.start_utc) or date_from_text(product.product_id)
+    return _SlcSource(
+        path=path,
+        kind="safe",
+        date=date,
+        wavelength_m=wavelength,
+        label=product.product_id,
+        band_note=f"{measurement.swath} {measurement.polarisation}",
+        product=product,
+        measurement=measurement,
+    )
+
+
+def _legacy_folder_source(path: Path, *, swath: str, pol: str) -> _SlcSource:
+    """A folder of measurement TIFFs that has no manifest.safe."""
+    measurements = [
+        item
+        for item in path.rglob("*")
+        if item.is_file() and item.suffix.lower() in {".tif", ".tiff"} and "measurement" in item.parts
+    ]
+    if not measurements:
+        measurements = [
+            item
+            for item in path.glob("*")
+            if item.is_file() and item.suffix.lower() in {".tif", ".tiff", ".npy"}
+        ]
+    if not measurements:
+        raise ValueError(f"no measurement TIFF or .npy SLC found under {path}")
+    chosen = _select_named_measurement(measurements, swath=swath, pol=pol, folder=path)
+    return _SlcSource(
+        path=chosen,
+        kind="raster",
+        date=date_from_text(chosen.name),
+        wavelength_m=None,
+        label=chosen.name,
+        band_note=f"{swath.strip().upper()} {pol.strip().upper()}" if chosen.suffix.lower() != ".npy" else None,
+    )
+
+
+def _select_named_measurement(paths: list[Path], *, swath: str, pol: str, folder: Path) -> Path:
+    """Choose IW1/VV (or the requested band) by filename tokens, not a substring."""
+    swath_key = swath.strip().upper()
+    pol_key = pol.strip().upper()
+    parsed = [(item, band_from_measurement_name(item.name)) for item in paths]
+    known = [(item, band) for item, band in parsed if band is not None]
+    if known:
+        hits = [item for item, band in known if band == (swath_key, pol_key)]
+        if not hits:
+            available = ", ".join(sorted({f"{band[0]}/{band[1]}" for _, band in known}))
+            raise ValueError(f"no {swath_key} {pol_key} measurement under {folder.name}. Available: {available}")
+        return sorted(hits, key=lambda item: item.name)[0]
+    if len(paths) == 1:
+        return paths[0]
+    raise ValueError(
+        f"no {swath_key} {pol_key} measurement under {folder.name}. "
+        "Name measurement files as s1x-iw1-slc-vv-… or pass swath= and pol=."
+    )
 
 
 def date_from_text(text: str) -> np.datetime64 | None:
@@ -345,19 +486,10 @@ def _load_asf_search():
     return asf
 
 
-def _prefer_measurement(paths: list[Path]) -> Path:
-    def score(path: Path) -> tuple[int, str]:
-        name = path.name.lower()
-        rank = 0
-        if "-vv-" in name or "vv" in name:
-            rank += 20
-        if "iw1" in name:
-            rank += 10
-        elif "iw2" in name:
-            rank += 5
-        return rank, name
-
-    return sorted(paths, key=score, reverse=True)[0]
+def _read_source(source: _SlcSource, row: int, col: int, height: int, width: int) -> np.ndarray:
+    if source.kind == "safe" and source.product is not None and source.measurement is not None:
+        return read_window(source.product, source.measurement, row, col, height, width)
+    return _read_plane(source.path, row, col, height, width)
 
 
 def _read_plane(path: Path, row: int, col: int, height: int, width: int) -> np.ndarray:
@@ -384,30 +516,55 @@ def read_tiff_window(path: Path, row: int, col: int, height: int, width: int) ->
             'Reading a measurement TIFF needs tifffile: pip install "ai-insar[slc]".'
         ) from exc
     with tifffile.TiffFile(path) as tiff:
-        page = tiff.pages[0]
-        spatial = _spatial_shape(page.shape)
-        row, col, height, width = _fit_window(spatial, row, col, height, width)
-        selector = _window_index(page.shape, row, col, height, width)
-        try:
-            import zarr
+        return read_open_tiff_window(tiff, row, col, height, width, name=path.name)
 
-            store = tiff.aszarr()
-            array = zarr.open(store, mode="r")
-            raw = np.asarray(array[selector])
-        except Exception:
-            nbytes = int(np.prod(page.shape)) * max(np.dtype(page.dtype).itemsize, 1)
-            if nbytes > 512 * 1024 * 1024:
-                raise RuntimeError(
-                    f"{path.name} is about {nbytes / 1e9:.1f} GB. "
-                    'Install the slc extra (tifffile and zarr) so the crop is read in tiles: '
-                    'pip install "ai-insar[slc]".'
-                )
-            raw = np.asarray(page.asarray())[selector]
+
+def read_open_tiff_window(
+    tiff,
+    row: int,
+    col: int,
+    height: int,
+    width: int,
+    *,
+    name: str = "TIFF",
+    y_step: int = 1,
+    x_step: int = 1,
+) -> np.ndarray:
+    """Read a complex crop from an already open TIFF, including a zip offset.
+
+    ``y_step`` and ``x_step`` subsample the source region. A Sentinel-1 SLC
+    sample packed in one int32 uses the low 16 bits as I and ``>> 16`` as Q.
+    """
+    if y_step < 1 or x_step < 1:
+        raise ValueError("subsampling steps must be at least 1")
+    page = tiff.pages[0]
+    spatial = _spatial_shape(page.shape)
+    row, col, height, width = _fit_window(spatial, row, col, height, width)
+    selector = _window_index(page.shape, row, col, height, width, y_step=y_step, x_step=x_step)
+    try:
+        import zarr
+
+        store = tiff.aszarr()
+        array = zarr.open(store, mode="r")
+        raw = np.asarray(array[selector])
+    except Exception:
+        nbytes = int(np.prod(page.shape)) * max(np.dtype(page.dtype).itemsize, 1)
+        if nbytes > 512 * 1024 * 1024:
+            raise RuntimeError(
+                f"{name} is about {nbytes / 1e9:.1f} GB. "
+                'Install the slc extra (tifffile and zarr) so the crop is read in tiles: '
+                'pip install "ai-insar[slc]".'
+            ) from None
+        raw = np.asarray(page.asarray())[selector]
     return to_complex64(raw)
 
 
 def to_complex64(array: np.ndarray) -> np.ndarray:
-    """Interpret a raster as complex64 SLC samples."""
+    """Interpret a raster as complex64 SLC samples.
+
+    A 2-D int32 (or uint32) raster is Sentinel-1 SLC packing: I is the low 16
+    bits and Q is ``value >> 16``, both signed.
+    """
     if np.iscomplexobj(array):
         return np.asarray(array, dtype=np.complex64)
     if array.dtype.names and {"real", "imag"} <= set(array.dtype.names):
@@ -416,10 +573,22 @@ def to_complex64(array: np.ndarray) -> np.ndarray:
         return (array[..., 0].astype(np.float32) + 1j * array[..., 1].astype(np.float32)).astype(np.complex64)
     if array.ndim == 3 and array.shape[0] == 2:
         return (array[0].astype(np.float32) + 1j * array[1].astype(np.float32)).astype(np.complex64)
+    if array.ndim == 2 and array.dtype.kind in "iu" and array.dtype.itemsize == 4:
+        return _complex_from_packed_slc(array)
     raise ValueError(
-        "TIFF is not complex SLC data. Expected a complex raster or integer I/Q bands, "
-        f"got shape {array.shape} dtype {array.dtype}."
+        "TIFF is not complex SLC data. Expected a complex raster, packed int32 I/Q, "
+        f"or integer I/Q bands, got shape {array.shape} dtype {array.dtype}."
     )
+
+
+def _complex_from_packed_slc(array: np.ndarray) -> np.ndarray:
+    """Unpack SLC samples stored as int32 (I in the low 16 bits, Q in ``>> 16``)."""
+    packed = np.asarray(array)
+    if packed.dtype.kind == "u":
+        packed = packed.view(np.int32)
+    real = packed.astype(np.int16)
+    imag = (packed >> np.int32(16)).astype(np.int16)
+    return (real.astype(np.float32) + 1j * imag.astype(np.float32)).astype(np.complex64)
 
 
 def _spatial_shape(shape: tuple[int, ...]) -> tuple[int, int]:
@@ -452,11 +621,24 @@ def _fit_window(
     return row, col, height, width
 
 
-def _window_index(shape: tuple[int, ...], row: int, col: int, height: int, width: int):
+def _window_index(
+    shape: tuple[int, ...],
+    row: int,
+    col: int,
+    height: int,
+    width: int,
+    *,
+    y_step: int = 1,
+    x_step: int = 1,
+):
+    rows = slice(row, row + height, y_step)
+    cols = slice(col, col + width, x_step)
     if len(shape) == 2 or (len(shape) == 3 and shape[-1] == 2):
-        return (slice(row, row + height), slice(col, col + width))
+        if len(shape) == 2:
+            return (rows, cols)
+        return (rows, cols, slice(None))
     if len(shape) == 3 and shape[0] == 2:
-        return (slice(None), slice(row, row + height), slice(col, col + width))
+        return (slice(None), rows, cols)
     raise ValueError(f"unsupported TIFF shape {shape}")
 
 
@@ -470,30 +652,35 @@ def _crop_numpy(array: np.ndarray, row: int, col: int, height: int, width: int) 
     raise ValueError(f"complex .npy must be 2-D or 3-D, got ndim {array.ndim}")
 
 
-def _order_by_date(paths: list[Path]) -> list[Path]:
-    parsed = [date_from_text(path.name) for path in paths]
-    if any(item is None for item in parsed):
-        return list(paths)
-    order = np.argsort(np.array(parsed, dtype="datetime64[D]"), kind="mergesort")
-    return [paths[int(index)] for index in order]
+def _order_sources(sources: list[_SlcSource]) -> list[_SlcSource]:
+    if any(source.date is None for source in sources):
+        return list(sources)
+    order = np.argsort(np.array([source.date for source in sources], dtype="datetime64[D]"), kind="mergesort")
+    return [sources[int(index)] for index in order]
 
 
-def _dates_for_paths(paths: list[Path], *, count: int) -> np.ndarray:
-    if count != len(paths):
+def _dates_for_sources(sources: list[_SlcSource], *, count: int) -> np.ndarray:
+    if count != len(sources):
         # A single 3-D cube has one path and many dates.
-        parsed = date_from_text(paths[0].name) if len(paths) == 1 else None
+        parsed = sources[0].date if len(sources) == 1 else None
         if parsed is not None and count > 1:
             return parsed + np.arange(count, dtype=np.int64) * np.timedelta64(12, "D")
         return default_dates(count)
-    parsed = [date_from_text(path.name) for path in paths]
-    if any(item is None for item in parsed):
+    if any(source.date is None for source in sources):
         return default_dates(count)
-    dates = np.array(parsed, dtype="datetime64[D]")
-    order = np.argsort(dates, kind="mergesort")
-    dates = dates[order]
+    dates = np.array([source.date for source in sources], dtype="datetime64[D]")
     if np.any(np.diff(dates) <= np.timedelta64(0, "D")):
         raise ValueError("imported SLC dates are not strictly increasing; rename files so each date differs")
     return dates
+
+
+def _stack_wavelength(sources: list[_SlcSource], wavelength_m: float | None) -> float:
+    if wavelength_m is not None:
+        return float(wavelength_m)
+    for source in sources:
+        if source.wavelength_m:
+            return float(source.wavelength_m)
+    return C_BAND_WAVELENGTH_M
 
 
 def _looks_like_sentinel(name: str) -> bool:
@@ -501,11 +688,20 @@ def _looks_like_sentinel(name: str) -> bool:
     return lowered.startswith("s1") or "slc" in lowered or "safe" in lowered
 
 
-def _import_description(paths: list[Path], row: int, col: int, height: int, width: int) -> str:
-    names = ", ".join(path.name for path in paths[:4])
-    if len(paths) > 4:
-        names += f", +{len(paths) - 4} more"
+def _import_description(
+    labels: list[str],
+    row: int,
+    col: int,
+    height: int,
+    width: int,
+    *,
+    band: str | None = None,
+) -> str:
+    names = ", ".join(labels[:4])
+    if len(labels) > 4:
+        names += f", +{len(labels) - 4} more"
+    band_text = f" Band {band}." if band else ""
     return (
         f"Imported SLC crop rows {row}:{row + height}, cols {col}:{col + width} "
-        f"from {names}. Not geocoded."
+        f"from {names}.{band_text} Not geocoded."
     )

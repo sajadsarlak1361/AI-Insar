@@ -31,15 +31,18 @@ class FetchSentinelDialog(QtWidgets.QDialog):
         self._search_fn = search_fn
         self._granules: list[SentinelGranule] = []
         self.stack: SLCStack | None = None
+        self.downloaded_zips: list[Path] = []
         self._build()
 
     def _build(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
             "Search the public ASF catalog (no login). Import a crop from a SAFE "
-            "measurement TIFF or a complex .npy you already have. Downloading the "
-            "zip needs an Earthdata login and is often several GB per product. "
-            "The result is an in-memory complex64 stack, not a geocoded scene."
+            "folder, manifest.safe, a product .zip, a measurement TIFF, or a complex "
+            ".npy you already have. A downloaded zip is read directly and does not "
+            "need to be extracted first. Downloading the zip needs an Earthdata login "
+            "and is often several GB per product. The result is an in-memory complex64 "
+            "stack, not a geocoded scene."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -90,7 +93,16 @@ class FetchSentinelDialog(QtWidgets.QDialog):
         self.col = self._pixel(0)
         self.height = self._pixel(256)
         self.width = self._pixel(256)
+        self.swath = QtWidgets.QComboBox()
+        self.swath.setObjectName("slcSwath")
+        self.swath.addItems(["IW1", "IW2", "IW3", "EW1", "EW2", "EW3", "EW4", "EW5"])
+        self.swath.setEditable(True)
+        self.pol = QtWidgets.QComboBox()
+        self.pol.setObjectName("slcPol")
+        self.pol.addItems(["VV", "VH", "HH", "HV"])
         for label, widget in (
+            ("Swath", self.swath),
+            ("Pol", self.pol),
             ("Row", self.row),
             ("Col", self.col),
             ("Height", self.height),
@@ -225,17 +237,30 @@ class FetchSentinelDialog(QtWidgets.QDialog):
             self.status.setText(str(exc))
             return
         names = ", ".join(path.name for path in saved[:4]) or "the download folder"
+        self.downloaded_zips = list(saved)
         self.status.setText(
             f"Downloaded {len(saved)} zip file(s) to {directory}: {names}. "
-            "Extract the SAFE and use Import SAFE folder to load a crop into the stack."
+            "The SAFE zip is opened directly. It is not extracted."
         )
+        if not saved:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Open downloaded SAFE zip",
+            f"Open {len(saved)} downloaded zip file(s) now and read the "
+            f"{self.swath.currentText().strip() or 'IW1'} "
+            f"{self.pol.currentText().strip() or 'VV'} crop into the SLC stack? "
+            "The zip is not extracted first.",
+        )
+        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.load_paths(saved)
 
     def import_files(self) -> None:
         paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Import SLC rasters",
             "",
-            "SLC rasters (*.tif *.tiff *.npy)",
+            "Sentinel-1 SAFE zip (*.zip);;SLC rasters (*.tif *.tiff *.npy manifest.safe)",
         )
         if not paths:
             return
@@ -255,11 +280,16 @@ class FetchSentinelDialog(QtWidgets.QDialog):
                 col=int(self.col.value()),
                 height=int(self.height.value()),
                 width=int(self.width.value()),
+                swath=self.swath.currentText().strip() or "IW1",
+                pol=self.pol.currentText().strip() or "VV",
             )
         except Exception as exc:
             self.status.setText(str(exc))
             return
         self.stack = stack
+        zips = [path for path in paths if path.suffix.lower() == ".zip"]
+        if zips:
+            self.downloaded_zips = zips
         self.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802

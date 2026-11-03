@@ -37,6 +37,10 @@ def test_data_menu_opens_the_same_fetch_action(qapp):
     data = next(action.menu() for action in window.menuBar().actions() if action.text() == "Data")
     assert any(item.text() == "Fetch Sentinel-1 SLC…" for item in data.actions())
     assert any(item.text() == "Import local SAFE / TIFF…" for item in data.actions())
+    assert any(item.text() == "Open Sentinel-1 SAFE Product…" for item in data.actions())
+    assert any(item.text() == "Open SAFE folder…" for item in data.actions())
+    file_menu = next(action.menu() for action in window.menuBar().actions() if action.text() == "File")
+    assert any(item.text() == "Open Sentinel-1 SAFE Product…" for item in file_menu.actions())
     window.close()
 
 
@@ -56,6 +60,8 @@ def test_dialog_search_and_import_without_network(qapp, tmp_path: Path):
         return [granule]
 
     dialog = FetchSentinelDialog(search_fn=fake_search)
+    assert dialog.swath.currentText() == "IW1"
+    assert dialog.pol.currentText() == "VV"
     dialog.show()
     qapp.processEvents()
     dialog.run_search()
