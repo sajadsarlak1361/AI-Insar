@@ -61,5 +61,11 @@ def test_readme_covers_the_homepage_topics():
         "docs/limitations.md",
         "LICENSE",
         "not** a replacement",
+        "Goldstein",
+        "Seasonal",
+        "Export map",
+        "v0.2.0-rc.4",
+        "v0.2.0-rc.5",
+        "tests-pytest",
     ):
         assert snippet in text

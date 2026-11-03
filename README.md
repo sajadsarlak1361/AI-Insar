@@ -1,58 +1,24 @@
 # AI Insar
 
-AI Insar is an open-source **SLC-first** InSAR workbench for teaching and for
-small experiments. It is a PySide6 desktop app with seven numbered stages, a
-headless command line, and a Windows launcher. Version 0.1.0. MIT license.
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](docs/install.md)
+[![Tests: pytest](https://img.shields.io/badge/tests-pytest-0A9EDC)](#tests)
 
-You give it a complex SLC stack. It forms interferograms, filters them,
-estimates coherence, unwraps phase, runs a small-baseline (SBAS) inversion,
-and draws a displacement mask. Nothing is downloaded. The sample button
-builds a synthetic C-band stack with a known subsidence bowl.
+SLC-first open-source InSAR workbench with a PySide6 GUI. It is a desktop
+app, a headless command line, and a Windows launcher for teaching and for
+small in-memory experiments. Version 0.1.0. MIT license.
 
-## What it is
-
-- A desktop workbench: menus, a log, a raster viewer, and stage buttons.
-- A headless runner: `ai-insar check` and `ai-insar run`.
-- A radar-grid tool. Arrays stay in memory at the SLC resolution.
-
-## What it is not
+The primary input is a `complex64` SLC stack, shape `(dates, height, width)`.
+Interferograms are derived as **later × conjugate(earlier)**. The sample
+button builds a synthetic C-band subsidence bowl. Arrays stay on the radar
+grid.
 
 AI Insar is **not** a replacement for ISCE, MintPy, SNAP, or SNAPHU (nor for
-GMTSAR or Doris). It does not geocode, download orbits, stitch bursts, or
-apply a weather model. The displacement mask is a coherence-gated statistical
-test on the velocity image, not a trained model. Details are in
-[docs/limitations.md](docs/limitations.md).
-
-## Primary input
-
-An SLC cube:
-
-| | |
-| --- | --- |
-| dtype | `complex64` |
-| shape | `(n_dates, height, width)` |
-| time axis | index increases with time |
-
-Interferograms are **later × conjugate(earlier)**:
-
-```text
-ifg = slc[later] * conj(slc[earlier])
-angle(ifg) = wrap(phase[later] - phase[earlier])
-```
-
-Line-of-sight (LOS) displacement is **positive toward the radar**. A
-subsidence bowl (motion away from the radar) has **negative** LOS velocity.
-SLC phase is `phase = -4π / wavelength × los_meters`, so that same bowl has
-**positive** unwrapped phase on a later-minus-earlier pair. Wrapped phase can
-still flip sign after half a cycle. One fringe is `wavelength / 2`: about
-2.77 cm at the Sentinel-1 C-band wavelength used by the demo (5.405 GHz).
-
-The file layout is in [docs/data-format.md](docs/data-format.md). The sign
-convention is the same one the Help menu shows.
+GMTSAR or Doris).
 
 ## Install
 
-Python 3.10 or newer. From a clone of this repository:
+Python 3.10 or newer. From a clone:
 
 ```bash
 python -m venv .venv
@@ -60,130 +26,90 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"            # includes pytest
 ```
 
-Users who will not run the tests can install with `pip install -e .` or
-`pip install .`. There is no separate PyPI release step in this repository:
-install from the checkout. PySide6, NumPy, and SciPy are the runtime
-dependencies. If PySide6 cannot be imported, the GUI tries PyQt6.
+`pip install -e .` is enough if you will not run the tests. There is no PyPI
+package: install from this checkout. Runtime dependencies are PySide6, NumPy,
+and SciPy. If PySide6 cannot be imported, the GUI tries PyQt6.
 
-Full notes, including how to confirm the install: [docs/install.md](docs/install.md).
+Notes: [docs/install.md](docs/install.md).
 
-On Windows you can skip the clone. The stable package on `main` is [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip). The last uploaded prerelease, with the Sentinel-1 menu and the extra methods, is [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip). That zip does not yet include the Goldstein and Coherence menus or map export. Rebuild from this tree and, when you publish, use the tag `v0.2.0-rc.5`. Unzip `ai-insar-windows.zip` and double-click `run_windows.bat`. Those assets are not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
+Windows without a clone: the stable zip is
+[v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip).
+The last uploaded prerelease is
+[v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
+(Sentinel-1 menu and the extra methods). That zip does not include the
+Goldstein and Coherence menus or Export map. Those are on `main`. After the
+next package is built, the tag to publish is `v0.2.0-rc.5`; that asset is
+not uploaded. Unzip `ai-insar-windows.zip` and double-click `run_windows.bat`.
+Details: [WINDOWS.md](WINDOWS.md).
 
 ## Quick start
-
-Open the window (no subcommand, `gui`, or the `ai-insar` / `ai-insar-gui`
-scripts all do this):
 
 ```bash
 python -m ai_insar
 ```
 
-Click **1 Generate / load sample SLC**, then **2** through **7**, or click
-**Run all stages**. The viewer should end on LOS velocity with an orange mask
-over a blue bowl. Blue is motion away from the radar. Click the bowl: the
-readout is a negative velocity in m/yr, plus the LOS time series in
-millimetres.
+Click **1 Generate / load sample SLC**, then **2** through **7**, or **Run
+all stages**. The viewer ends on LOS velocity: an orange mask over a blue
+bowl. Blue is motion away from the radar. A click on the bowl reads a
+negative velocity in m/yr and the LOS series in millimetres.
 
-Check the same demo without a display. Exit status is 0 on `PASS` and 1 on
-`FAIL`:
+The same demo without a display. Exit status is 0 on `PASS` and 1 on `FAIL`:
 
 ```bash
 ai-insar check
-python -m ai_insar check
 ```
 
-On the default seed the check prints a peak LOS velocity near −0.22 m/yr, a
-correlation near 1, and `PASS`. The exact lines are reproduced in
-[docs/cli.md](docs/cli.md). A longer click-through is in
-[docs/quickstart.md](docs/quickstart.md).
-
-Write products (the demo stack, or your own SLC) with:
+On the default seed the peak LOS velocity is near −0.22 m/yr and the result
+is `PASS`. The printed lines are in [docs/cli.md](docs/cli.md). Clicks and
+shortcuts are in [docs/quickstart.md](docs/quickstart.md).
 
 ```bash
 ai-insar run --output products
 ai-insar run --slc slc.npy --meta slc.json --output products
 ```
 
-`--output` is required. Omitting `--slc` uses the built-in bowl, whether or
-not you pass `--demo`.
+`--output` is required. Omitting `--slc` uses the built-in bowl.
 
-## Stages
+## Features
 
-| # | Button | What it does |
-| --- | --- | --- |
-| 1 | Generate / load sample SLC | Synthetic C-band stack, or File → Load SLC stack for a `.npy` |
-| 2 | Interferogram | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
-| 3 | Goldstein filter | Goldstein menu. Default α = 0.5, 32 px window. Light / Default / Strong set α and run the stage |
-| 4 | Coherence | Coherence menu. Boxcar on the SLC pair (default 5×5), not on the filtered phase. 3×3, 5×5, and 7×7 are menu presets |
-| 5 | Unwrap | Quality-guided by default. The Quality-guided and Fast unwrap menus choose the algorithm, then a plane is removed on a 4 px border |
-| 6 | Time series | SBAS by default. Each method has its own menu: SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal |
-| 7 | Displacement detection mask | Coherent pixels that are fast relative to the scene |
+Seven stage buttons, plus one top-level menu per technique. **Run all
+stages** and `ai-insar check` use the Goldstein default, a 5×5 coherence
+window, quality-guided unwrap, and SBAS. **Run** in another menu selects
+that technique and computes the stage.
 
-**Run all stages** generates the sample only when no stack is loaded, then
-runs stages 2–7. Pipeline → Settings edits the date span, Goldstein α and
-window, coherence window, unwrap coherence floor, and two detection
-thresholds. Other defaults stay as in code until you change them in Python.
-Stage inputs, outputs, and the default table are in
-[docs/pipeline.md](docs/pipeline.md).
+| # | Stage | Menu | What it does |
+| --- | --- | --- | --- |
+| 1 | Generate / load sample SLC | File | Synthetic C-band stack, or File → Load SLC stack (`.npy`) |
+| 2 | Interferogram | Pipeline | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
+| 3 | Goldstein filter | Goldstein | Spectral filter. Light / Default / Strong set α to 0.3, 0.5, or 0.8 |
+| 4 | Coherence | Coherence | Boxcar on the SLC pair, not on the filtered phase. Presets 3×3, 5×5, 7×7 |
+| 5 | Unwrap | Quality-guided, Fast unwrap | Then a plane is removed on a 4 px border |
+| 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
+| 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
+| | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
+| | Sentinel-1 SLC | File, Data | ASF search, then a local SAFE / TIFF crop or a zip download |
 
-The sample stack is 8 dates of 72×72, every 36 days from 2020-01-08, seed 7.
-The Gaussian bowl’s model peak is 0.22 m/yr of subsidence (stored as −0.22
-m/yr). Truth arrays exist only for this synthetic stack.
-
-## Sentinel-1 SLC from ASF
-
-**File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
-catalog. That search does not need a login. Then either import a crop from a
-local SAFE measurement TIFF or complex `.npy`, or download the SLC zip.
-
-Download needs an Earthdata account. Set `EARTHDATA_USERNAME` and
-`EARTHDATA_PASSWORD`, or a `~/.netrc` machine `urs.earthdata.nasa.gov`. Do not
-commit the password. The transfer also needs `pip install "ai-insar[slc]"`
-(`asf_search`, `tifffile`, `zarr`). A zip is often several gigabytes; the
-dialog asks first. After you extract it, import the SAFE folder. One raster
-per folder is read (IW1 VV when several are present), using the crop you set
-(default 256×256). The result is the same `complex64` stack as the sample.
-`ai-insar check` still does not contact ASF.
-
-## Maps
-
-The viewer draws LOS velocity and LOS displacement with a blue–white–red
-scale. Blue is motion away from the radar. The colorbar is labelled in
-m/yr or metres. The arrays are the radar grid; nothing is geocoded.
-
-**Export map**, File → Export velocity map, and File → Export displacement
-map write three files into a folder you pick:
-
-- `velocity_m_yr.npy` or `los_m_<date>.npy` (the values)
-- a PNG preview with a scale strip
-- a float32 TIFF of the same array when `tifffile` is installed (`pip install "ai-insar[dev]"` or `pip install "ai-insar[slc]"`)
-
-The TIFF has no CRS. Save products still writes the full cubes, including
-every displacement date, as described in
-[docs/data-format.md](docs/data-format.md).
-
-## Time-series and unwrap menus
-
-**Run all stages** and `ai-insar check` still use quality-guided unwrap and
-SBAS. The other techniques each have a menu. **Run** in that menu selects it
-and computes the stage.
+Pipeline → Settings edits the date span, Goldstein α and window, coherence
+window, unwrap coherence floor, and two detection thresholds. The sample
+stack is 8 dates of 72×72, every 36 days from 2020-01-08, seed 7. The model
+peak is 0.22 m/yr of subsidence, stored as −0.22 m/yr.
 
 | Menu | What it does |
 | --- | --- |
-| Goldstein | Spectral filter of each complex interferogram. Light, Default, and Strong set α to 0.3, 0.5, or 0.8 and run stage 3. |
-| Coherence | Boxcar coherence from each SLC pair. 3×3, 5×5, and 7×7 set the window and run stage 4. |
-| Quality-guided | Coherence-ordered unwrap. Numba runs the walk if you `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
+| Goldstein | Overlap-add of windowed FFTs. Default α = 0.5, 32 px window. Unwrapping uses this phase. |
+| Coherence | Boxcar magnitude of later × conjugate(earlier), divided by the SLC powers. Filtering cannot raise it. |
+| Quality-guided | Coherence-ordered unwrap. Numba runs the walk with `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
 | Fast unwrap | Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
-| SBAS | Coherence-weighted small-baseline inversion. Default. |
+| SBAS | Coherence-weighted small-baseline inversion. Default for stage 6. |
 | Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. |
 | NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
 | PS linear | Amplitude dispersion ≤ 0.4 or mean coherence ≥ 0.5, then the stacking velocity. Other pixels stay empty. |
 | Phase linking | EMI principal eigenvector (`numpy.linalg.eigh`), then unwrapped pairs restore steps larger than π. |
 | Seasonal | One velocity plus a one-year sine and cosine. A 3×3 solve per pixel. |
 
-SBAS and NSBAS build normal equations with NumPy `einsum` and
-`numpy.linalg.solve`. Negative velocity is motion away from the radar. This
-is a teaching set, not StaMPS, MintPy, or InSAR.dev.
+SBAS and NSBAS build the normal equations with NumPy `einsum` and
+`numpy.linalg.solve`. This is a teaching set, not StaMPS, MintPy, or
+InSAR.dev.
 
 [InSARdev/core](https://github.com/InSARdev/core) (`insardev`,
 InSARdev-SAL-1.0) is source-available. Its code is not in this repository.
@@ -191,8 +117,63 @@ Seasonal exists because that project decomposes series with STL; this fit is
 a small least-squares harmonic, not a copy of that routine. TOPS deramp,
 OpenCV coregistration, OR-Tools branch cuts, and geocoding from
 [InSARdev/edu](https://github.com/InSARdev/edu) `Sentinel-1/s1.py` need orbits
-and a DEM, so they are not included. The BSD packages `insardev_pygmtsar` and
-`insardev_toolkit` preprocess scenes; this app still starts from an SLC stack.
+and a DEM, so they are not included.
+
+Stage inputs, outputs, and the default table: [docs/pipeline.md](docs/pipeline.md).
+
+## Input
+
+| | |
+| --- | --- |
+| dtype | `complex64` |
+| shape | `(n_dates, height, width)` |
+| time axis | index increases with time |
+
+```text
+ifg = slc[later] * conj(slc[earlier])
+angle(ifg) = wrap(phase[later] - phase[earlier])
+```
+
+Line-of-sight displacement is **positive toward the radar**. A subsidence
+bowl has **negative** LOS velocity. SLC phase is
+`phase = -4π / wavelength × los_meters`, so that bowl has **positive**
+unwrapped phase on a later-minus-earlier pair. Wrapped phase can still flip
+sign after half a cycle. One fringe is `wavelength / 2`: about 2.77 cm at
+the Sentinel-1 C-band wavelength used by the demo (5.405 GHz).
+
+File layout: [docs/data-format.md](docs/data-format.md). The Help menu shows
+the same sign convention.
+
+## Sentinel-1 SLC
+
+**File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
+catalog. Search does not need a login. Import a crop from a local SAFE
+measurement TIFF or complex `.npy`, or download the SLC zip.
+
+Download needs an Earthdata account (`EARTHDATA_USERNAME` and
+`EARTHDATA_PASSWORD`, or a `~/.netrc` machine `urs.earthdata.nasa.gov`) and
+`pip install "ai-insar[slc]"`. Do not commit the password. A zip is often
+several gigabytes; the dialog asks first. One raster per folder is read
+(IW1 VV when several are present), using the crop you set (default
+256×256). The result is the same `complex64` stack. `ai-insar check` does
+not contact ASF.
+
+## Export map
+
+The viewer draws LOS velocity and LOS displacement in blue–white–red. Blue
+is motion away from the radar. The colorbar is labelled in m/yr or metres.
+Nothing is geocoded.
+
+**Export map**, File → Export velocity map, and File → Export displacement
+map write:
+
+- `velocity_m_yr.npy` or `los_m_<date>.npy` (the values)
+- a PNG preview with a scale strip
+- a float32 TIFF of the same array when `tifffile` is installed (`pip install "ai-insar[dev]"` or `pip install "ai-insar[slc]"`)
+
+The TIFF has no CRS. File → Save products still writes the full cubes,
+including every displacement date. See
+[docs/data-format.md](docs/data-format.md).
 
 ## Documentation
 
@@ -201,13 +182,26 @@ and a DEM, so they are not included. The BSD packages `insardev_pygmtsar` and
 | [docs/install.md](docs/install.md) | venv, `pip install`, `--version` |
 | [docs/quickstart.md](docs/quickstart.md) | GUI clicks, shortcuts, saving products |
 | [docs/pipeline.md](docs/pipeline.md) | Each stage, defaults, what Settings changes |
-| [docs/data-format.md](docs/data-format.md) | `slc.npy`, sidecar JSON, `products.json` |
+| [docs/data-format.md](docs/data-format.md) | `slc.npy`, sidecar JSON, `products.json`, map export |
 | [docs/cli.md](docs/cli.md) | `ai-insar --help`, exit codes, example `check` output |
 | [docs/limitations.md](docs/limitations.md) | What the chain does not do |
-| [WINDOWS.md](WINDOWS.md) | Release zip, `run_windows.bat`, and `dist/ai-insar-windows.zip` |
+| [WINDOWS.md](WINDOWS.md) | Release zip, `run_windows.bat`, and how to rebuild `dist/ai-insar-windows.zip` |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and how to keep docs honest |
 
+## Limitations
+
+- One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
+- Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
+- Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
+- The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
+- Map export is the radar grid. The TIFF has no CRS.
+- The demo bowl is synthetic. Do not quote its metres per year as a ground measurement.
+
+The same boundary, written out: [docs/limitations.md](docs/limitations.md).
+
 ## Tests
+
+There is no hosted CI badge. The suite runs locally with pytest:
 
 ```bash
 pytest
