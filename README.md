@@ -87,7 +87,7 @@ that technique and computes the stage.
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
-| | Sentinel-1 SLC | File, Data | Open a SAFE zip, folder, or manifest; ASF search; crop one swath into the stack |
+| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or Open SAFE stack for many zips; ASF search; one crop and swath into the stack |
 
 Pipeline → Settings edits the date span, Goldstein α and window, coherence
 window, unwrap coherence floor, and two detection thresholds. The sample
@@ -146,7 +146,16 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
-**File → Open Sentinel-1 SAFE zip…** opens a Sentinel-1 `.zip` without
+**File → Open SAFE stack…** multi-selects many Sentinel-1 `.zip` products.
+They are not unzipped. A progress dialog counts the files. Every zip is
+read with the same swath, polarisation, and crop (default IW1 VV, 256×256),
+sorted by the manifest start time, and stored as one `complex64` stack
+`(n_dates, height, width)`. With two or more dates the dialog can run the
+interferogram stage immediately: each pair is later × conjugate(earlier).
+The window is the same rows and columns in each measurement. That is
+teaching crop-window alignment. There is no coregistration.
+
+**File → Open Sentinel-1 SAFE zip…** opens one Sentinel-1 `.zip` without
 extracting it. **Open SAFE folder…** and `manifest.safe` are optional.
 The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 `Intensity_`), and the quick-look. Double-click a band for a decimated
@@ -202,6 +211,7 @@ including every displacement date. See
 ## Limitations
 
 - One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
+- A multi-zip SAFE stack uses one shared crop window. That is teaching crop-window alignment, not coregistration.
 - Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
@@ -225,6 +235,24 @@ scene with no deformation. `tests/test_cli.py` runs `check` and `run`.
 `QT_QPA_PLATFORM=offscreen` when PySide6 is installed. `tests/test_docs.py`
 checks that links in these pages point at files in the tree.
 
+## InSARdev
+
+[InSARdev/edu](https://github.com/InSARdev/edu) is MIT. Fast unwrap follows
+`NISAR/nisar_numpy.py`. Interferograms are the same complex product as that
+file and `Sentinel-1/s1.py`: later × conjugate(earlier). Those files are
+reimplemented, not copied. TOPS deramp, OpenCV coregistration, OR-Tools
+branch cuts, and geocoding from `s1.py` are not included.
+
+[InSARdev/core](https://github.com/InSARdev/core) `insardev` is
+InSARdev-SAL-1.0. That license allows non-commercial redistribution only
+when the copy stays under SAL. This repository is MIT, so those modules are
+not vendored. `pip install insardev` is optional and is your own acceptance
+of SAL, including the subscription for funded academic use. The SAFE stack
+and the interferogram stage do not call it. The BSD packages
+`insardev_pygmtsar` and `insardev_toolkit` are not copied either: they
+expect GMTSAR burst folders, orbits, and a DEM. ESA SNAP is GPL and is not
+copied. Full wording: [NOTICE](NOTICE).
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Third-party notes: [NOTICE](NOTICE).

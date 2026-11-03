@@ -12,6 +12,7 @@ from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
+from ai_insar.gui.safe_stack_dialog import SafeStackDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.export_maps import export_displacement_map, export_velocity_map
@@ -294,6 +295,14 @@ class MainWindow(QtWidgets.QMainWindow):
         open_folder.setObjectName("openSafeFolderAction")
         open_folder.triggered.connect(self._click(self.open_safe_folder, None))
         file_menu.addAction(open_folder)
+        open_stack = QtGui.QAction("Open SAFE stack…", self)
+        open_stack.setObjectName("openSafeStackAction")
+        open_stack.setToolTip(
+            "Multi-select Sentinel-1 SAFE zips. They are not unzipped. "
+            "One crop, swath, and polarisation become a time-sorted complex64 stack."
+        )
+        open_stack.triggered.connect(self._click(self.open_safe_stack, None))
+        file_menu.addAction(open_stack)
         fetch = QtGui.QAction("Fetch Sentinel-1 SLC…", self)
         fetch.setObjectName("fetchSentinelAction")
         fetch.triggered.connect(self._click(self.fetch_sentinel, 0))
@@ -317,6 +326,7 @@ class MainWindow(QtWidgets.QMainWindow):
         data_menu.addAction(fetch)
         data_menu.addAction(open_product)
         data_menu.addAction(open_folder)
+        data_menu.addAction(open_stack)
         data_menu.addAction("Import local SAFE / TIFF…").triggered.connect(
             self._click(self.fetch_sentinel, 0)
         )
@@ -430,6 +440,102 @@ class MainWindow(QtWidgets.QMainWindow):
         if not directory:
             return
         self.open_safe_path(directory)
+
+    def open_safe_stack(self) -> None:
+        """Multi-select SAFE zips and build one time-sorted complex64 stack."""
+        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Open SAFE stack",
+            "",
+            "Sentinel-1 SAFE zip (*.zip)",
+        )
+        if not paths:
+            return
+        dialog = SafeStackDialog(self, n_files=len(paths))
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.load_safe_stack(
+            paths,
+            swath=dialog.swath(),
+            pol=dialog.polarisation(),
+            row=int(dialog.row.value()),
+            col=int(dialog.col.value()),
+            height=int(dialog.height.value()),
+            width=int(dialog.width.value()),
+            form_interferograms=dialog.form_ifg.isChecked(),
+        )
+
+    def load_safe_stack(
+        self,
+        paths,
+        *,
+        swath: str,
+        pol: str,
+        row: int,
+        col: int,
+        height: int,
+        width: int,
+        form_interferograms: bool = True,
+    ) -> None:
+        """Read ``paths`` with a progress dialog, then optionally form interferograms."""
+        from pathlib import Path
+
+        from ai_insar.safe_stack import SafeStackCancelled, stack_safe_zips
+
+        files = [Path(path) for path in paths]
+        dialog = QtWidgets.QProgressDialog(
+            "Reading SAFE zips…",
+            "Cancel",
+            0,
+            max(len(files) * 2, 1),
+            self,
+        )
+        dialog.setWindowTitle("Open SAFE stack")
+        dialog.setObjectName("safeStackProgress")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setValue(0)
+
+        def progress(step: int, steps: int, label: str):
+            if dialog.wasCanceled():
+                return False
+            dialog.setMaximum(steps)
+            dialog.setValue(max(0, step - 1))
+            dialog.setLabelText(label)
+            QtWidgets.QApplication.processEvents()
+            if dialog.wasCanceled():
+                return False
+            return None
+
+        try:
+            stack = stack_safe_zips(
+                files,
+                swath=swath,
+                pol=pol,
+                row=row,
+                col=col,
+                height=height,
+                width=width,
+                progress=progress,
+            )
+        except SafeStackCancelled:
+            self._log("SAFE stack read cancelled.")
+            return
+        finally:
+            dialog.setValue(dialog.maximum())
+            dialog.close()
+
+        self.workspace.stack = stack
+        self.workspace.clear_products()
+        self._log(
+            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} zip(s). "
+            f"{stack.description}"
+        )
+        self._preferred_layer = "SLC amplitude"
+        if form_interferograms and stack.n_dates >= 2:
+            self.run_interferograms()
+        elif form_interferograms:
+            self._log("One SAFE zip is in the stack. A second date is required before an interferogram.")
 
     def open_safe_path(self, path) -> None:
         """Inspect a SAFE zip (or a folder / manifest). Pixels are not read."""
