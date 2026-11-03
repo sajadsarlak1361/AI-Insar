@@ -13,7 +13,9 @@ from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
+from ai_insar.export_maps import export_displacement_map, export_velocity_map
 from ai_insar.io_stack import load_slc, save_products
+from ai_insar.pipeline.coherence import COHERENCE_LABEL, COHERENCE_PRESETS, COHERENCE_SUMMARY
 from ai_insar.pipeline.engine import (
     Workspace,
     compute_coherence,
@@ -24,6 +26,7 @@ from ai_insar.pipeline.engine import (
     compute_unwrap,
     run_all,
 )
+from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
 from ai_insar.pipeline.synthetic import generate_demo_stack
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
 from ai_insar.pipeline.unwrap import UNWRAP_LABELS, UNWRAP_METHODS, UNWRAP_SUMMARIES
@@ -50,7 +53,7 @@ _PAIR_LAYERS = {
 _STAGE_LABELS = (
     "Generate / load sample SLC",
     "Interferogram",
-    "Filter",
+    "Goldstein filter",
     "Coherence",
     "Unwrap",
     "SBAS / time series",
@@ -60,12 +63,24 @@ _STAGE_LABELS = (
 _STAGE_HELP = (
     "Synthetic C-band SLC stack (dates × height × width, complex64) with a known subsidence bowl. File → Load SLC stack opens a .npy instead.",
     "Form each pair as later × conjugate(earlier) on a short-baseline network.",
-    "Goldstein spectral filter. Unwrapping uses this phase.",
-    "Windowed coherence from the SLC pair. Filtering does not change this estimate.",
-    "Quality-guided unwrap, then subtract a plane fit on the image border.",
-    "SBAS displacement time series and a linear LOS velocity. Negative is away from the radar.",
+    "Goldstein spectral filter. The Goldstein menu sets alpha and runs this stage. Unwrapping uses this phase.",
+    "Windowed coherence from the SLC pair. The Coherence menu sets the window. Filtering does not change this estimate.",
+    "Quality-guided unwrap by default. Quality-guided and Fast unwrap are separate menus. A plane is then removed on the image border.",
+    "SBAS displacement time series and a linear LOS velocity. Each other method has its own menu. Negative is away from the radar.",
     "Coherence-gated velocity anomaly. Not a trained model.",
 )
+
+_LAYER_UNITS = {
+    "SLC amplitude": "amplitude",
+    "Interferogram phase": "rad",
+    "Filtered phase": "rad",
+    "Coherence": "coherence",
+    "Unwrapped phase": "rad",
+    "LOS displacement": "m",
+    "LOS velocity": "m/yr",
+    "Detection mask": "mask",
+    "Velocity + mask": "m/yr",
+}
 
 _STYLESHEET = """
 QMainWindow, QWidget { background: #1b212c; color: #e7edf5; }
@@ -216,6 +231,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.slider.valueChanged.connect(lambda _value: self._refresh_view())
         controls.addWidget(self.slider_label)
         controls.addWidget(self.slider, stretch=1)
+        self.export_button = QtWidgets.QPushButton("Export map")
+        self.export_button.setObjectName("exportMapButton")
+        self.export_button.setToolTip(
+            "Write the LOS velocity map, or the displacement date on screen, "
+            "as .npy, a PNG preview, and a float TIFF when tifffile is installed."
+        )
+        self.export_button.clicked.connect(self._click(self.export_current_map, None))
+        controls.addWidget(self.export_button)
         layout.addLayout(controls)
 
         self.viewer = ImageView()
@@ -249,6 +272,14 @@ class MainWindow(QtWidgets.QMainWindow):
         save = file_menu.addAction("Save products…")
         save.setShortcut(QtGui.QKeySequence("Ctrl+S"))
         save.triggered.connect(self._click(self.save_outputs, None))
+        self._export_velocity_action = QtGui.QAction("Export velocity map…", self)
+        self._export_velocity_action.setObjectName("exportVelocityAction")
+        self._export_velocity_action.triggered.connect(self._click(self.export_velocity_map, None))
+        self._export_displacement_action = QtGui.QAction("Export displacement map…", self)
+        self._export_displacement_action.setObjectName("exportDisplacementAction")
+        self._export_displacement_action.triggered.connect(self._click(self.export_displacement_map, None))
+        file_menu.addAction(self._export_velocity_action)
+        file_menu.addAction(self._export_displacement_action)
         file_menu.addSeparator()
         quit_action = file_menu.addAction("Exit")
         quit_action.triggered.connect(self.close)
@@ -262,7 +293,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pipeline = self.menuBar().addMenu("Pipeline")
         steps = (
             ("Interferogram", self.run_interferograms, 1),
-            ("Filter", self.run_filter, 2),
+            ("Goldstein filter", self.run_filter, 2),
             ("Coherence", self.run_coherence, 3),
             ("Unwrap", self.run_unwrap, 4),
             ("Run time series", self.run_timeseries, 5),
@@ -278,6 +309,7 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = pipeline.addAction("Settings…")
         settings.triggered.connect(self.open_settings)
 
+        self._build_filter_menus()
         self._build_unwrap_menus()
         self._build_method_menus()
 
@@ -285,6 +317,9 @@ class MainWindow(QtWidgets.QMainWindow):
         for name in _LAYERS:
             item = view.addAction(name)
             item.triggered.connect(lambda _checked=False, layer=name: self._select_layer(layer, refresh=True))
+        view.addSeparator()
+        view.addAction(self._export_velocity_action)
+        view.addAction(self._export_displacement_action)
 
         help_menu = self.menuBar().addMenu("Help")
         help_menu.addAction("Sign conventions").triggered.connect(
@@ -374,9 +409,27 @@ class MainWindow(QtWidgets.QMainWindow):
         compute_filter(self.workspace, self._log)
         self._preferred_layer = "Filtered phase"
 
+    def run_goldstein_preset(self, alpha: float) -> None:
+        """Set the Goldstein exponent and run stage 3."""
+        alpha = float(alpha)
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("alpha must be between 0 and 1")
+        self.workspace.config.goldstein_alpha = alpha
+        self._log(f"Goldstein alpha set to {alpha:.2f}.")
+        self.run_filter()
+
     def run_coherence(self) -> None:
         compute_coherence(self.workspace, self._log)
         self._preferred_layer = "Coherence"
+
+    def run_coherence_preset(self, window: int) -> None:
+        """Set the coherence boxcar and run stage 4."""
+        window = int(window)
+        if window < 1:
+            raise ValueError("coherence window must be at least 1")
+        self.workspace.config.coherence_window = window
+        self._log(f"Coherence window set to {window}×{window}.")
+        self.run_coherence()
 
     def run_unwrap(self) -> None:
         compute_unwrap(self.workspace, self._log)
@@ -401,12 +454,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.config.timeseries_method = method
         label = TIMESERIES_LABELS[method]
         self.stage_buttons[5].setText(f"6    {label} / time series")
+        self.stage_buttons[5].setToolTip(TIMESERIES_SUMMARIES[method])
         self.method_combo.blockSignals(True)
         index = self.method_combo.findData(method)
         if index >= 0:
             self.method_combo.setCurrentIndex(index)
         self.method_combo.blockSignals(False)
         self._log(f"Time-series method set to {label}. Run stage 6 to apply it.")
+
+    def _build_filter_menus(self) -> None:
+        """Top-level menus for the Goldstein filter and SLC-pair coherence."""
+        goldstein = self.menuBar().addMenu(GOLDSTEIN_LABEL)
+        goldstein.setObjectName("goldsteinMenu")
+        run = goldstein.addAction(f"Run {GOLDSTEIN_LABEL}")
+        run.setObjectName("runGoldstein")
+        run.triggered.connect(self._click(self.run_filter, 2))
+        goldstein.addSeparator()
+        for key, label, alpha in GOLDSTEIN_PRESETS:
+            item = goldstein.addAction(label)
+            item.setObjectName(f"goldsteinPreset_{key}")
+            item.triggered.connect(self._click(lambda value=alpha: self.run_goldstein_preset(value), 2))
+        goldstein.addSeparator()
+        about = goldstein.addAction("What this method does")
+        about.triggered.connect(lambda _checked=False: self._show_text(GOLDSTEIN_LABEL, GOLDSTEIN_SUMMARY))
+
+        coherence = self.menuBar().addMenu(COHERENCE_LABEL)
+        coherence.setObjectName("coherenceMenu")
+        run_coh = coherence.addAction(f"Run {COHERENCE_LABEL}")
+        run_coh.setObjectName("runCoherence")
+        run_coh.triggered.connect(self._click(self.run_coherence, 3))
+        coherence.addSeparator()
+        for key, label, window in COHERENCE_PRESETS:
+            item = coherence.addAction(label)
+            item.setObjectName(f"coherencePreset_{key}")
+            item.triggered.connect(self._click(lambda value=window: self.run_coherence_preset(value), 3))
+        coherence.addSeparator()
+        about_coh = coherence.addAction("What this method does")
+        about_coh.triggered.connect(lambda _checked=False: self._show_text(COHERENCE_LABEL, COHERENCE_SUMMARY))
 
     def _build_unwrap_menus(self) -> None:
         """One top-level menu per unwrap technique."""
@@ -427,6 +511,7 @@ class MainWindow(QtWidgets.QMainWindow):
             raise ValueError(f"unknown unwrap method {method}")
         self.workspace.config.unwrap_method = method
         self.stage_buttons[4].setText(f"5    {UNWRAP_LABELS[method]}")
+        self.stage_buttons[4].setToolTip(UNWRAP_SUMMARIES[method])
         self._log(f"Unwrap method set to {UNWRAP_LABELS[method]}.")
         self.run_unwrap()
 
@@ -471,6 +556,79 @@ class MainWindow(QtWidgets.QMainWindow):
         if method and method != self.workspace.config.timeseries_method:
             self.set_timeseries_method(str(method))
 
+    def export_current_map(self) -> None:
+        """Export the displacement date on screen, otherwise the velocity map."""
+        layer = self.layer_combo.currentText()
+        if layer == "LOS displacement" and self.workspace.los_m is not None:
+            self.export_displacement_map()
+            return
+        if self.workspace.velocity_m_yr is not None:
+            self.export_velocity_map()
+            return
+        if self.workspace.los_m is not None:
+            self.export_displacement_map()
+            return
+        raise RuntimeError(
+            "Run a time-series method first. Export writes the velocity map, or one displacement date."
+        )
+
+    def export_velocity_map(self) -> None:
+        if self.workspace.velocity_m_yr is None:
+            raise RuntimeError("Run a time-series method before exporting the velocity map.")
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Export velocity map")
+        if not directory:
+            return
+        self.export_velocity_to(directory)
+
+    def export_velocity_to(self, directory: str) -> None:
+        written = export_velocity_map(self.workspace.velocity_m_yr, directory)
+        self._log_export("LOS velocity", written)
+        self._preferred_layer = "LOS velocity"
+
+    def export_displacement_map(self) -> None:
+        if self.workspace.los_m is None:
+            raise RuntimeError("Run a time-series method before exporting a displacement map.")
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Export displacement map")
+        if not directory:
+            return
+        self.export_displacement_to(directory)
+
+    def export_displacement_to(self, directory: str, index: int | None = None) -> None:
+        los = self.workspace.los_m
+        if los is None:
+            raise RuntimeError("Run a time-series method before exporting a displacement map.")
+        if index is None:
+            index = self._displacement_export_index()
+        index = _clamp(index, los.shape[0])
+        date = self._date_label(index)
+        stem = f"los_m_{date}" if date else f"los_m_{index:03d}"
+        vmin, vmax = symmetric_limits(los)
+        written = export_displacement_map(los[index], directory, stem=stem, vmin=vmin, vmax=vmax)
+        label = f"LOS displacement {date}" if date else f"LOS displacement index {index}"
+        self._log_export(label, written)
+        self._preferred_layer = "LOS displacement"
+
+    def _displacement_export_index(self) -> int:
+        los = self.workspace.los_m
+        if los is None:
+            return 0
+        if self.layer_combo.currentText() == "LOS displacement":
+            return _clamp(int(self.slider.value()), los.shape[0])
+        return int(los.shape[0] - 1)
+
+    def _date_label(self, index: int) -> str:
+        stack = self.workspace.stack
+        if stack is None or not (0 <= index < stack.n_dates):
+            return ""
+        return str(stack.dates[index])
+
+    def _log_export(self, title: str, written: dict) -> None:
+        names = ", ".join(str(path) for path in written.values())
+        extra = ""
+        if "tif" not in written:
+            extra = " TIFF was skipped because tifffile is not installed."
+        self._log(f"Exported {title}: {names}.{extra} Radar grid, not geocoded.")
+
     def run_detection(self) -> None:
         compute_detection(self.workspace, self._log)
         self._preferred_layer = "Velocity + mask"
@@ -511,7 +669,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 colorize(row, vmin=vmin, vmax=vmax, cmap=cmap),
                 _fmt(vmin),
                 _fmt(vmax),
-                "",
+                _LAYER_UNITS.get(layer, ""),
             )
 
     def _configure_slider(self, layer: str) -> None:
@@ -561,14 +719,28 @@ class MainWindow(QtWidgets.QMainWindow):
         if layer == "Interferogram phase":
             return self._phase_layer(self.workspace.interferograms, index, "Wrapped interferogram phase")
         if layer == "Filtered phase":
-            return self._phase_layer(self.workspace.filtered, index, "Filtered wrapped phase")
+            alpha = self.workspace.config.goldstein_alpha
+            return self._phase_layer(
+                self.workspace.filtered,
+                index,
+                f"Goldstein filtered phase (α={alpha:.2f})",
+            )
         if layer == "Coherence":
             if self.workspace.coherence is None:
                 return None, None, 0.0, 1.0, None, missing
             index = _clamp(index, self.workspace.coherence.shape[0])
             field = self.workspace.coherence[index].astype(np.float64)
             rgb = colorize(field, vmin=0.0, vmax=1.0, cmap="coherence")
-            return rgb, field, 0.0, 1.0, "coherence", f"Coherence of pair index {index}. Estimated from the SLCs."
+            window = self.workspace.config.coherence_window
+            pair = ""
+            if self.workspace.pairs and index < len(self.workspace.pairs):
+                earlier, later = self.workspace.pairs[index]
+                pair = f" Dates {earlier} → {later}."
+            caption = (
+                f"Coherence of pair index {index}, {window}×{window} boxcar on the SLC pair "
+                f"(not the filtered phase).{pair}"
+            )
+            return rgb, field, 0.0, 1.0, "coherence", caption
         if layer == "Unwrapped phase":
             if self.workspace.unwrapped is None:
                 return None, None, 0.0, 1.0, None, missing
@@ -597,7 +769,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 vmin,
                 vmax,
                 "velocity",
-                "LOS displacement in meters. Blue is away from the radar, red is toward the radar. The first date is 0.",
+                "LOS displacement in meters. Blue is away from the radar, red is toward the radar. "
+                "The first date is 0. Radar grid, not geocoded.",
             )
         if layer == "LOS velocity":
             if self.workspace.velocity_m_yr is None:
@@ -611,7 +784,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 vmin,
                 vmax,
                 "velocity",
-                "LOS velocity in m/yr. Blue is motion away from the radar (subsidence); red is motion toward the radar.",
+                "LOS velocity in m/yr. Blue is motion away from the radar (subsidence); red is motion toward the radar. "
+                "Radar grid, not geocoded. File → Export velocity map writes npy, PNG, and TIFF.",
             )
         if layer == "Detection mask":
             if self.workspace.mask is None or stack is None:
@@ -713,8 +887,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "About AI Insar",
             f"AI Insar {__version__}\n\n"
-            "A small SLC-first InSAR workbench for interferograms, coherence, "
-            "phase unwrapping, SBAS time series, and a displacement mask.\n\n"
+            "A small SLC-first InSAR workbench for interferograms, a Goldstein filter, "
+            "SLC-pair coherence, phase unwrapping, network time series, and a displacement mask.\n\n"
+            "Velocity and displacement maps export as .npy, a PNG preview, and a float TIFF "
+            "on the radar grid (no CRS).\n\n"
             "Not a replacement for ISCE, MintPy, SNAP, or SNAPHU.\n"
             "MIT License.",
         )

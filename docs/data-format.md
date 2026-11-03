@@ -114,14 +114,37 @@ two-date illustration of the keys, not the eight-date demo (that run writes
     "detection_sigma": 3.5,
     "detection_peak_fraction": 0.28,
     "detection_min_coherence": 0.3,
-    "detection_min_pixels": 12
+    "detection_min_pixels": 12,
+    "timeseries_method": "sbas",
+    "unwrap_method": "quality"
   }
 }
 ```
 
 `pairs` entries are `[earlier, later]`. The config block is the subset
-`save_products` writes; overlap and the ramp border are not in the file.
+`save_products` writes. It includes `timeseries_method` (`sbas` by default)
+and `unwrap_method` (`quality` or `separable`). Overlap, the ramp border,
+the Fast-unwrap sigma, and the PS / NSBAS weights are not in the file.
 See [pipeline.md](pipeline.md).
 
 There is no reader that reloads `products.json` back into a workspace. The
 `.npy` files are ordinary NumPy arrays.
+
+## Map export
+
+File → Export velocity map, File → Export displacement map, and the
+**Export map** button write a different trio into a folder you choose. They
+do not replace Save products.
+
+| File | Contents |
+| --- | --- |
+| `velocity_m_yr.npy` | float64 LOS velocity, metres per year, same values as the viewer |
+| `velocity_m_yr.png` | RGB preview of that map plus a blue-to-red scale strip |
+| `velocity_m_yr.tif` | float32 TIFF of the same array, only when `tifffile` is installed |
+| `los_m_<date>.npy` | one displacement date, metres. The date is the slider date when the viewer is on LOS displacement, otherwise the last date |
+| `los_m_<date>.png` | preview of that date, scaled with the same limits as the displacement viewer |
+| `los_m_<date>.tif` | float32 TIFF of that date, same condition as the velocity TIFF |
+
+The TIFF description says the array is a radar-grid map with no CRS and no
+geotransform. Blue in the PNG is motion away from the radar. The `.npy`
+file is the data; the PNG is only a preview.

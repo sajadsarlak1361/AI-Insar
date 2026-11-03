@@ -13,8 +13,9 @@ Stable package, tagged on `main` (SBAS only, no Sentinel-1 fetch menu):
 [Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip)
 (`ai-insar-windows.zip`, [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)).
 
-Prerelease of this branch (Sentinel-1 fetch menu, one menu per time-series
-method, fast unwrap, seasonal fit):
+Last uploaded prerelease (Sentinel-1 fetch menu, one menu per time-series
+method, fast unwrap, seasonal fit). It does not include the Goldstein and
+Coherence menus or map export:
 [Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
 (`ai-insar-windows.zip`, [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
 
@@ -134,6 +135,21 @@ The zip contains:
 It does **not** contain `.venv`, `.git`, or third-party wheels. The machine
 that unzips it still needs Python, network, and `run_windows.bat` to install
 NumPy, SciPy, and PySide6.
+
+## Tag note for the next prerelease
+
+`package-windows` and `scripts/make_windows_zip.py` only write
+`dist/ai-insar-windows.zip`. They do not upload it, and they do not read
+`EARTHDATA_USERNAME`, `EARTHDATA_PASSWORD`, `~/.netrc`, or any token. The
+archive skips `.venv`, `.git`, and `dist`. Do not add those secrets, or a
+`.env` file, before you attach the zip to a release.
+
+The package version string in this tree is still `0.1.0`
+(`ai-insar --version`). The GitHub tag is only the release label. The
+suggested tag for a zip built from this tree is `v0.2.0-rc.5`, because
+`v0.2.0-rc.4` was uploaded before the Goldstein menu, the Coherence menu,
+and map export. Creating that tag and uploading the asset is a manual
+release step. This repository does not do it for you.
 
 ## If something fails
 

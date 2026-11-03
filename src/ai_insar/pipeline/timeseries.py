@@ -21,6 +21,10 @@ ps
 linking
     EMI principal-eigenvector phase linking (batched ``eigh``), lifted with
     the unwrapped pairs so steps larger than π keep their sign.
+seasonal
+    One velocity plus a one-year sine and cosine. A 3×3 weighted least
+    squares on the unwrapped interferograms. The reported velocity is the
+    linear coefficient; the displacement series also contains the annual term.
 """
 
 from __future__ import annotations

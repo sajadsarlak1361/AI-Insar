@@ -19,7 +19,10 @@ def colorize(
     if span <= 0:
         normalized = np.zeros(field.shape, dtype=np.float64)
     else:
-        normalized = np.clip((field - float(vmin)) / span, 0.0, 1.0)
+        normalized = (field - float(vmin)) / span
+    # np.clip leaves NaN in place, and a later uint8 cast warns on those pixels.
+    finite = np.isfinite(normalized)
+    normalized = np.where(finite, np.clip(normalized, 0.0, 1.0), 0.0)
     rgb = _apply(cmap, normalized)
     bad = ~np.isfinite(field)
     if invalid is not None:

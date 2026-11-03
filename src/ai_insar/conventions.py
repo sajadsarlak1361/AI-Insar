@@ -56,13 +56,20 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
   ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.
-- Unwrapping is quality-guided path following. Dense residues can leave
-  2*pi islands. It is not a minimum-cost-flow or SNAPHU unwrap.
+- The Goldstein filter and the SLC-pair coherence estimate each have their
+  own menu. Coherence is computed from the SLC dates, not from the filtered
+  interferogram.
+- Unwrapping is either quality-guided path following or a fast separable
+  numpy.unwrap after a Gaussian smooth (the Fast unwrap menu). Neither is
+  SNAPHU. Dense residues can leave 2*pi islands. Low-coherence pixels are
+  barriers in the quality-guided walk.
 - Time series is one of SBAS, interferogram stacking, a linear NSBAS-style
-  constraint, persistent-scatterer selection plus a linear rate, or
-  sequential coherence-weighted phase linking. Each still ends in a single
-  LOS velocity. There is no seasonal or step model, and this is not StaMPS
-  or MintPy.
+  constraint, persistent-scatterer selection plus a linear rate, sequential
+  phase linking, or a one-year sine and cosine (Seasonal). There is no
+  earthquake step, and this is not StaMPS or MintPy.
+- Velocity and displacement can be exported as .npy plus a PNG preview, and
+  as a float TIFF when tifffile is installed. That TIFF is the radar grid.
+  It has no CRS and is not a geocoded map.
 - The displacement mask is a coherence-gated robust velocity test plus a
   minimum fraction of the scene peak. It is not a trained neural network.
 - The built-in demo is a synthetic C-band subsidence bowl, not a real

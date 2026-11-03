@@ -9,6 +9,25 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import uniform_filter
 
+GOLDSTEIN_LABEL = "Goldstein"
+
+GOLDSTEIN_SUMMARY = (
+    "The Goldstein filter overlap-adds windowed FFTs of the complex "
+    "interferogram and raises the smoothed power spectrum to alpha. "
+    "Alpha 0 reconstructs the input. The default is alpha 0.5 with a "
+    "32-pixel window and 50% overlap. Unwrapping uses this phase. "
+    "Coherence is still estimated from the SLC pair, so filtering cannot "
+    "inflate it."
+)
+
+# Menu presets. Each entry is (key, label, alpha). The window stays whatever
+# Pipeline → Settings last stored (default 32).
+GOLDSTEIN_PRESETS: tuple[tuple[str, str, float], ...] = (
+    ("light", "Light (α = 0.3)", 0.3),
+    ("default", "Default (α = 0.5)", 0.5),
+    ("strong", "Strong (α = 0.8)", 0.8),
+)
+
 
 def goldstein_filter(
     interferogram: np.ndarray,
