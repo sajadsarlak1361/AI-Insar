@@ -1,4 +1,10 @@
-"""Command line: ``ai-insar``, ``ai-insar check``, ``ai-insar run``."""
+"""Command line for the workbench.
+
+With no subcommand, or with ``gui``, this opens the desktop window.
+``check`` scores the built-in subsidence bowl, ``run`` writes products
+without a window, and ``package-windows`` writes ``dist/ai-insar-windows.zip``.
+``ai-insar --help`` lists the same commands.
+"""
 
 from __future__ import annotations
 
