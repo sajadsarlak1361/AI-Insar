@@ -8,8 +8,11 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 ## Inputs and geometry
 
 - One complex stack in memory, on the radar grid, one polarization.
-- No SAFE/ZIP/CEOS reader, no DEM, no geocoding, no earth flattening, no
-  enhanced spectral diversity, no burst stitching.
+- Data → Fetch Sentinel-1 SLC can search ASF and import a crop from a local
+  measurement TIFF or complex `.npy`. Downloading the zip needs Earthdata
+  credentials and the optional `asf_search` package. There is still no DEM,
+  no geocoding, no earth flattening, no enhanced spectral diversity, and no
+  burst stitching.
 - No multilook that changes the array shape. The coherence window and the
   Goldstein window are the spatial averaging.
 - Real arrays, non-finite values, and a date list whose length does not
@@ -25,6 +28,9 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 
 ## Unwrapping and time series
 
+- The Goldstein filter and the SLC-pair coherence estimate each have their
+  own menu. Coherence is computed from the SLC dates, not from the filtered
+  interferogram, so a stronger Goldstein alpha cannot raise it.
 - The default unwrap is quality-guided path following. Fast unwrap is a
   Gaussian smooth plus separable `numpy.unwrap`. Neither is SNAPHU or a
   minimum-cost-flow unwrap. Dense residues can leave 2π islands. Low
@@ -33,8 +39,12 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 - The default time series is SBAS: one displacement per date after the first,
   which is fixed at zero, then one linear LOS velocity. Stacking, NSBAS, PS
   linear, phase linking, and a one-year seasonal fit are separate menus.
-  Seasonal is the only one with an annual term. There is no earthquake step
-  and no MintPy-style atmospheric filter.
+  Seasonal is the only one with an annual term, and its velocity map is the
+  linear coefficient, not a second fit of the series. There is no earthquake
+  step and no MintPy-style atmospheric filter.
+- File → Export velocity map and Export displacement map write `.npy`, a PNG
+  preview, and a float32 TIFF when `tifffile` is installed. The TIFF is the
+  radar grid. It has no CRS and no geotransform, so it is not a geocoded map.
 - The network is “all pairs up to a date-index span” (default 3). It is not
   a perpendicular-baseline selector, because there is no orbit geometry.
 

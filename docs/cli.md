@@ -115,9 +115,12 @@ python scripts/make_windows_zip.py
 ```
 
 No flags. Prints the path of the zip it wrote, normally
-`dist/ai-insar-windows.zip`, and exits 0. The archive layout is described in
-[WINDOWS.md](../WINDOWS.md). `package-windows` needs to find `pyproject.toml`
-and `run_windows.bat` (the project root, or the current directory).
+`dist/ai-insar-windows.zip`, and exits 0. It does not upload the zip and it
+does not read Earthdata credentials. The archive layout, the rebuild
+commands, and the note for a `v0.2.0-rc.5` prerelease tag are in
+[WINDOWS.md](../WINDOWS.md#tag-note-for-the-next-prerelease).
+`package-windows` needs to find `pyproject.toml` and `run_windows.bat` (the
+project root, or the current directory).
 
 ## Help for one command
 

@@ -7,6 +7,23 @@ from collections.abc import Sequence
 import numpy as np
 from scipy.ndimage import uniform_filter
 
+COHERENCE_LABEL = "Coherence"
+
+COHERENCE_SUMMARY = (
+    "Coherence is the magnitude of the windowed mean of "
+    "later × conjugate(earlier), divided by the geometric mean of the "
+    "windowed SLC powers. The window is a boxcar on the two SLC dates. "
+    "It does not use the Goldstein-filtered interferogram, so a stronger "
+    "filter cannot raise the coherence."
+)
+
+# Menu presets. Each entry is (key, label, window pixels).
+COHERENCE_PRESETS: tuple[tuple[str, str, int], ...] = (
+    ("fine", "3×3 window", 3),
+    ("default", "5×5 window", 5),
+    ("wide", "7×7 window", 7),
+)
+
 
 def coherence_map(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarray:
     """Coherence of one pair.

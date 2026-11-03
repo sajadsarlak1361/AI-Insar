@@ -179,6 +179,7 @@ def save_products(workspace: Any, directory: Path) -> Path:
             "detection_min_coherence": workspace.config.detection_min_coherence,
             "detection_min_pixels": workspace.config.detection_min_pixels,
             "timeseries_method": workspace.config.timeseries_method,
+            "unwrap_method": workspace.config.unwrap_method,
         }
     (directory / "products.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return directory

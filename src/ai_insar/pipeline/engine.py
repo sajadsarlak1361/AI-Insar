@@ -249,8 +249,9 @@ def compute_timeseries(workspace: Workspace, log: LogFn | None = None) -> None:
     """Stage 6. LOS series and velocity with the configured method.
 
     The default method is SBAS. Stacking, NSBAS, persistent-scatterer linear
-    velocity, and sequential phase linking write the same ``los_m`` and
-    ``velocity_m_yr`` arrays.
+    velocity, sequential phase linking, and a one-year seasonal fit write the
+    same ``los_m`` and ``velocity_m_yr`` arrays. Seasonal's velocity is the
+    linear coefficient; its displacement series also includes the annual term.
     """
     stack = _require_stack(workspace)
     if workspace.unwrapped is None or workspace.pairs is None or workspace.coherence is None:

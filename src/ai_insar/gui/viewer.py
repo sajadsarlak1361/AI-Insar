@@ -116,6 +116,12 @@ class ColorBar(QtWidgets.QWidget):
         bar = QtCore.QRect(12, 8, max(10, self.width() - 24), 14)
         painter.drawImage(bar, self._image)
         painter.drawText(12, 38, self._vmin)
+        if self._caption:
+            painter.drawText(
+                self.rect().adjusted(0, 24, 0, 0),
+                Qt.AlignmentFlag.AlignHCenter,
+                self._caption,
+            )
         painter.drawText(self.rect().adjusted(0, 24, -12, 0), Qt.AlignmentFlag.AlignRight, self._vmax)
         painter.end()
 

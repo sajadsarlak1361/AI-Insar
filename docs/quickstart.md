@@ -41,8 +41,8 @@ Step through it instead if you want to see each product:
 
 1. **Generate / load sample SLC** shows SLC amplitude (grayscale).
 2. **Interferogram** shows wrapped phase. The log says the pair was formed as later × conjugate(earlier).
-3. **Filter** shows the Goldstein result. The default demo logs zero wrapped residues.
-4. **Coherence** shows the SLC-pair coherence (yellow/green in the default colormap).
+3. **Goldstein filter** shows the filtered phase. The Goldstein menu can rerun it at α = 0.3, 0.5, or 0.8. The default demo logs zero wrapped residues.
+4. **Coherence** shows the SLC-pair coherence (yellow/green in the default colormap). The Coherence menu can rerun it at 3×3, 5×5, or 7×7.
 5. **Unwrap** shows continuous phase after the border plane is removed.
 6. **SBAS / time series** shows LOS velocity in m/yr.
 7. **Displacement detection mask** draws the mask in orange.
@@ -54,7 +54,14 @@ in m/yr. For the default demo that velocity is negative (about −0.22).
 The **View** combo and the **View** menu list the same layers: SLC
 amplitude, interferogram phase, filtered phase, coherence, unwrapped phase,
 LOS displacement, LOS velocity, detection mask, and velocity + mask. The
-slider picks a date or a pair when the layer is a stack.
+slider picks a date or a pair when the layer is a stack. LOS velocity and
+LOS displacement use a blue–white–red scale (blue is away from the radar).
+The colorbar shows the unit, m/yr or metres.
+
+After stage 6, **Export map** writes `velocity_m_yr.npy`, a PNG preview, and,
+when `tifffile` is installed, a float TIFF with no CRS. Export displacement
+map writes the slider date when that layer is showing, otherwise the last
+date, as `los_m_<date>.*`. See [data-format.md](data-format.md#map-export).
 
 ## Keyboard and menus
 
@@ -63,6 +70,8 @@ slider picks a date or a pair when the layer is a stack.
 | Generate sample SLC | File | Ctrl+N |
 | Load a `.npy` SLC stack | File → Load SLC stack… | Ctrl+O |
 | Save whatever stages have finished | File → Save products… | Ctrl+S |
+| Export the velocity map (npy, PNG, TIFF) | File or View → Export velocity map… | |
+| Export one displacement date | File or View → Export displacement map… | |
 | Run stages 2–7 (and generate if needed) | Pipeline, or the blue button | Ctrl+R |
 | Date span, filter, coherence, detection | Pipeline → Settings… | |
 

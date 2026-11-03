@@ -25,7 +25,7 @@ def qapp():
     return app
 
 
-def test_numbered_stage_buttons_run_the_pipeline(qapp):
+def test_numbered_stage_buttons_run_the_pipeline(qapp, tmp_path):
     window = MainWindow()
     window.show()
     qapp.processEvents()
@@ -34,7 +34,7 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp):
     assert labels[0].startswith("1")
     assert "Generate / load sample SLC" in labels[0]
     assert "Interferogram" in labels[1]
-    assert "Filter" in labels[2]
+    assert "Goldstein" in labels[2]
     assert "Coherence" in labels[3]
     assert "Unwrap" in labels[4]
     assert "SBAS" in labels[5]
@@ -74,8 +74,33 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp):
     titles = [action.text() for action in window.menuBar().actions()]
     assert titles[:3] == ["File", "Data", "Pipeline"]
     assert titles[-2:] == ["View", "Help"]
-    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking", "Seasonal", "Quality-guided", "Fast unwrap"):
+    for name in (
+        "SBAS",
+        "Stacking",
+        "NSBAS",
+        "PS linear",
+        "Phase linking",
+        "Seasonal",
+        "Quality-guided",
+        "Fast unwrap",
+        "Goldstein",
+        "Coherence",
+    ):
         assert name in titles
+    assert window.findChild(QAction, "runGoldstein") is not None
+    assert window.findChild(QAction, "runCoherence") is not None
+    assert window.findChild(QAction, "exportVelocityAction") is not None
+    window.export_velocity_to(tmp_path)
+    assert (tmp_path / "velocity_m_yr.npy").is_file()
+    assert (tmp_path / "velocity_m_yr.png").is_file()
+    window.layer_combo.setCurrentText("LOS displacement")
+    window.slider.setValue(window.workspace.los_m.shape[0] - 1)
+    qapp.processEvents()
+    window.export_displacement_to(tmp_path)
+    date = str(window.workspace.stack.dates[-1])
+    assert (tmp_path / f"los_m_{date}.npy").is_file()
+    assert (tmp_path / f"los_m_{date}.png").is_file()
+    assert "not geocoded" in window.log.toPlainText()
     fetch = window.findChild(QAction, "fetchSentinelAction")
     assert fetch is not None
     assert fetch.text() == "Fetch Sentinel-1 SLC…"

@@ -67,7 +67,7 @@ dependencies. If PySide6 cannot be imported, the GUI tries PyQt6.
 
 Full notes, including how to confirm the install: [docs/install.md](docs/install.md).
 
-On Windows you can skip the clone. The stable package on `main` is [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip). This branch’s package, with the Sentinel-1 menu and the extra methods, is the prerelease [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip). Unzip either `ai-insar-windows.zip` and double-click `run_windows.bat`. Those assets are not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
+On Windows you can skip the clone. The stable package on `main` is [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip). The last uploaded prerelease, with the Sentinel-1 menu and the extra methods, is [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip). That zip does not yet include the Goldstein and Coherence menus or map export. Rebuild from this tree and, when you publish, use the tag `v0.2.0-rc.5`. Unzip `ai-insar-windows.zip` and double-click `run_windows.bat`. Those assets are not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
 
 ## Quick start
 
@@ -113,8 +113,8 @@ not you pass `--demo`.
 | --- | --- | --- |
 | 1 | Generate / load sample SLC | Synthetic C-band stack, or File → Load SLC stack for a `.npy` |
 | 2 | Interferogram | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
-| 3 | Filter | Goldstein spectral filter (default α = 0.5, 32 px window) |
-| 4 | Coherence | Boxcar coherence from the SLC pair, not from the filtered phase |
+| 3 | Goldstein filter | Goldstein menu. Default α = 0.5, 32 px window. Light / Default / Strong set α and run the stage |
+| 4 | Coherence | Coherence menu. Boxcar on the SLC pair (default 5×5), not on the filtered phase. 3×3, 5×5, and 7×7 are menu presets |
 | 5 | Unwrap | Quality-guided by default. The Quality-guided and Fast unwrap menus choose the algorithm, then a plane is removed on a 4 px border |
 | 6 | Time series | SBAS by default. Each method has its own menu: SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal |
 | 7 | Displacement detection mask | Coherent pixels that are fast relative to the scene |
@@ -145,6 +145,23 @@ per folder is read (IW1 VV when several are present), using the crop you set
 (default 256×256). The result is the same `complex64` stack as the sample.
 `ai-insar check` still does not contact ASF.
 
+## Maps
+
+The viewer draws LOS velocity and LOS displacement with a blue–white–red
+scale. Blue is motion away from the radar. The colorbar is labelled in
+m/yr or metres. The arrays are the radar grid; nothing is geocoded.
+
+**Export map**, File → Export velocity map, and File → Export displacement
+map write three files into a folder you pick:
+
+- `velocity_m_yr.npy` or `los_m_<date>.npy` (the values)
+- a PNG preview with a scale strip
+- a float32 TIFF of the same array when `tifffile` is installed (`pip install "ai-insar[dev]"` or `pip install "ai-insar[slc]"`)
+
+The TIFF has no CRS. Save products still writes the full cubes, including
+every displacement date, as described in
+[docs/data-format.md](docs/data-format.md).
+
 ## Time-series and unwrap menus
 
 **Run all stages** and `ai-insar check` still use quality-guided unwrap and
@@ -153,6 +170,8 @@ and computes the stage.
 
 | Menu | What it does |
 | --- | --- |
+| Goldstein | Spectral filter of each complex interferogram. Light, Default, and Strong set α to 0.3, 0.5, or 0.8 and run stage 3. |
+| Coherence | Boxcar coherence from each SLC pair. 3×3, 5×5, and 7×7 set the window and run stage 4. |
 | Quality-guided | Coherence-ordered unwrap. Numba runs the walk if you `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
 | Fast unwrap | Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
 | SBAS | Coherence-weighted small-baseline inversion. Default. |
