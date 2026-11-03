@@ -11,12 +11,13 @@ _TOP_FILES = (
     "pyproject.toml",
     "README.md",
     "WINDOWS.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "run_windows.bat",
     ".gitignore",
     ".gitattributes",
 )
-_TOP_DIRS = ("src", "tests", "scripts")
+_TOP_DIRS = ("src", "tests", "scripts", "docs")
 
 
 def project_root() -> Path:
