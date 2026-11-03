@@ -7,10 +7,11 @@ the same product is a compiled loop. That loop is the same complex product
 used by the MIT educational examples in InSARdev/edu (``NISAR/nisar_numpy.py``
 and ``Sentinel-1/s1.py``). Those files are not copied here.
 
-When ``insardev`` imports (``pip install "ai-insar[insardev]"``), the same
-product is also requested from ``Stack.pairs().interferogram()``. That
-array is kept only when it matches the NumPy/Numba result. The SAL sources
-are not copied here.
+When ``insardev`` imports (``pip install "ai-insar[insardev]"``), that call
+is tried first: ``Stack.pairs().interferogram()``. A returned complex cube
+is the result, including when its values differ from NumPy. NumPy/Numba
+runs when the package is missing, the call fails, or
+``AI_INSAR_BACKEND=numpy``. The SAL sources are not copied here.
 """
 
 from __future__ import annotations
@@ -60,9 +61,11 @@ def form_interferograms(
     pairs:
         ``(earlier, later)`` indexes with ``later > earlier``.
     backend:
-        ``auto`` (the default, also ``AI_INSAR_BACKEND``) asks an installed
-        ``insardev`` for a single-look interferogram and keeps it when the
-        values match this product. ``numpy`` skips that call.
+        ``auto`` (the default, also ``AI_INSAR_BACKEND``) uses an installed
+        ``insardev`` single-look interferogram when that call returns a
+        complex cube. A difference from the NumPy product does not drop it.
+        ``numpy`` skips the call. The in-tree product is used when the
+        package is missing or the call fails.
 
     Returns
     -------
@@ -77,17 +80,12 @@ def form_interferograms(
     n_dates, height, width = data.shape
     earlier, later = _pair_index(n_dates, pairs)
     cube = np.ascontiguousarray(data, dtype=np.complex64)
-    want_insardev = use_insardev_backend(backend)
-    formed, used = _form_mit(cube, earlier, later, height, width)
-    if want_insardev:
+    if use_insardev_backend(backend):
         alt = try_insardev_interferogram(cube, pairs)
-        if (
-            alt is not None
-            and alt.shape == formed.shape
-            and np.allclose(alt, formed, rtol=1e-5, atol=1e-5)
-        ):
-            formed = np.ascontiguousarray(alt, dtype=np.complex64)
-            used = "insardev"
+        if alt is not None:
+            form_interferograms.last_backend = "insardev"
+            return np.ascontiguousarray(alt, dtype=np.complex64)
+    formed, used = _form_mit(cube, earlier, later, height, width)
     form_interferograms.last_backend = used
     return formed
 

@@ -114,11 +114,11 @@ professional use. This MIT project does not grant the subscription. Read
 [SUBSCRIBE](https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE)
 pages before you install.
 
-With the package present, interferograms try
-`Stack.pairs().interferogram()` and keep the result only when it matches
-`later * conjugate(earlier)`. The NumPy/Numba product remains the result
+With the package present, interferograms, `Stack.load`, and `Stack.align`
+prefer InSARdev. A returned interferogram cube is kept even when it
+differs from `later * conjugate(earlier)`. The NumPy/Numba product runs
 when the package is missing, the call fails, or you set
-`AI_INSAR_BACKEND=numpy`. SAFE zip crops stay on the reader in this
-repository. `Stack.load` is the path for geocoded zarr scenes.
-`insardev_pygmtsar` (BSD-3-Clause) is a separate install for
-`S1.align_ref` / `S1.align_rep`. See [InSARdev](../README.md#insardev).
+`AI_INSAR_BACKEND=numpy`. A SAFE zip list uses the in-tree crop only after
+`Stack.load` fails. `insardev_pygmtsar` (BSD-3-Clause) is a separate
+install for `S1.align_ref` / `S1.align_rep`, and that call is also skipped
+when `AI_INSAR_BACKEND=numpy`. See [InSARdev](../README.md#insardev).

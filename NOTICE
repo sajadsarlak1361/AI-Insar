@@ -46,8 +46,8 @@ Those terms conflict with redistributing `insardev` inside this MIT
 project. No `insardev` module is vendored. Do not commit a copy of the SAL
 sources into this repository.
 
-The project owner accepts responsibility for an optional academic
-integration. It is an install extra, not a vendored copy:
+The repository owner has personally accepted InSARdev-SAL-1.0 for this
+optional academic integration. It is an install extra, not a vendored copy:
 
     pip install "ai-insar[insardev]"
 
@@ -65,18 +65,18 @@ MIT repository does not grant that subscription and does not relicense
 `src/ai_insar/insardev_optional.py` calls public entry points only when
 that install is present:
 
-- Interferograms call `Stack.pairs().interferogram()` with no filter
-  wavelength (single-look `reference * conjugate(repeat)`). The later
-  date is the reference, so the product matches
-  `later * conjugate(earlier)`. The stage keeps that array only when it
-  matches the NumPy/Numba product in
-  `src/ai_insar/pipeline/interferogram.py`. Set `AI_INSAR_BACKEND=numpy`
-  to skip the call.
-- `Stack.load` reads geocoded zarr scenes. A Sentinel-1 SAFE zip crop
-  stays on this project's reader. Upstream `Stack.load` asks for a dask
-  client; a failed call leaves the zip path unchanged.
-- `Stack.align` is burst-phase alignment on a stack `Stack.load` already
-  returned. It is not applied to a shared crop window.
+- Interferograms call `Stack.pairs().interferogram()` first, with no
+  filter wavelength (single-look `reference * conjugate(repeat)`). The
+  later date is the reference. A returned complex cube is kept even when
+  its values differ from the NumPy/Numba product in
+  `src/ai_insar/pipeline/interferogram.py`. That in-tree product runs
+  when `insardev` is missing, the call fails, or `AI_INSAR_BACKEND=numpy`.
+- `Stack.load` is tried first for scene paths, including SAFE zip lists.
+  A returned complex cube is the stack. A failed call on zip paths uses
+  this project's crop reader. Upstream `Stack.load` asks for a dask
+  client, so a zip list often falls back after that failure.
+- `Stack.align` is tried when the loaded object has that method.
+  `AI_INSAR_BACKEND=numpy` skips `Stack.load` and `Stack.align`.
 
 InSARdev/core `insardev_pygmtsar` and `insardev_toolkit` (BSD-3-Clause)
 -----------------------------------------------------------------------

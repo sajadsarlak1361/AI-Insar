@@ -15,10 +15,11 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
   into one time-sorted `complex64` cube. The same crop, swath, and
   polarisation are used on every date. That is teaching crop-window
   alignment: the same rows and columns, not a coregistered resample.
-  `pip install "ai-insar[insardev]"` can form the same interferogram when
-  that package is installed, and `Stack.load` can read a geocoded zarr
-  scene. The extra does not coregister or geocode the SAFE zip crop.
-  Funded academic use of `insardev` needs a subscription.
+  `pip install "ai-insar[insardev]"` prefers that package for
+  interferograms, `Stack.load`, and `Stack.align`. A successful result is
+  kept even when it differs from the NumPy product. The zip crop remains
+  when `Stack.load` fails. Funded academic use of `insardev` needs a
+  subscription. `AI_INSAR_BACKEND=numpy` forces the in-tree path.
   Data → Fetch Sentinel-1 SLC can search ASF and import that crop from a
   local zip, SAFE, measurement TIFF, or complex `.npy`. A downloaded zip
   does not have to be extracted first. Downloading needs Earthdata

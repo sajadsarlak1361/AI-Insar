@@ -38,7 +38,9 @@ python -m ai_insar check
 
 Builds the default synthetic stack (`generate_demo_stack`), runs every
 processing stage, and compares the velocity and mask to the known bowl.
-No flags. No window. Exit 0 on `PASS`, exit 1 on `FAIL`.
+No flags. No window. Exit 0 on `PASS`, exit 1 on `FAIL`. When `insardev`
+is installed, stage 2 uses that package, so the bowl score can change.
+`AI_INSAR_BACKEND=numpy` scores the NumPy/Numba interferogram.
 
 The pass rule in `recovery_metrics` is all of:
 
