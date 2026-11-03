@@ -1,0 +1,127 @@
+# Data format
+
+AI Insar reads one SLC cube and optional JSON. It does not read SAFE/ZIP
+products, CEOS, a DEM, or an orbit file. The cube is already the radar grid
+you want processed.
+
+## `slc.npy`
+
+| | |
+| --- | --- |
+| Array | NumPy `.npy` |
+| dtype | complex (`complex64` after load; real arrays are rejected) |
+| shape | `(n_dates, height, width)` |
+| values | finite; NaN or infinite values raise `ValueError` |
+| axis 0 | time. The loader sorts dates so the index increases |
+
+`validate_slc` in `ai_insar.io_stack` is the check both the GUI loader and
+`SLCStack` use. At least one date and a positive height and width are
+required. The synthetic generator itself asks for at least two dates and
+an image of at least 8×8.
+
+## Sidecar JSON
+
+Default path: the same stem as the `.npy`, with suffix `.json`
+(`scene.npy` → `scene.json`). On the command line, `--meta` points somewhere
+else. The GUI loader does not take a separate meta path; it only looks
+beside the file.
+
+Keys that are read:
+
+| Key | Role if present |
+| --- | --- |
+| `wavelength_m` | Positive wavelength in metres. Default: Sentinel-1 C-band, `C_BAND_WAVELENGTH_M` (≈ 0.055465765 m). |
+| `dates` | List of calendar dates, one per SLC. Parsed as `datetime64[D]`. |
+| `sensor` | Stored on the stack. Default `unknown` when the file exists but omits it. |
+| `description` | Free text. Notes about sorting or a missing date list are appended. |
+
+`schema_version`, `shape`, `dtype`, `interferogram`, and `los_sign` are
+written by `save_slc` / `metadata_dict` so a saved stack documents itself.
+The loader does not require them.
+
+Example of a minimal sidecar:
+
+```json
+{
+  "wavelength_m": 0.055465765,
+  "dates": ["2020-01-08", "2020-02-13", "2020-03-20"],
+  "sensor": "C-band",
+  "description": "three radar-grid SLCs"
+}
+```
+
+If the sidecar is missing, the loader assumes that C-band wavelength and a
+12-day repeat starting 2020-01-08 (`default_dates`). It says so in
+`description`, which the GUI prints in the log. If `dates` is missing but
+the file exists, the same 12-day assumption is used. The number of dates
+must match axis 0. Dates must be strictly increasing after sorting; a
+duplicate day raises `ValueError`.
+
+Interferograms always use the sorted order: the larger index is the later
+date.
+
+## Products directory
+
+File → Save products, or `ai-insar run --output <dir>`, calls
+`save_products`. A file is written only when that stage has been run.
+Names and shapes:
+
+| File | Shape | dtype / meaning |
+| --- | --- | --- |
+| `velocity_m_yr.npy` | `(height, width)` | metres per year, negative = away from the radar |
+| `mask.npy` | `(height, width)` | `uint8`, 1 = detected displacement |
+| `los_m.npy` | `(n_dates, height, width)` | metres, date 0 is 0 |
+| `mean_coherence.npy` | `(height, width)` | mean of the pair coherences |
+| `coherence.npy` | `(n_pairs, height, width)` | per-pair coherence in `[0, 1]` |
+| `unwrapped_phase.npy` | `(n_pairs, height, width)` | radians after the border plane removal; NaN where not unwrapped |
+| `interferogram.npy` | `(n_pairs, height, width)` | `complex64`, later × conj(earlier) |
+| `filtered_interferogram.npy` | `(n_pairs, height, width)` | Goldstein output, `complex64` |
+| `truth_velocity_m_yr.npy` | `(height, width)` | only if the stack carries synthetic truth |
+| `truth_mask.npy` | `(height, width)` | `uint8`, only for that synthetic truth |
+| `products.json` | | index of the files, the stack metadata, the pairs, and the config that was saved |
+
+In memory the mask is boolean. On disk it is `uint8`.
+
+`products.json` (`schema_version` 1) has this shape. The block below is a
+two-date illustration of the keys, not the eight-date demo (that run writes
+18 pairs and `shape` `[8, 72, 72]`):
+
+```json
+{
+  "schema_version": 1,
+  "stack": {
+    "schema_version": 1,
+    "wavelength_m": 0.055465765,
+    "dates": ["2020-01-08", "2020-02-13"],
+    "sensor": "synthetic C-band",
+    "description": "",
+    "shape": [2, 32, 32],
+    "dtype": "complex64",
+    "interferogram": "later * conj(earlier)",
+    "los_sign": "positive toward the radar"
+  },
+  "files": {
+    "velocity_m_yr": "velocity_m_yr.npy",
+    "mask": "mask.npy"
+  },
+  "pairs": [[0, 1]],
+  "config": {
+    "max_date_span": 3,
+    "goldstein_alpha": 0.5,
+    "goldstein_window": 32,
+    "coherence_window": 5,
+    "unwrap_min_coherence": 0.2,
+    "detection_sigma": 3.5,
+    "detection_peak_fraction": 0.28,
+    "detection_min_coherence": 0.3,
+    "detection_min_pixels": 12
+  }
+}
+```
+
+`pairs` entries are `[earlier, later]`. The config block is the subset
+`save_products` writes; overlap and the ramp border are not in the file.
+See [pipeline.md](pipeline.md).
+
+There is no reader that reloads `products.json` back into a workspace. The
+`.npy` files are ordinary NumPy arrays.
