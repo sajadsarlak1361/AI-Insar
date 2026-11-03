@@ -38,9 +38,12 @@ pip install "ai-insar[insardev]"
 
 That installs upstream `insardev` (InSARdev-SAL-1.0). The SAL sources stay
 out of this MIT tree. Installing or using the extra means you accept that
-license, including a subscription for funded academic use. The default
-install keeps the NumPy/Numba interferogram. Details:
-[InSARdev](#insardev) and [NOTICE](NOTICE).
+license, including a subscription for funded academic use. The repository
+owner has personally accepted that license for this academic extra. With
+the package installed, interferograms, `Stack.load`, and `Stack.align`
+use InSARdev first. A different numeric result is kept. NumPy/Numba runs
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. Details: [InSARdev](#insardev) and [NOTICE](NOTICE).
 
 Notes: [docs/install.md](docs/install.md).
 
@@ -224,7 +227,7 @@ including every displacement date. See
 ## Limitations
 
 - One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
-- A multi-zip SAFE stack uses one shared crop window. That is teaching crop-window alignment, not coregistration. The `insardev` extra does not resample that crop.
+- A multi-zip SAFE stack uses one shared crop window when `Stack.load` is absent or fails. That crop is teaching alignment, not coregistration. A successful `Stack.load` replaces the crop with the InSARdev cube.
 - Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
@@ -265,13 +268,19 @@ including the subscription for funded academic use. The same package is
 `pip install insardev` if you install it yourself.
 
 When that import succeeds, interferograms call
-`Stack.pairs().interferogram()` with the later date as the reference
-(single-look, no filter). The stage keeps that cube only when it matches
-`later × conjugate(earlier)`. Otherwise, and when you set
-`AI_INSAR_BACKEND=numpy`, the NumPy/Numba path runs. A SAFE zip crop stays
-on this project's reader: shared rows and columns, no coregistration.
-`Stack.load` is used for geocoded zarr scenes when that call returns a
-complex cube. `Stack.align` aligns burst phase on a loaded stack.
+`Stack.pairs().interferogram()` first, with the later date as the reference
+(single-look, no filter). That cube is the stage result even when the
+values differ from `later × conjugate(earlier)`. NumPy/Numba runs only
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. `ai-insar check` scores the chain that actually
+ran, so an installed `insardev` can change the bowl score. Set
+`AI_INSAR_BACKEND=numpy` to score the in-tree product.
+
+`Stack.load` is tried first for scene lists, including SAFE zips. A
+returned cube is kept. If that call fails, a zip list still uses this
+project's shared crop window, which is not coregistration. `Stack.align`
+runs on a loaded stack when the method exists. `AI_INSAR_BACKEND=numpy`
+skips both.
 
 `insardev_toolkit` (BSD-3-Clause) comes in with the extra because upstream
 depends on it. `PyGMTSAR.safeload` translates SAFE bursts when you pass

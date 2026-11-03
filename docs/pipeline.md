@@ -51,20 +51,21 @@ ifg = slc[later] * conj(slc[earlier])
 
 The product is a chunked NumPy multiply (`np.multiply` into a `complex64`
 buffer). Pairs are grouped so the indexed date cubes stay near 32 MiB.
-When Numba is installed (`pip install "ai-insar[fast]"`), the same product
-is a compiled parallel loop and that result is what the stage keeps. A
-reversed index raises `ValueError`. The result is `complex64`, shape
-`(n_pairs, height, width)`.
+When Numba is installed (`pip install "ai-insar[fast]"`), that product is
+a compiled parallel loop. It is the stage result when `insardev` is not
+used. A reversed index raises `ValueError`. The result is `complex64`,
+shape `(n_pairs, height, width)`.
 
 `pip install "ai-insar[insardev]"` (Python 3.12+) installs upstream
-`insardev`. Stage 2 then calls `Stack.pairs(...).interferogram()` with the
-later date as the reference, so the single-look product is still
-`later * conj(earlier)`. The stage keeps that array only when it matches
-the NumPy/Numba product. A mismatch, a missing package, or
-`AI_INSAR_BACKEND=numpy` leaves the MIT result in place. The log line names
-the backend (`NumPy`, `Numba`, or `InSARdev`). Accepting the extra means
-accepting InSARdev-SAL-1.0, including a subscription for funded academic
-use. See [install.md](install.md) and [NOTICE](../NOTICE).
+`insardev`. Stage 2 then calls `Stack.pairs(...).interferogram()` first,
+with the later date as the reference. A returned complex cube is kept
+even when the values differ from the NumPy/Numba product. The in-tree
+product runs when the package is missing, the call fails, or
+`AI_INSAR_BACKEND=numpy`. The log line names the backend (`NumPy`,
+`Numba`, or `InSARdev`). Accepting the extra means accepting
+InSARdev-SAL-1.0, including a subscription for funded academic use. The
+repository owner has personally accepted that license for this academic
+extra. See [install.md](install.md) and [NOTICE](../NOTICE).
 
 File → Open SAFE stack… is another way to fill the SLC cube: many SAFE
 zips, one crop, time-sorted. Stage 2 then runs on that cube. The crop is
