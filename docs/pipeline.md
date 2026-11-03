@@ -10,6 +10,39 @@ velocity and positive unwrapped interferogram phase. See the README for the
 phase equation. The code constants are `C_BAND_WAVELENGTH_M` and
 `phase_from_los` / `los_from_phase` in `ai_insar.conventions`.
 
+## GMTSAR flowchart
+
+The Pipeline menu and the numbered buttons follow the public GMTSAR pair
+order (David Sandwell and others, UCSD; GPL-3.0). GMTSAR source is not in
+this repository. Each box is MIT code in this project. The same diagram is
+in the [README](../README.md#gmtsar-stage-order). Help → GMTSAR flowchart
+shows the list without the drawing.
+
+```mermaid
+flowchart TD
+  preprocess["1 PREPROCESS: Load SLC or Open SAFE stack"]
+  align["2 ALIGN SLC: amplitude cross-correlation"]
+  topo["3 MAKE TOPO_RA: optional DEM phase"]
+  ifg["4 MAKE INTERFEROGRAMS: Interferogram, Goldstein, Coherence"]
+  unwrap["5 UNWRAP PHASE: Fast unwrap or Quality-guided"]
+  geocode["6 GEOCODE: radar grid unless a transform exists"]
+  sbas["SBAS time series, then the displacement mask"]
+  preprocess --> align --> topo --> ifg --> unwrap --> geocode --> sbas
+```
+
+| GMTSAR stage | AI Insar control | What the code does |
+| --- | --- | --- |
+| PREPROCESS | Button 1, File → Load SLC stack, Open SAFE stack | Read a `complex64` cube. A SAFE manifest can show an orbit number. The crop is not resampled with that orbit. |
+| ALIGN SLC | Pipeline → ALIGN SLC | One constant shift per date from amplitude cross-correlation, applied with an FFT phase ramp (`pipeline/align.py`). |
+| MAKE TOPO_RA | Pipeline → MAKE TOPO_RA | `phase = -4π/λ · B_perp / (R sin θ) · height` when a DEM `.npy` and a non-zero perpendicular baseline are set (`pipeline/topo.py`). Otherwise the interferogram is unchanged. |
+| MAKE INTERFEROGRAMS | Buttons 2–4, or Pipeline → MAKE INTERFEROGRAMS | `later * conj(earlier)`, Goldstein, SLC-pair coherence. |
+| UNWRAP PHASE | Button 5 | Fast unwrap by default. Quality-guided remains a separate menu. A border plane is removed. |
+| GEOCODE | Pipeline → GEOCODE | No radar-to-map transform is stored. Products and map export stay on the radar grid. |
+| SBAS | Button 6, then button 7 | Time series after the pairs, then the displacement mask. |
+
+**Run all stages**, `ai-insar check`, and `ai-insar run` do not call ALIGN SLC,
+MAKE TOPO_RA, or GEOCODE. They process the stack that is already loaded.
+
 ## Stage by stage
 
 ### 1. Generate / load sample SLC

@@ -103,6 +103,10 @@ class Workspace:
     los_m: np.ndarray | None = None
     velocity_m_yr: np.ndarray | None = None
     mask: np.ndarray | None = None
+    dem_m: np.ndarray | None = None
+    topo_baseline_perp_m: float = 0.0
+    topo_slant_range_m: float = 800_000.0
+    topo_incidence_deg: float = 35.0
 
     def clear_products(self) -> None:
         self.pairs = None

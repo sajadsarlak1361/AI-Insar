@@ -30,6 +30,11 @@ python -m ai_insar
 The window title is **AI Insar**. On the left are seven stage buttons and
 **Run all stages**. The centre is the viewer. The bottom is the log.
 
+The Pipeline menu follows the GMTSAR stage order (PREPROCESS, ALIGN SLC,
+MAKE TOPO_RA, MAKE INTERFEROGRAMS, UNWRAP PHASE, GEOCODE, then SBAS). The
+drawing is in the README and in [pipeline.md](pipeline.md). **Run all
+stages** does not align, remove topographic phase, or geocode.
+
 Fastest path: click **Run all stages**. That generates the sample SLC if
 none is loaded, then runs interferogram, filter, coherence, fast separable
 unwrap, SBAS, and the mask. The viewer switches to **Velocity + mask**: a

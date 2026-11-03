@@ -8,6 +8,7 @@ import numpy as np
 
 from ai_insar import __version__
 from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
+from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
@@ -17,7 +18,9 @@ from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.export_maps import export_displacement_map, export_velocity_map
 from ai_insar.io_stack import load_slc, save_products
+from ai_insar.pipeline.align import align_slc_stack
 from ai_insar.pipeline.coherence import COHERENCE_LABEL, COHERENCE_PRESETS, COHERENCE_SUMMARY
+from ai_insar.pipeline.topo import apply_topographic_phase, topographic_phase_rad
 from ai_insar.pipeline.engine import (
     Workspace,
     compute_coherence,
@@ -58,23 +61,23 @@ _PAIR_LAYERS = {
 }
 
 _STAGE_LABELS = (
-    "Generate / load sample SLC",
-    "Interferogram",
-    "Goldstein filter",
-    "Coherence",
-    "Unwrap",
-    "SBAS / time series",
+    "PREPROCESS · Generate / load sample SLC",
+    "MAKE INTERFEROGRAMS · Interferogram",
+    "MAKE INTERFEROGRAMS · Goldstein",
+    "MAKE INTERFEROGRAMS · Coherence",
+    "UNWRAP PHASE · Unwrap",
+    "SBAS · SBAS / time series",
     "Displacement detection mask",
 )
 
 _STAGE_HELP = (
-    "Synthetic C-band SLC stack (dates × height × width, complex64) with a known subsidence bowl. File → Load SLC stack opens a .npy instead.",
-    "Form each pair as later × conjugate(earlier) on a short-baseline network.",
-    "Goldstein spectral filter. The Goldstein menu sets alpha and runs this stage. Unwrapping uses this phase.",
-    "Windowed coherence from the SLC pair. The Coherence menu sets the window. Filtering does not change this estimate.",
-    "Fast unwrap by default (Gaussian smooth, then separable numpy.unwrap). Quality-guided stays in its own menu. A plane is then removed on the image border.",
-    "SBAS displacement time series and a linear LOS velocity. Each other method has its own menu. Negative is away from the radar.",
-    "Coherence-gated velocity anomaly. Not a trained model.",
+    "PREPROCESS. Synthetic C-band SLC stack (dates × height × width, complex64). File → Load SLC stack or Open SAFE stack replaces it. Pipeline → ALIGN SLC and MAKE TOPO_RA are optional and are not part of Run all stages.",
+    "MAKE INTERFEROGRAMS. Form each pair as later × conjugate(earlier) on a short-baseline network.",
+    "MAKE INTERFEROGRAMS. Goldstein spectral filter. The Goldstein menu sets alpha and runs this stage. Unwrapping uses this phase.",
+    "MAKE INTERFEROGRAMS. Windowed coherence from the SLC pair. The Coherence menu sets the window. Filtering does not change this estimate.",
+    "UNWRAP PHASE. Fast unwrap by default (Gaussian smooth, then separable numpy.unwrap). Quality-guided stays in its own menu. A plane is then removed on the image border.",
+    "SBAS time series after the pair chain. Each other method has its own menu. Negative velocity is away from the radar.",
+    "Coherence-gated velocity anomaly. Not a trained model. GEOCODE is Pipeline → GEOCODE: products stay on the radar grid.",
 )
 
 _LAYER_UNITS = {
@@ -332,6 +335,20 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         pipeline = self.menuBar().addMenu("Pipeline")
+        pipeline.setObjectName("pipelineMenu")
+        gmtsar_steps = (
+            ("PREPROCESS", self.run_preprocess, 0, "pipelinePreprocess"),
+            ("ALIGN SLC", self.run_align, 0, "pipelineAlign"),
+            ("MAKE TOPO_RA", self.run_topo, 1, "pipelineTopo"),
+            ("MAKE INTERFEROGRAMS", self.run_make_interferograms, 1, "pipelineInterferograms"),
+            ("UNWRAP PHASE", self.run_unwrap, 4, "pipelineUnwrap"),
+            ("GEOCODE", self.run_geocode, None, "pipelineGeocode"),
+        )
+        for label, action, index, object_name in gmtsar_steps:
+            item = pipeline.addAction(label)
+            item.setObjectName(object_name)
+            item.triggered.connect(self._click(action, index))
+        pipeline.addSeparator()
         steps = (
             ("Interferogram", self.run_interferograms, 1),
             ("Goldstein filter", self.run_filter, 2),
@@ -363,6 +380,9 @@ class MainWindow(QtWidgets.QMainWindow):
         view.addAction(self._export_displacement_action)
 
         help_menu = self.menuBar().addMenu("Help")
+        help_menu.addAction("GMTSAR flowchart").triggered.connect(
+            lambda: self._show_text("GMTSAR flowchart", FLOWCHART_TEXT)
+        )
         help_menu.addAction("Sign conventions").triggered.connect(
             lambda: self._show_text("Sign conventions", CONVENTIONS_TEXT)
         )
@@ -404,6 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def generate_sample(self) -> None:
         self.workspace.stack = generate_demo_stack()
+        self.workspace.dem_m = None
         self.workspace.clear_products()
         stack = self.workspace.stack
         self._log(f"Generated sample SLC {stack.data.shape} {stack.data.dtype}. {stack.description}")
@@ -420,6 +441,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         stack = load_slc(path)
         self.workspace.stack = stack
+        self.workspace.dem_m = None
         self.workspace.clear_products()
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
@@ -526,6 +548,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dialog.close()
 
         self.workspace.stack = stack
+        self.workspace.dem_m = None
         self.workspace.clear_products()
         self._log(
             f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} zip(s). "
@@ -599,6 +622,7 @@ class MainWindow(QtWidgets.QMainWindow):
             width=width,
         )
         self.workspace.stack = stack
+        self.workspace.dem_m = None
         self.workspace.clear_products()
         self._log(
             f"Added {swath} {pol} from {product.product_id} to the SLC stack "
@@ -619,6 +643,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not accepted or dialog.stack is None:
             return
         self.workspace.stack = dialog.stack
+        self.workspace.dem_m = None
         self.workspace.clear_products()
         stack = dialog.stack
         self._log(
@@ -634,6 +659,110 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         save_products(self.workspace, directory)
         self._log(f"Saved products to {directory}")
+
+    def run_preprocess(self) -> None:
+        """GMTSAR PREPROCESS: keep a loaded stack, or build the sample stack."""
+        if self.workspace.stack is None:
+            self.generate_sample()
+            self._log("PREPROCESS: built the sample SLC because no stack was loaded.")
+            return
+        stack = self.workspace.stack
+        self._log(
+            f"PREPROCESS: SLC stack {stack.data.shape} {stack.data.dtype} is loaded "
+            f"({stack.sensor}). File → Load SLC stack or Open SAFE stack replaces it. "
+            "A SAFE manifest can show the orbit number. That orbit is not used to resample the crop."
+        )
+
+    def run_align(self) -> None:
+        """GMTSAR ALIGN SLC: constant amplitude shift onto the first date."""
+        if self.workspace.stack is None:
+            raise RuntimeError("Load or generate an SLC stack before ALIGN SLC.")
+        aligned, shifts = align_slc_stack(self.workspace.stack.data, reference=0)
+        self.workspace.stack.data = aligned
+        self.workspace.clear_products()
+        pieces = [f"date {index}: azi {shift_y:+.2f} px, rng {shift_x:+.2f} px" for index, (shift_y, shift_x) in enumerate(shifts)]
+        self._log(
+            "ALIGN SLC: amplitude cross-correlation onto date 0, FFT phase ramp. "
+            + "; ".join(pieces)
+            + ". Interferograms were cleared. Run all stages does not run this step."
+        )
+        self._preferred_layer = "SLC amplitude"
+
+    def run_make_interferograms(self) -> None:
+        """GMTSAR MAKE INTERFEROGRAMS: phase, Goldstein, and coherence."""
+        self.run_interferograms()
+        self.run_filter()
+        self.run_coherence()
+
+    def run_topo(self) -> None:
+        """GMTSAR MAKE TOPO_RA: optional DEM phase, unchanged when inputs are missing."""
+        if self.workspace.stack is None or self.workspace.interferograms is None:
+            raise RuntimeError("Form interferograms before MAKE TOPO_RA.")
+        if self.workspace.dem_m is None:
+            path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "MAKE TOPO_RA — DEM heights (.npy)",
+                "",
+                "NumPy DEM (*.npy)",
+            )
+            if not path:
+                self._log(
+                    "MAKE TOPO_RA: no DEM loaded. Topographic phase was not removed. "
+                    "Interferograms are unchanged."
+                )
+                return
+            dem = np.load(path)
+            expected = self.workspace.stack.data.shape[1:]
+            if dem.shape != expected:
+                raise ValueError(f"DEM shape {dem.shape} must match the SLC grid {expected}")
+            self.workspace.dem_m = np.asarray(dem, dtype=np.float64)
+            self._log(f"MAKE TOPO_RA: loaded DEM {self.workspace.dem_m.shape} from {path}.")
+        baseline, accepted = QtWidgets.QInputDialog.getDouble(
+            self,
+            "MAKE TOPO_RA",
+            "Perpendicular baseline (meters). 0 leaves the interferogram unchanged.",
+            float(self.workspace.topo_baseline_perp_m),
+            -5000.0,
+            5000.0,
+            1,
+        )
+        if not accepted:
+            self._log("MAKE TOPO_RA: cancelled. Interferograms are unchanged.")
+            return
+        self.workspace.topo_baseline_perp_m = float(baseline)
+        if abs(float(baseline)) < 1e-9:
+            self._log(
+                "MAKE TOPO_RA: perpendicular baseline is 0, so topographic phase is 0. "
+                "Interferograms are unchanged."
+            )
+            return
+        phase = topographic_phase_rad(
+            self.workspace.dem_m,
+            wavelength_m=self.workspace.stack.wavelength_m,
+            baseline_perp_m=float(baseline),
+            slant_range_m=float(self.workspace.topo_slant_range_m),
+            incidence_rad=float(np.deg2rad(self.workspace.topo_incidence_deg)),
+        )
+        self.workspace.interferograms = apply_topographic_phase(self.workspace.interferograms, phase)
+        self.workspace.filtered = None
+        self.workspace.unwrapped = None
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
+        self._log(
+            "MAKE TOPO_RA: removed topographic phase "
+            f"(B_perp={baseline:.1f} m, slant range {self.workspace.topo_slant_range_m:.0f} m, "
+            f"incidence {self.workspace.topo_incidence_deg:.1f}°). "
+            "Run Goldstein again before unwrapping."
+        )
+        self._preferred_layer = "Interferogram phase"
+
+    def run_geocode(self) -> None:
+        """GMTSAR GEOCODE: state that products remain in radar coordinates."""
+        self._log(
+            "GEOCODE: products stay on the radar grid. "
+            "No range-Doppler lookup or lat/lon grid is stored, so export has no map CRS."
+        )
 
     def run_interferograms(self) -> None:
         compute_interferograms(self.workspace, self._log)

@@ -15,6 +15,10 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
   into one time-sorted `complex64` cube. The same crop, swath, and
   polarisation are used on every date. That is teaching crop-window
   alignment: the same rows and columns, not a coregistered resample.
+  Pipeline → ALIGN SLC can then estimate one constant amplitude shift.
+  Pipeline → MAKE TOPO_RA removes topographic phase only when you load a
+  DEM and a non-zero perpendicular baseline. Pipeline → GEOCODE does not
+  resample the grid.
   `pip install "ai-insar[insardev]"` prefers that package for
   interferograms, `Stack.load`, and `Stack.align`. A successful result is
   kept even when it differs from the NumPy product. The zip crop remains
@@ -23,9 +27,10 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
   Data → Fetch Sentinel-1 SLC can search ASF and import that crop from a
   local zip, SAFE, measurement TIFF, or complex `.npy`. A downloaded zip
   does not have to be extracted first. Downloading needs Earthdata
-  credentials and the optional `asf_search` package. There is still no DEM,
-  no geocoding, no earth flattening, no calibration, no TOPS deburst, no
-  enhanced spectral diversity, and no burst stitching. See
+  credentials and the optional `asf_search` package. There is still no
+  downloaded DEM, no map geocoding, no earth flattening, no calibration,
+  no TOPS deburst, no enhanced spectral diversity, and no burst stitching.
+  See
   [the InSARdev notes](../README.md#insardev).
 - No multilook that changes the array shape. The coherence window and the
   Goldstein window are the spatial averaging.
