@@ -33,6 +33,12 @@ dependencies = [
 dev = ["pytest>=7.4", "tifffile>=2024.1.1", "zarr>=3", "numba>=0.59"]
 slc = ["tifffile>=2024.1.1", "zarr>=3", "asf_search>=7"]
 fast = ["numba>=0.59"]
+# Upstream insardev is InSARdev-SAL-1.0. It is not vendored. Installing this
+# extra means the caller accepts that license, including a subscription for
+# funded academic use. insardev depends on insardev_toolkit (BSD-3-Clause).
+# insardev_pygmtsar (also BSD-3-Clause) is omitted here; install it yourself
+# for S1.align_ref / S1.align_rep. The package requires Python 3.12+.
+insardev = ["insardev>=2026.3.21; python_version>='3.12'"]
 
 [project.scripts]
 ai-insar = "ai_insar.cli:main"

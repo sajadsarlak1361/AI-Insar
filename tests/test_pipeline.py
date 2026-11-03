@@ -280,6 +280,7 @@ def test_windows_zip_contains_launcher(tmp_path: Path):
     assert "ai-insar/README.md" in names
     assert "ai-insar/src/ai_insar/__main__.py" in names
     assert "ai-insar/pyproject.toml" in names
+    assert "ai-insar/NOTICE" in names
 
 
 def test_windows_bat_is_crlf_and_launches_module():

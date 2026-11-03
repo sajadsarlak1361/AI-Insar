@@ -97,7 +97,28 @@ Numba speeds the interferogram product and the quality-guided unwrap:
 pip install -e ".[fast]"
 ```
 
-`insardev` (InSARdev-SAL-1.0) is not a project extra and is not vendored.
-Installing it is optional and means you accept that license yourself,
-including a subscription for funded academic use. The SAFE stack does not
-import it. See [NOTICE](../NOTICE).
+## Optional InSARdev (InSARdev-SAL-1.0)
+
+`insardev` is not vendored. The extra installs the upstream package on
+Python 3.12 or newer:
+
+```bash
+pip install "ai-insar[insardev]"
+```
+
+Installing or using that package means you accept InSARdev-SAL-1.0,
+including a subscription for funded academic, institutional, and
+professional use. This MIT project does not grant the subscription. Read
+[NOTICE](../NOTICE) and the upstream
+[LICENSE](https://github.com/InSARdev/core/blob/main/insardev/LICENSE) and
+[SUBSCRIBE](https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE)
+pages before you install.
+
+With the package present, interferograms try
+`Stack.pairs().interferogram()` and keep the result only when it matches
+`later * conjugate(earlier)`. The NumPy/Numba product remains the result
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. SAFE zip crops stay on the reader in this
+repository. `Stack.load` is the path for geocoded zarr scenes.
+`insardev_pygmtsar` (BSD-3-Clause) is a separate install for
+`S1.align_ref` / `S1.align_rep`. See [InSARdev](../README.md#insardev).

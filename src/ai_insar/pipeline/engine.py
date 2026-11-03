@@ -134,6 +134,8 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
         raise PipelineError("Need at least two SLC dates to form an interferogram.")
     workspace.pairs = date_pairs(stack.n_dates, workspace.config.max_date_span)
     workspace.interferograms = form_interferograms(stack.data, workspace.pairs)
+    backend = getattr(form_interferograms, "last_backend", "numpy")
+    backend_label = {"insardev": "InSARdev", "numba": "Numba", "numpy": "NumPy"}.get(backend, backend)
     workspace.filtered = None
     workspace.coherence = None
     workspace.mean_coherence = None
@@ -148,7 +150,8 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
         f"Interferograms: {len(workspace.pairs)} pairs "
         f"(max date span {workspace.config.max_date_span}, "
         f"temporal baselines {min(spans) * 365.25:.0f}–{max(spans) * 365.25:.0f} days). "
-        "Each is later × conjugate(earlier).",
+        "Each is later × conjugate(earlier). "
+        f"Backend: {backend_label}.",
     )
     _log_truth_phase(stack, workspace.pairs, workspace.interferograms, log)
 

@@ -43,14 +43,40 @@ needs a separate written agreement. Funded academic, institutional, and
 professional use needs a subscription even to run the software.
 
 Those terms conflict with redistributing `insardev` inside this MIT
-project. No `insardev` module is vendored. `src/ai_insar/insardev_optional.py`
-only tries `import insardev` when someone has installed it themselves:
+project. No `insardev` module is vendored. Do not commit a copy of the SAL
+sources into this repository.
 
-    pip install insardev
+The project owner accepts responsibility for an optional academic
+integration. It is an install extra, not a vendored copy:
 
-That install is optional. The SAFE zip reader and the interferogram stage
-do not call it. Read the license before installing. Do not commit a copy
-of the SAL sources into this repository.
+    pip install "ai-insar[insardev]"
+
+On Python 3.12 or newer that extra installs the upstream `insardev`
+package. The same package is `pip install insardev` if you install it
+yourself. Installing it, importing it, or running the InSARdev-backed
+path means you accept InSARdev-SAL-1.0. Funded academic, institutional,
+and professional use needs a subscription even to run the software. This
+MIT repository does not grant that subscription and does not relicense
+`insardev` as MIT. Read:
+
+    https://github.com/InSARdev/core/blob/main/insardev/LICENSE
+    https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE
+
+`src/ai_insar/insardev_optional.py` calls public entry points only when
+that install is present:
+
+- Interferograms call `Stack.pairs().interferogram()` with no filter
+  wavelength (single-look `reference * conjugate(repeat)`). The later
+  date is the reference, so the product matches
+  `later * conjugate(earlier)`. The stage keeps that array only when it
+  matches the NumPy/Numba product in
+  `src/ai_insar/pipeline/interferogram.py`. Set `AI_INSAR_BACKEND=numpy`
+  to skip the call.
+- `Stack.load` reads geocoded zarr scenes. A Sentinel-1 SAFE zip crop
+  stays on this project's reader. Upstream `Stack.load` asks for a dask
+  client; a failed call leaves the zip path unchanged.
+- `Stack.align` is burst-phase alignment on a stack `Stack.load` already
+  returned. It is not applied to a shared crop window.
 
 InSARdev/core `insardev_pygmtsar` and `insardev_toolkit` (BSD-3-Clause)
 -----------------------------------------------------------------------
@@ -60,11 +86,17 @@ https://github.com/InSARdev/core
 
 BSD-3-Clause would allow a copy that keeps the copyright notice, the
 license conditions, and the disclaimer, and that does not use the author's
-name to endorse this project. Those packages are still not vendored. They
-scan GMTSAR-style burst directories and depend on orbits, a DEM, pandas,
-geopandas, and xarray. They do not read a Sentinel-1 SAFE zip into a
-complex64 crop. Install them from InSARdev/core if you want that
-preprocessor. This workbench does not import them.
+name to endorse this project. Those packages are still not vendored. The
+`insardev` extra pulls `insardev_toolkit` because upstream declares that
+dependency. `insardev_pygmtsar` is not part of the extra.
+
+`insardev_toolkit.PyGMTSAR.safeload` translates SAFE burst products into
+the InSARdev layout when you pass burst ids. `insardev_pygmtsar.S1.align_ref`
+and `align_rep` are geometric coregistration and need a burst directory,
+orbits, and a DEM. The wrappers call those functions when the packages
+import and you pass those inputs. The SAFE zip crop does not call them
+and does not coregister the window. They scan GMTSAR-style burst
+directories. They do not replace the complex64 crop reader.
 
 ESA SNAP
 --------

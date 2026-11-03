@@ -6,6 +6,11 @@ cubes at once. When Numba is installed (``pip install "ai-insar[fast]"``)
 the same product is a compiled loop. That loop is the same complex product
 used by the MIT educational examples in InSARdev/edu (``NISAR/nisar_numpy.py``
 and ``Sentinel-1/s1.py``). Those files are not copied here.
+
+When ``insardev`` imports (``pip install "ai-insar[insardev]"``), the same
+product is also requested from ``Stack.pairs().interferogram()``. That
+array is kept only when it matches the NumPy/Numba result. The SAL sources
+are not copied here.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+
+from ai_insar.insardev_optional import try_insardev_interferogram, use_insardev_backend
 
 # One indexed date-cube kept under this size. The conjugate reuses that copy.
 _CHUNK_BYTES = 32 * 1024 * 1024
@@ -40,6 +47,8 @@ def date_pairs(n_dates: int, max_span: int) -> list[tuple[int, int]]:
 def form_interferograms(
     slc: np.ndarray,
     pairs: Sequence[tuple[int, int]],
+    *,
+    backend: str | None = None,
 ) -> np.ndarray:
     """Form interferograms as ``slc[later] * conj(slc[earlier])``.
 
@@ -50,10 +59,17 @@ def form_interferograms(
         increase with time; ``later`` is the larger index.
     pairs:
         ``(earlier, later)`` indexes with ``later > earlier``.
+    backend:
+        ``auto`` (the default, also ``AI_INSAR_BACKEND``) asks an installed
+        ``insardev`` for a single-look interferogram and keeps it when the
+        values match this product. ``numpy`` skips that call.
 
     Returns
     -------
     complex64 array shaped ``(n_pairs, height, width)``.
+
+    ``form_interferograms.last_backend`` is ``insardev``, ``numba``, or
+    ``numpy`` after a successful call.
     """
     data = np.asarray(slc)
     if data.ndim != 3 or not np.iscomplexobj(data):
@@ -61,6 +77,32 @@ def form_interferograms(
     n_dates, height, width = data.shape
     earlier, later = _pair_index(n_dates, pairs)
     cube = np.ascontiguousarray(data, dtype=np.complex64)
+    want_insardev = use_insardev_backend(backend)
+    formed, used = _form_mit(cube, earlier, later, height, width)
+    if want_insardev:
+        alt = try_insardev_interferogram(cube, pairs)
+        if (
+            alt is not None
+            and alt.shape == formed.shape
+            and np.allclose(alt, formed, rtol=1e-5, atol=1e-5)
+        ):
+            formed = np.ascontiguousarray(alt, dtype=np.complex64)
+            used = "insardev"
+    form_interferograms.last_backend = used
+    return formed
+
+
+form_interferograms.last_backend = "numpy"
+
+
+def _form_mit(
+    cube: np.ndarray,
+    earlier: np.ndarray,
+    later: np.ndarray,
+    height: int,
+    width: int,
+) -> tuple[np.ndarray, str]:
+    """Numba loop when it is installed, otherwise the chunked NumPy product."""
     kernel = _numba_form()
     if kernel is not None:
         try:
@@ -69,9 +111,9 @@ def form_interferograms(
             _disable_numba()
         else:
             if formed.shape == (earlier.shape[0], height, width) and formed.dtype == np.complex64:
-                return formed
+                return formed, "numba"
             _disable_numba()
-    return _form_vectorized(cube, earlier, later)
+    return _form_vectorized(cube, earlier, later), "numpy"
 
 
 def _pair_index(n_dates: int, pairs: Sequence[tuple[int, int]]) -> tuple[np.ndarray, np.ndarray]:

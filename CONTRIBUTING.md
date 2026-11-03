@@ -45,3 +45,7 @@ Windows zip (`ai-insar package-windows`) includes `docs/` and
 
 By contributing, you agree that your changes are released under the
 [MIT license](LICENSE).
+
+Leave `insardev` (InSARdev-SAL-1.0) and ESA SNAP (GPL) out of this tree.
+The optional extra installs upstream `insardev` for people who accept that
+license, including a subscription for funded academic use. See [NOTICE](NOTICE).

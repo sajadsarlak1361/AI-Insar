@@ -111,9 +111,12 @@ def test_notice_keeps_sal_out_of_the_mit_tree():
     notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
     assert "InSARdev-SAL-1.0" in notice
     assert "not vendored" in notice
+    assert "ai-insar[insardev]" in notice
+    assert "subscription" in notice
     assert "NISAR/nisar_numpy.py" in notice
     assert "GPL" in notice
     assert not (ROOT / "src" / "ai_insar" / "insardev" / "Stack.py").exists()
+    assert not (ROOT / "src" / "ai_insar" / "snap").exists()
     status = insardev_status()
     assert "note" in status
     assert "InSARdev-SAL-1.0" in INSARDEV_INSTALL_NOTE
