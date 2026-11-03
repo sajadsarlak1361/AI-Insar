@@ -182,8 +182,10 @@ It flags both uplift and subsidence. It is not a trained neural network.
 
 ## Time-series methods
 
-Stage 6 is not only SBAS. The **Stage 6 method** list (and Pipeline → Time
-series method, or Pipeline → Settings) chooses one of:
+Stage 6 is not only SBAS. Each technique has its own menu in the menu bar
+(SBAS, Stacking, NSBAS, PS linear, Phase linking). **Run** in that menu
+selects the method and computes the series. The same choice is on the
+**Stage 6 method** list and under Pipeline → Settings:
 
 | Method | What it does |
 | --- | --- |

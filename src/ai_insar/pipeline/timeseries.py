@@ -42,6 +42,35 @@ TIMESERIES_LABELS: dict[str, str] = {
     "linking": "Phase linking",
 }
 
+TIMESERIES_SUMMARIES: dict[str, str] = {
+    "sbas": (
+        "SBAS solves a displacement at each date from the unwrapped "
+        "short-baseline interferograms, weighted by coherence squared. "
+        "The first date is zero. A linear velocity is then fit to that series. "
+        "Negative velocity is motion away from the radar."
+    ),
+    "stacking": (
+        "Stacking averages each interferogram's LOS rate, weighted by "
+        "coherence squared. The displacement series is that single rate "
+        "times time since the first date."
+    ),
+    "nsbas": (
+        "NSBAS here is the SBAS system plus a light constraint that "
+        "displacement follows one velocity. There is no seasonal term. "
+        "It is an educational network inversion, not a full NSBAS package."
+    ),
+    "ps": (
+        "PS linear keeps pixels whose amplitude dispersion is at most 0.4 "
+        "or whose mean coherence is at least 0.5, then uses the stacking "
+        "velocity. Other pixels are left empty. This is not StaMPS."
+    ),
+    "linking": (
+        "Phase linking estimates each date as the coherence-weighted mean of "
+        "phase[earlier] + the unwrapped pair. It uses the unwrapped network "
+        "already computed. It is not the EMI eigenvalue method."
+    ),
+}
+
 
 def coherence_weights(coherence: np.ndarray, unwrapped_phase: np.ndarray) -> np.ndarray:
     """Coherence squared, with non-finite unwrapped samples dropped."""

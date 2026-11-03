@@ -72,7 +72,10 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp):
 
     # Menus expose the same stages and the load/save actions.
     titles = [action.text() for action in window.menuBar().actions()]
-    assert titles[:5] == ["File", "Data", "Pipeline", "View", "Help"]
+    assert titles[:3] == ["File", "Data", "Pipeline"]
+    assert titles[-2:] == ["View", "Help"]
+    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking"):
+        assert name in titles
     fetch = window.findChild(QAction, "fetchSentinelAction")
     assert fetch is not None
     assert fetch.text() == "Fetch Sentinel-1 SLC…"

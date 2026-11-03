@@ -25,7 +25,7 @@ from ai_insar.pipeline.engine import (
     run_all,
 )
 from ai_insar.pipeline.synthetic import generate_demo_stack
-from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS
+from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
 
 _LAYERS = (
     "SLC amplitude",
@@ -270,23 +270,14 @@ class MainWindow(QtWidgets.QMainWindow):
         for label, action, index in steps:
             item = pipeline.addAction(label)
             item.triggered.connect(self._click(action, index))
-        method_menu = pipeline.addMenu("Time series method")
-        self._method_group = QtGui.QActionGroup(self)
-        self._method_group.setExclusive(True)
-        for key in TIMESERIES_METHODS:
-            item = method_menu.addAction(TIMESERIES_LABELS[key])
-            item.setCheckable(True)
-            item.setData(key)
-            self._method_group.addAction(item)
-            if key == self.workspace.config.timeseries_method:
-                item.setChecked(True)
-            item.triggered.connect(lambda _checked=False, name=key: self.set_timeseries_method(name))
         pipeline.addSeparator()
         run_all = pipeline.addAction("Run all stages")
         run_all.setShortcut(QtGui.QKeySequence("Ctrl+R"))
         run_all.triggered.connect(self._click(self.run_all_stages, None))
         settings = pipeline.addAction("Settings…")
         settings.triggered.connect(self.open_settings)
+
+        self._build_method_menus()
 
         view = self.menuBar().addMenu("View")
         for name in _LAYERS:
@@ -413,9 +404,28 @@ class MainWindow(QtWidgets.QMainWindow):
         if index >= 0:
             self.method_combo.setCurrentIndex(index)
         self.method_combo.blockSignals(False)
-        for action in self._method_group.actions():
-            action.setChecked(action.data() == method)
         self._log(f"Time-series method set to {label}. Run stage 6 to apply it.")
+
+    def _build_method_menus(self) -> None:
+        """One top-level menu per time-series technique, including SBAS."""
+        for key in TIMESERIES_METHODS:
+            label = TIMESERIES_LABELS[key]
+            menu = self.menuBar().addMenu(label)
+            menu.setObjectName(f"methodMenu_{key}")
+            run = menu.addAction(f"Run {label}")
+            run.setObjectName(f"runMethod_{key}")
+            run.triggered.connect(self._click(lambda name=key: self.run_named_timeseries(name), 5))
+            about = menu.addAction("What this method does")
+            about.triggered.connect(
+                lambda _checked=False, name=key: self._show_text(
+                    TIMESERIES_LABELS[name], TIMESERIES_SUMMARIES[name]
+                )
+            )
+
+    def run_named_timeseries(self, method: str) -> None:
+        """Select one technique and run stage 6 with it."""
+        self.set_timeseries_method(method)
+        self.run_timeseries()
 
     def _method_picker(self) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()

@@ -73,7 +73,8 @@ def test_unknown_method_is_rejected():
 
 def test_method_combo_changes_stage_button():
     pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QApplication, QMenu
 
     from ai_insar.gui.main_window import MainWindow
 
@@ -87,4 +88,11 @@ def test_method_combo_changes_stage_button():
     assert "Stacking" in window.stage_buttons[5].text()
     window.set_timeseries_method("ps")
     assert "PS linear" in window.stage_buttons[5].text()
+    titles = [action.text() for action in window.menuBar().actions()]
+    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking"):
+        assert name in titles
+    stacking = window.findChild(QMenu, "methodMenu_stacking")
+    assert stacking is not None
+    run = window.findChild(QAction, "runMethod_nsbas")
+    assert run is not None and run.text() == "Run NSBAS"
     window.close()
