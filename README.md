@@ -67,7 +67,7 @@ dependencies. If PySide6 cannot be imported, the GUI tries PyQt6.
 
 Full notes, including how to confirm the install: [docs/install.md](docs/install.md).
 
-On Windows you can skip the clone: [Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip) (`ai-insar-windows.zip` on the [v0.1.0 release](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)). Unzip it and double-click `run_windows.bat`. That asset is not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
+On Windows you can skip the clone. The stable package on `main` is [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip). This branch’s package, with the Sentinel-1 menu and the extra methods, is the prerelease [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip). Unzip either `ai-insar-windows.zip` and double-click `run_windows.bat`. Those assets are not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
 
 ## Quick start
 
@@ -115,8 +115,8 @@ not you pass `--demo`.
 | 2 | Interferogram | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
 | 3 | Filter | Goldstein spectral filter (default α = 0.5, 32 px window) |
 | 4 | Coherence | Boxcar coherence from the SLC pair, not from the filtered phase |
-| 5 | Unwrap | Quality-guided unwrap, then a plane removed on a 4 px border |
-| 6 | SBAS / time series | LOS displacement (first date = 0) and one linear velocity |
+| 5 | Unwrap | Quality-guided by default. The Quality-guided and Fast unwrap menus choose the algorithm, then a plane is removed on a 4 px border |
+| 6 | Time series | SBAS by default. Each method has its own menu: SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal |
 | 7 | Displacement detection mask | Coherent pixels that are fast relative to the scene |
 
 **Run all stages** generates the sample only when no stack is loaded, then
@@ -129,6 +129,51 @@ Stage inputs, outputs, and the default table are in
 The sample stack is 8 dates of 72×72, every 36 days from 2020-01-08, seed 7.
 The Gaussian bowl’s model peak is 0.22 m/yr of subsidence (stored as −0.22
 m/yr). Truth arrays exist only for this synthetic stack.
+
+## Sentinel-1 SLC from ASF
+
+**File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
+catalog. That search does not need a login. Then either import a crop from a
+local SAFE measurement TIFF or complex `.npy`, or download the SLC zip.
+
+Download needs an Earthdata account. Set `EARTHDATA_USERNAME` and
+`EARTHDATA_PASSWORD`, or a `~/.netrc` machine `urs.earthdata.nasa.gov`. Do not
+commit the password. The transfer also needs `pip install "ai-insar[slc]"`
+(`asf_search`, `tifffile`, `zarr`). A zip is often several gigabytes; the
+dialog asks first. After you extract it, import the SAFE folder. One raster
+per folder is read (IW1 VV when several are present), using the crop you set
+(default 256×256). The result is the same `complex64` stack as the sample.
+`ai-insar check` still does not contact ASF.
+
+## Time-series and unwrap menus
+
+**Run all stages** and `ai-insar check` still use quality-guided unwrap and
+SBAS. The other techniques each have a menu. **Run** in that menu selects it
+and computes the stage.
+
+| Menu | What it does |
+| --- | --- |
+| Quality-guided | Coherence-ordered unwrap. Numba runs the walk if you `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
+| Fast unwrap | Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
+| SBAS | Coherence-weighted small-baseline inversion. Default. |
+| Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. |
+| NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
+| PS linear | Amplitude dispersion ≤ 0.4 or mean coherence ≥ 0.5, then the stacking velocity. Other pixels stay empty. |
+| Phase linking | EMI principal eigenvector (`numpy.linalg.eigh`), then unwrapped pairs restore steps larger than π. |
+| Seasonal | One velocity plus a one-year sine and cosine. A 3×3 solve per pixel. |
+
+SBAS and NSBAS build normal equations with NumPy `einsum` and
+`numpy.linalg.solve`. Negative velocity is motion away from the radar. This
+is a teaching set, not StaMPS, MintPy, or InSAR.dev.
+
+[InSARdev/core](https://github.com/InSARdev/core) (`insardev`,
+InSARdev-SAL-1.0) is source-available. Its code is not in this repository.
+Seasonal exists because that project decomposes series with STL; this fit is
+a small least-squares harmonic, not a copy of that routine. TOPS deramp,
+OpenCV coregistration, OR-Tools branch cuts, and geocoding from
+[InSARdev/edu](https://github.com/InSARdev/edu) `Sentinel-1/s1.py` need orbits
+and a DEM, so they are not included. The BSD packages `insardev_pygmtsar` and
+`insardev_toolkit` preprocess scenes; this app still starts from an SLC stack.
 
 ## Documentation
 

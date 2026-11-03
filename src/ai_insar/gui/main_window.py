@@ -10,6 +10,7 @@ from ai_insar import __version__
 from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.io_stack import load_slc, save_products
@@ -19,11 +20,13 @@ from ai_insar.pipeline.engine import (
     compute_detection,
     compute_filter,
     compute_interferograms,
-    compute_sbas,
+    compute_timeseries,
     compute_unwrap,
     run_all,
 )
 from ai_insar.pipeline.synthetic import generate_demo_stack
+from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
+from ai_insar.pipeline.unwrap import UNWRAP_LABELS, UNWRAP_METHODS, UNWRAP_SUMMARIES
 
 _LAYERS = (
     "SLC amplitude",
@@ -174,10 +177,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.run_filter,
             self.run_coherence,
             self.run_unwrap,
-            self.run_sbas,
+            self.run_timeseries,
             self.run_detection,
         )
         for number, (label, action, hint) in enumerate(zip(_STAGE_LABELS, actions, _STAGE_HELP), start=1):
+            if number == 6:
+                layout.addWidget(self._method_picker())
             button = QtWidgets.QPushButton(f"{number}    {label}")
             button.setObjectName(f"stageButton{number}")
             button.setToolTip(hint)
@@ -237,6 +242,10 @@ class MainWindow(QtWidgets.QMainWindow):
         load = file_menu.addAction("Load SLC stack…")
         load.setShortcut(QtGui.QKeySequence("Ctrl+O"))
         load.triggered.connect(self._click(self.load_stack, 0))
+        fetch = QtGui.QAction("Fetch Sentinel-1 SLC…", self)
+        fetch.setObjectName("fetchSentinelAction")
+        fetch.triggered.connect(self._click(self.fetch_sentinel, 0))
+        file_menu.addAction(fetch)
         save = file_menu.addAction("Save products…")
         save.setShortcut(QtGui.QKeySequence("Ctrl+S"))
         save.triggered.connect(self._click(self.save_outputs, None))
@@ -244,13 +253,19 @@ class MainWindow(QtWidgets.QMainWindow):
         quit_action = file_menu.addAction("Exit")
         quit_action.triggered.connect(self.close)
 
+        data_menu = self.menuBar().addMenu("Data")
+        data_menu.addAction(fetch)
+        data_menu.addAction("Import local SAFE / TIFF…").triggered.connect(
+            self._click(self.fetch_sentinel, 0)
+        )
+
         pipeline = self.menuBar().addMenu("Pipeline")
         steps = (
             ("Interferogram", self.run_interferograms, 1),
             ("Filter", self.run_filter, 2),
             ("Coherence", self.run_coherence, 3),
             ("Unwrap", self.run_unwrap, 4),
-            ("SBAS / time series", self.run_sbas, 5),
+            ("Run time series", self.run_timeseries, 5),
             ("Displacement detection mask", self.run_detection, 6),
         )
         for label, action, index in steps:
@@ -262,6 +277,9 @@ class MainWindow(QtWidgets.QMainWindow):
         run_all.triggered.connect(self._click(self.run_all_stages, None))
         settings = pipeline.addAction("Settings…")
         settings.triggered.connect(self.open_settings)
+
+        self._build_unwrap_menus()
+        self._build_method_menus()
 
         view = self.menuBar().addMenu("View")
         for name in _LAYERS:
@@ -327,6 +345,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
 
+    def fetch_sentinel(self) -> None:
+        dialog = FetchSentinelDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted or dialog.stack is None:
+            return
+        self.workspace.stack = dialog.stack
+        self.workspace.clear_products()
+        stack = dialog.stack
+        self._log(
+            f"Imported SLC {stack.data.shape} {stack.data.dtype}. {stack.description}"
+        )
+        self._preferred_layer = "SLC amplitude"
+
     def save_outputs(self) -> None:
         if self.workspace.stack is None:
             raise RuntimeError("Nothing to save yet. Generate or load an SLC stack first.")
@@ -352,9 +382,94 @@ class MainWindow(QtWidgets.QMainWindow):
         compute_unwrap(self.workspace, self._log)
         self._preferred_layer = "Unwrapped phase"
 
-    def run_sbas(self) -> None:
-        compute_sbas(self.workspace, self._log)
+    def run_timeseries(self) -> None:
+        compute_timeseries(self.workspace, self._log)
         self._preferred_layer = "LOS velocity"
+
+    def set_timeseries_method(self, method: str) -> None:
+        if method not in TIMESERIES_METHODS:
+            raise ValueError(f"unknown time-series method {method}")
+        if getattr(self, "_setting_method", False):
+            return
+        self._setting_method = True
+        try:
+            self._apply_timeseries_method(method)
+        finally:
+            self._setting_method = False
+
+    def _apply_timeseries_method(self, method: str) -> None:
+        self.workspace.config.timeseries_method = method
+        label = TIMESERIES_LABELS[method]
+        self.stage_buttons[5].setText(f"6    {label} / time series")
+        self.method_combo.blockSignals(True)
+        index = self.method_combo.findData(method)
+        if index >= 0:
+            self.method_combo.setCurrentIndex(index)
+        self.method_combo.blockSignals(False)
+        self._log(f"Time-series method set to {label}. Run stage 6 to apply it.")
+
+    def _build_unwrap_menus(self) -> None:
+        """One top-level menu per unwrap technique."""
+        for key in UNWRAP_METHODS:
+            label = UNWRAP_LABELS[key]
+            menu = self.menuBar().addMenu(label)
+            menu.setObjectName(f"unwrapMenu_{key}")
+            run = menu.addAction(f"Run {label}")
+            run.setObjectName(f"runUnwrap_{key}")
+            run.triggered.connect(self._click(lambda name=key: self.run_named_unwrap(name), 4))
+            about = menu.addAction("What this method does")
+            about.triggered.connect(
+                lambda _checked=False, name=key: self._show_text(UNWRAP_LABELS[name], UNWRAP_SUMMARIES[name])
+            )
+
+    def run_named_unwrap(self, method: str) -> None:
+        if method not in UNWRAP_METHODS:
+            raise ValueError(f"unknown unwrap method {method}")
+        self.workspace.config.unwrap_method = method
+        self.stage_buttons[4].setText(f"5    {UNWRAP_LABELS[method]}")
+        self._log(f"Unwrap method set to {UNWRAP_LABELS[method]}.")
+        self.run_unwrap()
+
+    def _build_method_menus(self) -> None:
+        """One top-level menu per time-series technique, including SBAS."""
+        for key in TIMESERIES_METHODS:
+            label = TIMESERIES_LABELS[key]
+            menu = self.menuBar().addMenu(label)
+            menu.setObjectName(f"methodMenu_{key}")
+            run = menu.addAction(f"Run {label}")
+            run.setObjectName(f"runMethod_{key}")
+            run.triggered.connect(self._click(lambda name=key: self.run_named_timeseries(name), 5))
+            about = menu.addAction("What this method does")
+            about.triggered.connect(
+                lambda _checked=False, name=key: self._show_text(
+                    TIMESERIES_LABELS[name], TIMESERIES_SUMMARIES[name]
+                )
+            )
+
+    def run_named_timeseries(self, method: str) -> None:
+        """Select one technique and run stage 6 with it."""
+        self.set_timeseries_method(method)
+        self.run_timeseries()
+
+    def _method_picker(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        caption = QtWidgets.QLabel("Stage 6 method")
+        caption.setObjectName("subtle")
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.setObjectName("timeseriesMethod")
+        for key in TIMESERIES_METHODS:
+            self.method_combo.addItem(TIMESERIES_LABELS[key], key)
+        self.method_combo.currentIndexChanged.connect(self._method_combo_changed)
+        layout.addWidget(caption)
+        layout.addWidget(self.method_combo)
+        return box
+
+    def _method_combo_changed(self, index: int) -> None:
+        method = self.method_combo.itemData(index)
+        if method and method != self.workspace.config.timeseries_method:
+            self.set_timeseries_method(str(method))
 
     def run_detection(self) -> None:
         compute_detection(self.workspace, self._log)
@@ -368,7 +483,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.workspace.config, self)
-        dialog.exec()
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self.set_timeseries_method(self.workspace.config.timeseries_method)
 
     def _select_layer(self, name: str, *, refresh: bool) -> None:
         index = self.layer_combo.findText(name)

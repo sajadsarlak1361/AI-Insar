@@ -49,14 +49,20 @@ Limitations
 AI Insar is a small-stack desktop workbench. It is not a replacement for
 ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
 
-- Inputs are in-memory SLC stacks on a radar grid. There is no DEM,
-  geocoding, earth-flattening, ESD, or burst stitching.
+- Inputs are in-memory SLC stacks on a radar grid. Data → Fetch Sentinel-1
+  SLC can search ASF and import a crop from a local measurement TIFF or
+  .npy. Downloading the zip needs Earthdata credentials and the optional
+  asf_search package. There is still no DEM, geocoding, earth-flattening,
+  ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.
 - Unwrapping is quality-guided path following. Dense residues can leave
   2*pi islands. It is not a minimum-cost-flow or SNAPHU unwrap.
-- SBAS solves a displacement at each date (first date fixed at zero) and
-  then a single LOS velocity. There is no seasonal or step model.
+- Time series is one of SBAS, interferogram stacking, a linear NSBAS-style
+  constraint, persistent-scatterer selection plus a linear rate, or
+  sequential coherence-weighted phase linking. Each still ends in a single
+  LOS velocity. There is no seasonal or step model, and this is not StaMPS
+  or MintPy.
 - The displacement mask is a coherence-gated robust velocity test plus a
   minimum fraction of the scene peak. It is not a trained neural network.
 - The built-in demo is a synthetic C-band subsidence bowl, not a real

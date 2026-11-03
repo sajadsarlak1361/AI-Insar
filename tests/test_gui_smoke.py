@@ -10,6 +10,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication
 
 from ai_insar.gui.main_window import MainWindow
@@ -71,7 +72,13 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp):
 
     # Menus expose the same stages and the load/save actions.
     titles = [action.text() for action in window.menuBar().actions()]
-    assert titles[:4] == ["File", "Pipeline", "View", "Help"]
+    assert titles[:3] == ["File", "Data", "Pipeline"]
+    assert titles[-2:] == ["View", "Help"]
+    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking", "Seasonal", "Quality-guided", "Fast unwrap"):
+        assert name in titles
+    fetch = window.findChild(QAction, "fetchSentinelAction")
+    assert fetch is not None
+    assert fetch.text() == "Fetch Sentinel-1 SLC…"
     window.close()
 
 

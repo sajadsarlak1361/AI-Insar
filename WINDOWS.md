@@ -9,14 +9,19 @@ and installs the local project.
 
 ## Download the Windows zip from Releases
 
+Stable package, tagged on `main` (SBAS only, no Sentinel-1 fetch menu):
 [Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip)
 (`ai-insar-windows.zip`, [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)).
 
-Unzip it, open the `ai-insar` folder, and double-click `run_windows.bat`.
-The zip is a source package of tag `v0.1.0` on `main`. It is attached to the
-GitHub Release and is not stored in the git tree (`dist/` stays gitignored).
-You still need Python 3.10+ and a network connection the first time, because
-the batch file installs NumPy, SciPy, and PySide6 into `.venv`.
+Prerelease of this branch (Sentinel-1 fetch menu, one menu per time-series
+method, fast unwrap, seasonal fit):
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
+
+Unzip either archive, open the `ai-insar` folder, and double-click
+`run_windows.bat`. Neither zip is stored in the git tree (`dist/` stays
+gitignored). You still need Python 3.10+ and a network connection the first
+time, because the batch file installs NumPy, SciPy, and PySide6 into `.venv`.
 
 ## 1. Install Python
 

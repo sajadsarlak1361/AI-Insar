@@ -25,13 +25,16 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 
 ## Unwrapping and time series
 
-- Unwrapping is quality-guided path following. It is not SNAPHU and not a
+- The default unwrap is quality-guided path following. Fast unwrap is a
+  Gaussian smooth plus separable `numpy.unwrap`. Neither is SNAPHU or a
   minimum-cost-flow unwrap. Dense residues can leave 2π islands. Low
-  coherence pixels are barriers; a region the seed cannot reach stays NaN
-  and drops out of SBAS.
-- SBAS solves one displacement per date after the first, which is fixed at
-  zero, then one linear LOS velocity. There is no seasonal term, no
-  earthquake step, and no temporal atmospheric filter beyond that line fit.
+  coherence pixels are barriers in the quality-guided walk; a region the
+  seed cannot reach stays NaN and drops out of the time series.
+- The default time series is SBAS: one displacement per date after the first,
+  which is fixed at zero, then one linear LOS velocity. Stacking, NSBAS, PS
+  linear, phase linking, and a one-year seasonal fit are separate menus.
+  Seasonal is the only one with an annual term. There is no earthquake step
+  and no MintPy-style atmospheric filter.
 - The network is “all pairs up to a date-index span” (default 3). It is not
   a perpendicular-baseline selector, because there is no orbit geometry.
 

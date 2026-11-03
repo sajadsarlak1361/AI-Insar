@@ -16,9 +16,16 @@ from ai_insar.pipeline.coherence import coherence_stack
 from ai_insar.pipeline.detect import detect_displacement
 from ai_insar.pipeline.filtering import filter_stack
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
-from ai_insar.pipeline.sbas import invert_sbas
 from ai_insar.pipeline.synthetic import SLCStack
-from ai_insar.pipeline.unwrap import reliability, remove_ramp, residue_count, unwrap_quality_guided
+from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
+from ai_insar.pipeline.unwrap import (
+    UNWRAP_LABELS,
+    reliability,
+    remove_ramp,
+    residue_count,
+    unwrap_quality_guided,
+    unwrap_separable,
+)
 
 LogFn = Callable[[str], None]
 
@@ -42,6 +49,12 @@ class PipelineConfig:
     detection_peak_fraction: float = DEFAULT_MASK_FRACTION
     detection_min_coherence: float = 0.3
     detection_min_pixels: int = 12
+    timeseries_method: str = "sbas"
+    ps_da_max: float = 0.4
+    ps_min_coherence: float = 0.5
+    nsbas_weight: float = 0.25
+    unwrap_method: str = "quality"
+    unwrap_sigma: float = 2.0
 
     def __post_init__(self) -> None:
         if self.max_date_span < 1:
@@ -62,6 +75,17 @@ class PipelineConfig:
             raise ValueError("detection_peak_fraction must be between 0 and 1")
         if self.detection_min_pixels < 1:
             raise ValueError("detection_min_pixels must be >= 1")
+        if self.timeseries_method not in TIMESERIES_METHODS:
+            known = ", ".join(TIMESERIES_METHODS)
+            raise ValueError(f"timeseries_method must be one of {known}")
+        if self.ps_da_max <= 0:
+            raise ValueError("ps_da_max must be positive")
+        if self.nsbas_weight <= 0:
+            raise ValueError("nsbas_weight must be positive")
+        if self.unwrap_method not in ("quality", "separable"):
+            raise ValueError("unwrap_method must be 'quality' or 'separable'")
+        if self.unwrap_sigma <= 0:
+            raise ValueError("unwrap_sigma must be positive")
 
 
 @dataclass
@@ -188,10 +212,18 @@ def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
     for index in range(n_pairs):
         phase = np.angle(workspace.filtered[index]).astype(np.float64)
         coh = workspace.coherence[index].astype(np.float64)
-        quality = reliability(phase, coh)
-        # Low-coherence pixels are barriers: the integrator does not walk through them.
-        quality = np.where(coh >= cfg.unwrap_min_coherence, quality, -np.inf)
-        field = unwrap_quality_guided(phase, quality, min_quality=0.0)
+        if cfg.unwrap_method == "separable":
+            field = unwrap_separable(
+                phase,
+                coh,
+                sigma=cfg.unwrap_sigma,
+                min_coherence=cfg.unwrap_min_coherence,
+            )
+        else:
+            quality = reliability(phase, coh)
+            # Low-coherence pixels are barriers: the integrator does not walk through them.
+            quality = np.where(coh >= cfg.unwrap_min_coherence, quality, -np.inf)
+            field = unwrap_quality_guided(phase, quality, min_quality=0.0)
         field = remove_ramp(field, coh, border_px=cfg.ramp_border_px)
         unwrapped[index] = field
     workspace.unwrapped = unwrapped
@@ -201,51 +233,71 @@ def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
     valid = np.isfinite(unwrapped)
     _log(
         log,
-        "Unwrapped filtered phase with quality-guided integration and removed a "
-        f"border plane ({cfg.ramp_border_px} px). "
+        f"Unwrapped filtered phase with {UNWRAP_LABELS.get(cfg.unwrap_method, cfg.unwrap_method)} "
+        f"and removed a border plane ({cfg.ramp_border_px} px). "
         f"Finite pixels: {100.0 * valid.mean():.1f}%.",
     )
 
 
 def compute_sbas(workspace: Workspace, log: LogFn | None = None) -> None:
-    """Stage 6. SBAS inversion to LOS displacement and a linear velocity."""
+    """Stage 6 using SBAS only. Prefer :func:`compute_timeseries` in the GUI."""
+    workspace.config.timeseries_method = "sbas"
+    compute_timeseries(workspace, log)
+
+
+def compute_timeseries(workspace: Workspace, log: LogFn | None = None) -> None:
+    """Stage 6. LOS series and velocity with the configured method.
+
+    The default method is SBAS. Stacking, NSBAS, persistent-scatterer linear
+    velocity, and sequential phase linking write the same ``los_m`` and
+    ``velocity_m_yr`` arrays.
+    """
     stack = _require_stack(workspace)
     if workspace.unwrapped is None or workspace.pairs is None or workspace.coherence is None:
-        raise PipelineError("Unwrap the interferograms before SBAS.")
-    weights = np.square(np.clip(workspace.coherence.astype(np.float64), 0.0, 1.0))
-    weights = np.where(np.isfinite(workspace.unwrapped), weights, 0.0)
-    los_m, velocity = invert_sbas(
-        workspace.unwrapped,
-        workspace.pairs,
-        stack.times_year(),
-        stack.wavelength_m,
-        weights,
+        raise PipelineError("Unwrap the interferograms before the time-series stage.")
+    method = workspace.config.timeseries_method
+    los_m, velocity = invert_timeseries(
+        method,
+        unwrapped_phase=workspace.unwrapped,
+        pairs=workspace.pairs,
+        times_year=stack.times_year(),
+        wavelength_m=stack.wavelength_m,
+        coherence=workspace.coherence,
+        slc=stack.data,
+        da_max=workspace.config.ps_da_max,
+        ps_min_coherence=workspace.config.ps_min_coherence,
+        nsbas_weight=workspace.config.nsbas_weight,
     )
     workspace.los_m = los_m
     workspace.velocity_m_yr = velocity
     workspace.mask = None
     finite = velocity[np.isfinite(velocity)]
-    _log(
-        log,
-        "SBAS: displacement at each date (first date = 0) and a linear LOS velocity. "
-        f"Velocity min {float(finite.min()):.4f}, max {float(finite.max()):.4f} m/yr. "
-        "Negative velocity is motion away from the radar.",
-    )
-    if stack.truth_velocity_m_yr is not None:
+    label = TIMESERIES_LABELS.get(method, method)
+    if finite.size == 0:
+        _log(log, f"{label}: no finite velocities.")
+    else:
+        _log(
+            log,
+            f"{label}: displacement at each date (first date = 0) and a linear LOS velocity. "
+            f"Velocity min {float(finite.min()):.4f}, max {float(finite.max()):.4f} m/yr. "
+            "Negative velocity is motion away from the radar.",
+        )
+    if stack.truth_velocity_m_yr is not None and finite.size:
         peak = _peak_pixel(stack.truth_velocity_m_yr)
         est = float(velocity[peak])
         truth = float(stack.truth_velocity_m_yr[peak])
-        _log(
-            log,
-            f"At the synthetic peak pixel (row {peak[0]}, col {peak[1]}): "
-            f"estimated {est:.4f} m/yr, truth {truth:.4f} m/yr.",
-        )
+        if np.isfinite(est):
+            _log(
+                log,
+                f"At the synthetic peak pixel (row {peak[0]}, col {peak[1]}): "
+                f"estimated {est:.4f} m/yr, truth {truth:.4f} m/yr.",
+            )
 
 
 def compute_detection(workspace: Workspace, log: LogFn | None = None) -> None:
     """Stage 7. Mark coherent pixels whose velocity is large relative to the scene."""
     if workspace.velocity_m_yr is None or workspace.mean_coherence is None:
-        raise PipelineError("Run SBAS before displacement detection.")
+        raise PipelineError("Run a time-series method before displacement detection.")
     cfg = workspace.config
     workspace.mask = detect_displacement(
         workspace.velocity_m_yr,
@@ -287,7 +339,7 @@ def run_all(workspace: Workspace, log: LogFn | None = None) -> None:
     compute_filter(workspace, log)
     compute_coherence(workspace, log)
     compute_unwrap(workspace, log)
-    compute_sbas(workspace, log)
+    compute_timeseries(workspace, log)
     compute_detection(workspace, log)
 
 

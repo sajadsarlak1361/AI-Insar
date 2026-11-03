@@ -31,9 +31,11 @@ The window title is **AI Insar**. On the left are seven stage buttons and
 **Run all stages**. The centre is the viewer. The bottom is the log.
 
 Fastest path: click **Run all stages**. That generates the sample SLC if
-none is loaded, then runs interferogram, filter, coherence, unwrap, SBAS,
-and the mask. The viewer switches to **Velocity + mask**: a blue bowl
-(motion away from the radar) with an orange mask on it.
+none is loaded, then runs interferogram, filter, coherence, quality-guided
+unwrap, SBAS, and the mask. The viewer switches to **Velocity + mask**: a
+blue bowl (motion away from the radar) with an orange mask on it. To use
+another technique, open its menu (Stacking, NSBAS, PS linear, Phase linking,
+Seasonal, or Fast unwrap) and choose **Run**.
 
 Step through it instead if you want to see each product:
 

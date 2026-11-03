@@ -71,22 +71,35 @@ gamma = |mean(late * conj(early))| / sqrt(mean(|early|^2) * mean(|late|^2))
 ```
 
 from the SLC dates, clipped to [0, 1]. Mean coherence across pairs is kept
-for the mask. Re-running coherence clears unwrap, SBAS, and the mask.
+for the mask. Re-running coherence clears unwrap, the time series, and the mask.
 
 ### 5. Unwrap
 
-Wrapped phase is `angle(filtered interferogram)`. Reliability is coherence
-divided by one plus a local phase second-difference. Pixels below
+The **Quality-guided** menu is the default. Reliability is coherence divided
+by one plus a local phase second-difference. Pixels below
 `unwrap_min_coherence` (default 0.2) are barriers. Integration starts at the
 highest reliability pixel and adds the wrapped neighbour difference
-(`atan2(sin Δ, cos Δ)`).
+(`atan2(sin Δ, cos Δ)`). Numba runs that walk when it is installed
+(`pip install "ai-insar[fast]"`); otherwise it is a Python heap.
+
+The **Fast unwrap** menu smooths the complex interferogram with a Gaussian
+and then calls `numpy.unwrap` along range and azimuth, starting from the
+middle of the image. That is the separable unwrap reimplemented from the MIT
+example in InSARdev/edu `NISAR/nisar_numpy.py`. It is aimed at smooth phase.
 
 `remove_ramp` then fits a plane on a border frame (default 4 px, weights at
 least 0.3) and subtracts it, so the stable frame is the phase reference. A
 centred bowl is weak on that frame. Pixels that were never unwrapped stay
 NaN.
 
-### 6. SBAS / time series
+### 6. Time series
+
+**Run all stages** and `ai-insar check` use SBAS. The menu bar also has
+Stacking, NSBAS, PS linear, Phase linking, and Seasonal. **Run** in a menu
+selects that method and writes the same `los_m` and `velocity_m_yr` arrays.
+Negative velocity is motion away from the radar.
+
+SBAS unknowns are the unwrapped phase at dates `1 … N-1`. Date 0 is fixed at 0.
 
 Unknowns are the unwrapped phase at dates `1 … N-1`. Date 0 is fixed at 0.
 For a pair `(i, j)` the design row is `+1` on date `j` and `−1` on date `i`
@@ -126,6 +139,7 @@ and does not rerun stages:
 
 | Dialog label | Field | Default | Dialog range |
 | --- | --- | --- | --- |
+| Time series | `timeseries_method` | `sbas` | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal |
 | Max date span (pairs) | `max_date_span` | 3 | 1–30 |
 | Goldstein alpha | `goldstein_alpha` | 0.5 | 0–1 |
 | Goldstein window (px) | `goldstein_window` | 32 | 8–128 |
@@ -143,7 +157,7 @@ These stay at the code default unless you construct `PipelineConfig` yourself:
 | `detection_min_coherence` | 0.3 | Coherence gate. Separate from the unwrap floor. |
 | `detection_min_pixels` | 12 | Smallest connected component kept. |
 
-`products.json` records the dialog fields and the two detection gates above.
+`products.json` records the dialog fields, `timeseries_method`, and the two detection gates above.
 It does not record `goldstein_overlap` or `ramp_border_px`.
 
 ## `Run all stages` versus the CLI
