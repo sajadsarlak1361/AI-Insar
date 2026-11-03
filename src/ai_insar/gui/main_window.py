@@ -72,7 +72,7 @@ _STAGE_HELP = (
     "Form each pair as later × conjugate(earlier) on a short-baseline network.",
     "Goldstein spectral filter. The Goldstein menu sets alpha and runs this stage. Unwrapping uses this phase.",
     "Windowed coherence from the SLC pair. The Coherence menu sets the window. Filtering does not change this estimate.",
-    "Quality-guided unwrap by default. Quality-guided and Fast unwrap are separate menus. A plane is then removed on the image border.",
+    "Fast unwrap by default (Gaussian smooth, then separable numpy.unwrap). Quality-guided stays in its own menu. A plane is then removed on the image border.",
     "SBAS displacement time series and a linear LOS velocity. Each other method has its own menu. Negative is away from the radar.",
     "Coherence-gated velocity anomaly. Not a trained model.",
 )

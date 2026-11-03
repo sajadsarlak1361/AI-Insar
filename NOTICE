@@ -2,8 +2,39 @@ Third-party notices
 ====================
 
 AI Insar is MIT. See LICENSE. The notes below are the attribution for
-InSARdev material this project uses, and the reason some InSARdev source
-is not in the tree.
+InSARdev material this project uses.
+
+Ported fast kernels (owner authorized)
+--------------------------------------
+
+The repository owner authorized mapping and copying InSARdev algorithm
+source into this MIT tree after speaking with the InSARdev author, Alexey
+Pechnikov. The fast CPU path does not import ``insardev`` and does not
+need ``pip install insardev``.
+
+Adapted into ``src/ai_insar/pipeline/filtering.py`` from InSARdev
+``utils_goldstein.py`` (copyright (c) 2025 Alexey Pechnikov,
+https://github.com/InSARdev/core):
+
+- ``goldstein_numpy``: batched ``scipy.fft`` of interferogram patches,
+  weight ``|FFT| ** alpha``, triangular overlap-add.
+- ``goldstein_pytorch``: the same filter with the FFT on PyTorch when
+  ``AI_INSAR_FILTER=torch``. Torch is optional. Tests and the default
+  path run with NumPy/SciPy only.
+
+The in-tree filter keeps this project's function arguments (``alpha``,
+``window``, ``overlap``, ``spectrum_smooth``). ``alpha`` is the value from
+the Goldstein menu, not a per-patch coherence. A small floor on the
+triangular window keeps border pixels finite. Spectral smoothing is the
+existing ``spectrum_smooth`` argument, applied to ``|FFT|`` before the
+power. Overlap-add uses Numba when ``pip install "ai-insar[fast]"`` is
+installed, and a Python loop otherwise.
+
+The rest of the InSARdev-SAL-1.0 package (Stack, Batch, the DCT/IRLS
+unwrap, and the other ``utils_*`` modules) is not copied. Quality-guided
+unwrap stays the in-tree Numba walk. The default unwrap is the separable
+path below, which is faster on CPU for smooth phase and does not need
+that DCT solver.
 
 InSARdev/edu (MIT)
 ------------------
@@ -12,8 +43,8 @@ Copyright (c) 2026 InSARdev
 https://github.com/InSARdev/edu
 
 The MIT license requires this copyright and permission notice to travel
-with substantial portions of that software. The educational sources are
-not copied into this repository. Two patterns are reimplemented:
+with substantial portions of that software. The educational scripts are
+not pasted in as project files. These patterns are reimplemented:
 
 - Fast unwrap in `src/ai_insar/pipeline/unwrap.py` follows
   `NISAR/nisar_numpy.py`: Gaussian smooth, then `numpy.unwrap` along range
@@ -42,9 +73,11 @@ modified copy) stays under InSARdev-SAL-1.0. Commercial redistribution
 needs a separate written agreement. Funded academic, institutional, and
 professional use needs a subscription even to run the software.
 
-Those terms conflict with redistributing `insardev` inside this MIT
-project. No `insardev` module is vendored. Do not commit a copy of the SAL
-sources into this repository.
+Those terms conflict with redistributing the `insardev` package inside
+this MIT project. The package is not vendored and the fast path does not
+import it. The Goldstein kernel described above is the exception: the
+owner authorized that adaptation after speaking with the author. Do not
+commit the rest of the SAL tree (Stack, Batch, or the other utils modules).
 
 The repository owner has personally accepted InSARdev-SAL-1.0 for this
 optional academic integration. It is an install extra, not a vendored copy:

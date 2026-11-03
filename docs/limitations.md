@@ -45,11 +45,11 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 - The Goldstein filter and the SLC-pair coherence estimate each have their
   own menu. Coherence is computed from the SLC dates, not from the filtered
   interferogram, so a stronger Goldstein alpha cannot raise it.
-- The default unwrap is quality-guided path following. Fast unwrap is a
-  Gaussian smooth plus separable `numpy.unwrap`. Neither is SNAPHU or a
-  minimum-cost-flow unwrap. Dense residues can leave 2π islands. Low
-  coherence pixels are barriers in the quality-guided walk; a region the
-  seed cannot reach stays NaN and drops out of the time series.
+- The default unwrap is Fast unwrap: a Gaussian smooth plus separable
+  `numpy.unwrap`. Quality-guided path following is still in its own menu.
+  Neither is SNAPHU or a minimum-cost-flow unwrap. Dense residues can leave
+  2π islands. Low coherence pixels are barriers in the quality-guided walk;
+  a region the seed cannot reach stays NaN and drops out of the time series.
 - The default time series is SBAS: one displacement per date after the first,
   which is fixed at zero, then one linear LOS velocity. Stacking, NSBAS, PS
   linear, phase linking, and a one-year seasonal fit are separate menus.

@@ -30,16 +30,32 @@ pip install -e ".[dev]"            # includes pytest
 package: install from this checkout. Runtime dependencies are PySide6, NumPy,
 and SciPy. If PySide6 cannot be imported, the GUI tries PyQt6.
 
+The fast CPU path is in-tree NumPy, SciPy FFT, and optional Numba. It does
+not need the `insardev` package. Install Numba for the compiled
+interferogram product, the quality-guided unwrap, and the Goldstein
+overlap-add:
+
+```bash
+pip install "ai-insar[fast]"
+```
+
+Measure a synthetic stack with `python scripts/bench_pipeline.py`.
+Goldstein can use PyTorch instead of SciPy when Torch is already installed
+and you set `AI_INSAR_FILTER=torch` (device `AI_INSAR_FILTER_DEVICE`,
+default `cpu`). The default is the NumPy/SciPy FFT.
+
 Optional academic extra, Python 3.12 or newer:
 
 ```bash
 pip install "ai-insar[insardev]"
 ```
 
-That installs upstream `insardev` (InSARdev-SAL-1.0). The SAL sources stay
-out of this MIT tree. Installing or using the extra means you accept that
+That installs upstream `insardev` (InSARdev-SAL-1.0). It is not required
+for speed. The batched Goldstein filter and the fast unwrap already run
+from this tree. Installing or using the extra means you accept that
 license, including a subscription for funded academic use. The repository
-owner has personally accepted that license for this academic extra. With
+owner has personally accepted that license for this academic extra, and
+authorized porting the Goldstein FFT kernel (see [NOTICE](NOTICE)). With
 the package installed, interferograms, `Stack.load`, and `Stack.align`
 use InSARdev first. A different numeric result is kept. NumPy/Numba runs
 when the package is missing, the call fails, or you set
@@ -89,7 +105,7 @@ ai-insar run --slc slc.npy --meta slc.json --output products
 
 Seven stage buttons, plus one top-level menu per technique. **Run all
 stages** and `ai-insar check` use the Goldstein default, a 5×5 coherence
-window, quality-guided unwrap, and SBAS. **Run** in another menu selects
+window, fast separable unwrap, and SBAS. **Run** in another menu selects
 that technique and computes the stage.
 
 | # | Stage | Menu | What it does |
@@ -98,7 +114,7 @@ that technique and computes the stage.
 | 2 | Interferogram | Pipeline | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
 | 3 | Goldstein filter | Goldstein | Spectral filter. Light / Default / Strong set α to 0.3, 0.5, or 0.8 |
 | 4 | Coherence | Coherence | Boxcar on the SLC pair, not on the filtered phase. Presets 3×3, 5×5, 7×7 |
-| 5 | Unwrap | Quality-guided, Fast unwrap | Then a plane is removed on a 4 px border |
+| 5 | Unwrap | Fast unwrap (default), Quality-guided | Then a plane is removed on a 4 px border |
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
@@ -111,10 +127,10 @@ peak is 0.22 m/yr of subsidence, stored as −0.22 m/yr.
 
 | Menu | What it does |
 | --- | --- |
-| Goldstein | Overlap-add of windowed FFTs. Default α = 0.5, 32 px window. Unwrapping uses this phase. |
+| Goldstein | Batched FFT overlap-add. Default α = 0.5, 32 px window. The kernel is the in-tree port of InSARdev `goldstein_numpy`. Unwrapping uses this phase. |
 | Coherence | Boxcar magnitude of later × conjugate(earlier), divided by the SLC powers. Filtering cannot raise it. |
 | Quality-guided | Coherence-ordered unwrap. Numba runs the walk with `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
-| Fast unwrap | Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
+| Fast unwrap | Default for **Run all stages** and `ai-insar check`. Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
 | SBAS | Coherence-weighted small-baseline inversion. Default for stage 6. |
 | Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. |
 | NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
@@ -228,7 +244,7 @@ including every displacement date. See
 
 - One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
 - A multi-zip SAFE stack uses one shared crop window when `Stack.load` is absent or fails. That crop is teaching alignment, not coregistration. A successful `Stack.load` replaces the crop with the InSARdev cube.
-- Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
+- Unwrap defaults to a fast separable `numpy.unwrap`. Quality-guided path following is still available. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
 - Map export is the radar grid. The TIFF has no CRS.
@@ -256,16 +272,26 @@ checks that links in these pages point at files in the tree.
 [InSARdev/edu](https://github.com/InSARdev/edu) is MIT. Fast unwrap follows
 `NISAR/nisar_numpy.py`. Interferograms are the same complex product as that
 file and `Sentinel-1/s1.py`: later × conjugate(earlier). Those files are
-reimplemented, not copied. TOPS deramp, OpenCV coregistration, OR-Tools
-branch cuts, and geocoding from `s1.py` are not included.
+reimplemented, not pasted in as project files. TOPS deramp, OpenCV
+coregistration, OR-Tools branch cuts, and geocoding from `s1.py` are not
+included.
+
+Speed on CPU comes from that in-tree product, the batched Goldstein FFT,
+and the fast unwrap. None of them require `pip install insardev`. The
+Goldstein filter is adapted from InSARdev `utils_goldstein.py` (Alexey
+Pechnikov). The repository owner authorized that port. Set
+`AI_INSAR_FILTER=torch` only if you already have PyTorch and want that FFT.
+`python scripts/bench_pipeline.py` prints timings on a synthetic stack.
+`pip install "ai-insar[fast]"` adds Numba.
 
 [InSARdev/core](https://github.com/InSARdev/core) `insardev` is
 InSARdev-SAL-1.0. That license allows non-commercial redistribution only
-when the copy stays under SAL. This repository is MIT, so those modules are
-not vendored. `pip install "ai-insar[insardev]"` (Python 3.12+) installs
-the upstream package. Installing or using it is your acceptance of SAL,
-including the subscription for funded academic use. The same package is
-`pip install insardev` if you install it yourself.
+when the copy stays under SAL. This repository is MIT. The Goldstein kernel
+above is the owner-authorized adaptation. The rest of the package is not
+vendored, and it is not required for speed. `pip install "ai-insar[insardev]"`
+(Python 3.12+) installs the upstream package. Installing or using it is
+your acceptance of SAL, including the subscription for funded academic use.
+The same package is `pip install insardev` if you install it yourself.
 
 When that import succeeds, interferograms call
 `Stack.pairs().interferogram()` first, with the later date as the reference

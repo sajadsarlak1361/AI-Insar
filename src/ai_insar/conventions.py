@@ -65,10 +65,10 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
 - The Goldstein filter and the SLC-pair coherence estimate each have their
   own menu. Coherence is computed from the SLC dates, not from the filtered
   interferogram.
-- Unwrapping is either quality-guided path following or a fast separable
-  numpy.unwrap after a Gaussian smooth (the Fast unwrap menu). Neither is
-  SNAPHU. Dense residues can leave 2*pi islands. Low-coherence pixels are
-  barriers in the quality-guided walk.
+- Unwrapping defaults to a fast separable numpy.unwrap after a Gaussian
+  smooth (the Fast unwrap menu). Quality-guided path following is still
+  available. Neither is SNAPHU. Dense residues can leave 2*pi islands.
+  Low-coherence pixels are barriers in the quality-guided walk.
 - Time series is one of SBAS, interferogram stacking, a linear NSBAS-style
   constraint, persistent-scatterer selection plus a linear rate, sequential
   phase linking, or a one-year sine and cosine (Seasonal). There is no

@@ -179,14 +179,14 @@ two-date illustration of the keys, not the eight-date demo (that run writes
     "detection_min_coherence": 0.3,
     "detection_min_pixels": 12,
     "timeseries_method": "sbas",
-    "unwrap_method": "quality"
+    "unwrap_method": "separable"
   }
 }
 ```
 
 `pairs` entries are `[earlier, later]`. The config block is the subset
 `save_products` writes. It includes `timeseries_method` (`sbas` by default)
-and `unwrap_method` (`quality` or `separable`). Overlap, the ramp border,
+and `unwrap_method` (`separable` by default, or `quality`). Overlap, the ramp border,
 the Fast-unwrap sigma, and the PS / NSBAS weights are not in the file.
 See [pipeline.md](pipeline.md).
 
