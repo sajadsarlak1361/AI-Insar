@@ -5,6 +5,16 @@ environment, installs the package, and opens the GUI. You need Python 3.10 or
 newer and a network connection the first time, so pip can download NumPy,
 SciPy, and PySide6.
 
+## Download the Windows zip from Releases
+
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.1/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.0-rc.1](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.1)).
+
+Unzip it, open the `ai-insar` folder, and double-click `run_windows.bat`.
+This prerelease is built from the Sentinel-1 fetch branch and is not stored
+in the git tree. Stable `v0.1.0` on `main` does not include that menu.
+You still need Python 3.10 or newer and a network connection the first time.
+
 ## Run from a source checkout
 
 1. Install Python from [python.org](https://www.python.org/downloads/windows/).

@@ -182,8 +182,14 @@ It flags both uplift and subsidence. It is not a trained neural network.
 
 ## Windows
 
-See [WINDOWS.md](WINDOWS.md). Double-click `run_windows.bat` to create a venv,
-install, and launch the GUI.
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.1/ai-insar-windows.zip)
+(`ai-insar-windows.zip` on the [v0.2.0-rc.1 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.1)).
+That package includes the Sentinel-1 SLC menu and is not committed to git.
+Unzip it and double-click `run_windows.bat`. It is a prerelease of the open
+fetch pull request, not the stable `v0.1.0` tag on `main`.
+
+See [WINDOWS.md](WINDOWS.md). The batch file creates a venv, installs, and
+launches the GUI.
 
 To build a source zip for another machine (dependencies are installed there,
 not bundled):
