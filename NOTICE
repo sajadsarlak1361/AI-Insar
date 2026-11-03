@@ -131,6 +131,34 @@ import and you pass those inputs. The SAFE zip crop does not call them
 and does not coregister the window. They scan GMTSAR-style burst
 directories. They do not replace the complex64 crop reader.
 
+GMTSAR (GPL-3.0) — workflow only
+---------------------------------
+
+David Sandwell, Rob Mellors, Xiaopeng Tong, and others, University of
+California San Diego / Scripps Institution of Oceanography.
+https://github.com/gmtsar/gmtsar
+SPDX-License-Identifier: GPL-3.0-only
+
+GMTSAR is GPL-3.0. No GMTSAR C, C++, or C-shell source is copied into this
+MIT tree, and this program does not link GMTSAR binaries. The six-stage
+pair order and the SBAS step that follows it are used only as a workflow
+outline:
+
+1. PREPROCESS
+2. ALIGN SLC
+3. MAKE TOPO_RA
+4. MAKE INTERFEROGRAMS
+5. UNWRAP PHASE
+6. GEOCODE
+
+Those names appear in the Pipeline menu, in Help → GMTSAR flowchart, in
+`src/ai_insar/gmtsar_flow.py`, in the README section "GMTSAR stage order",
+and in `docs/pipeline.md`. The implementations are original MIT code:
+amplitude cross-correlation and an FFT phase ramp in
+`src/ai_insar/pipeline/align.py`, and the standard small-baseline
+topographic phase in `src/ai_insar/pipeline/topo.py`. Interferograms,
+Goldstein, unwrap, and SBAS are the existing in-tree stages.
+
 ESA SNAP
 --------
 

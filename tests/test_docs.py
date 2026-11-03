@@ -45,6 +45,28 @@ def test_doc_links_resolve():
     assert not missing, "unresolved doc links:\n" + "\n".join(missing)
 
 
+def test_gmtsar_flowchart_is_in_the_readme_pipeline_doc_and_notice():
+    """The stage map lives in these files. GMTSAR source is not in the tree."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    pipeline = (ROOT / "docs" / "pipeline.md").read_text(encoding="utf-8")
+    notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
+    for page in (readme, pipeline):
+        assert "```mermaid" in page
+        for label in (
+            "PREPROCESS",
+            "ALIGN SLC",
+            "MAKE TOPO_RA",
+            "MAKE INTERFEROGRAMS",
+            "UNWRAP PHASE",
+            "GEOCODE",
+        ):
+            assert label in page
+    assert "Sandwell" in notice
+    assert "GPL-3.0" in notice
+    assert "No GMTSAR" in notice
+    assert "gmtsar_flow.py" in notice
+
+
 def test_readme_covers_the_homepage_topics():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     for snippet in (

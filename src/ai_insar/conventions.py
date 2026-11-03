@@ -54,11 +54,15 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
   crop of one swath and polarisation (default IW1 VV). File → Open SAFE
   stack… multi-selects many SAFE zips, without unzipping them, into one
   time-sorted complex64 cube. The same crop, swath, and polarisation are
-  used for every date. That is teaching crop-window alignment: there is
-  no coregistration. Data → Fetch Sentinel-1 SLC can search ASF and import
-  that crop, including a zip that has not been extracted. Downloading the
-  zip needs Earthdata credentials and the optional asf_search package.
-  There is still no DEM, geocoding, calibration, TOPS deburst,
+  used for every date. That is teaching crop-window alignment: the crop
+  itself does not resample. Pipeline → ALIGN SLC can afterwards apply one
+  constant amplitude shift per date. Data → Fetch Sentinel-1 SLC can search
+  ASF and import that crop, including a zip that has not been extracted.
+  Downloading the zip needs Earthdata credentials and the optional
+  asf_search package. No DEM is downloaded. Pipeline → MAKE TOPO_RA removes
+  topographic phase only after you load a height array and a non-zero
+  perpendicular baseline. Pipeline → GEOCODE does not resample; products
+  stay on the radar grid. There is still no calibration, TOPS deburst,
   earth-flattening, ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.

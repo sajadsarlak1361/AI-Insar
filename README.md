@@ -149,7 +149,40 @@ because that project decomposes series with STL; this fit is a small
 least-squares harmonic, written here. TOPS deramp, OpenCV coregistration,
 OR-Tools branch cuts, and geocoding from
 [InSARdev/edu](https://github.com/InSARdev/edu) `Sentinel-1/s1.py` need orbits
-and a DEM, so this workbench leaves them out.
+and a DEM, so this workbench leaves that full chain out. ALIGN SLC is only
+a constant FFT shift. GEOCODE does not build a map.
+
+## GMTSAR stage order
+
+The menus follow the public GMTSAR pair flowchart (David Sandwell and
+others, UCSD). GMTSAR is GPL-3.0. None of its source is in this repository.
+The steps below are MIT code. Help → GMTSAR flowchart shows the same list.
+Details and the stage table: [docs/pipeline.md](docs/pipeline.md).
+
+```mermaid
+flowchart TD
+  preprocess["1 PREPROCESS: Load SLC or Open SAFE stack"]
+  align["2 ALIGN SLC: amplitude cross-correlation"]
+  topo["3 MAKE TOPO_RA: optional DEM phase"]
+  ifg["4 MAKE INTERFEROGRAMS: Interferogram, Goldstein, Coherence"]
+  unwrap["5 UNWRAP PHASE: Fast unwrap or Quality-guided"]
+  geocode["6 GEOCODE: radar grid unless a transform exists"]
+  sbas["SBAS time series, then the displacement mask"]
+  preprocess --> align --> topo --> ifg --> unwrap --> geocode --> sbas
+```
+
+| GMTSAR stage | Where it is in AI Insar |
+| --- | --- |
+| PREPROCESS | Button 1, File → Load SLC stack, Open SAFE stack |
+| ALIGN SLC | Pipeline → ALIGN SLC |
+| MAKE TOPO_RA | Pipeline → MAKE TOPO_RA, only with a DEM and a non-zero baseline |
+| MAKE INTERFEROGRAMS | Buttons 2–4, or Pipeline → MAKE INTERFEROGRAMS |
+| UNWRAP PHASE | Button 5. Fast unwrap is the default. Quality-guided stays available |
+| GEOCODE | Pipeline → GEOCODE. Products stay on the radar grid |
+| SBAS | Button 6, then button 7 |
+
+**Run all stages** and `ai-insar check` start from the loaded stack and run
+interferograms through the mask. They skip ALIGN SLC, MAKE TOPO_RA, and GEOCODE.
 
 Stage inputs, outputs, and the default table: [docs/pipeline.md](docs/pipeline.md).
 
@@ -185,7 +218,9 @@ sorted by the manifest start time, and stored as one `complex64` stack
 `(n_dates, height, width)`. With two or more dates the dialog can run the
 interferogram stage immediately: each pair is later × conjugate(earlier).
 The window is the same rows and columns in each measurement. That is
-teaching crop-window alignment. There is no coregistration.
+teaching crop-window alignment. There is no coregistration in the crop.
+Pipeline → ALIGN SLC can estimate one constant shift afterwards. It does
+not run as part of the crop or of **Run all stages**.
 
 **File → Open Sentinel-1 SAFE zip…** opens one Sentinel-1 `.zip` without
 extracting it. **Open SAFE folder…** and `manifest.safe` are optional.

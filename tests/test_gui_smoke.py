@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMenu
 
 from ai_insar.gui.main_window import MainWindow
 
@@ -87,6 +87,18 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp, tmp_path):
         "Coherence",
     ):
         assert name in titles
+    pipeline = window.findChild(QMenu, "pipelineMenu")
+    assert pipeline is not None
+    pipeline_labels = [action.text() for action in pipeline.actions()]
+    for name in (
+        "PREPROCESS",
+        "ALIGN SLC",
+        "MAKE TOPO_RA",
+        "MAKE INTERFEROGRAMS",
+        "UNWRAP PHASE",
+        "GEOCODE",
+    ):
+        assert name in pipeline_labels
     assert window.findChild(QAction, "runGoldstein") is not None
     assert window.findChild(QAction, "runCoherence") is not None
     assert window.findChild(QAction, "exportVelocityAction") is not None
