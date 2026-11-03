@@ -51,11 +51,15 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
 
 - Inputs are in-memory SLC stacks on a radar grid. File → Open Sentinel-1
   SAFE Product reads a SAFE zip, folder, or manifest for metadata and a
-  crop of one swath and polarisation (default IW1 VV). Data → Fetch
-  Sentinel-1 SLC can search ASF and import that crop, including a zip that
-  has not been extracted. Downloading the zip needs Earthdata credentials
-  and the optional asf_search package. There is still no DEM, geocoding,
-  calibration, TOPS deburst, earth-flattening, ESD, or burst stitching.
+  crop of one swath and polarisation (default IW1 VV). File → Open SAFE
+  stack reads many SAFE zips (or a folder of zips) into one stack: the
+  same band and the same pixel window, sorted by each product start time.
+  That stack is what Interferogram and Run all stages use. The products
+  are not coregistered. Data → Fetch Sentinel-1 SLC can search ASF and
+  import a crop, including a zip that has not been extracted. Downloading
+  the zip needs Earthdata credentials and the optional asf_search package.
+  There is still no DEM, geocoding, calibration, TOPS deburst,
+  earth-flattening, ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.
 - The Goldstein filter and the SLC-pair coherence estimate each have their

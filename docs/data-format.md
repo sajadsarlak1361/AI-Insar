@@ -1,10 +1,11 @@
 # Data format
 
 AI Insar processes one SLC cube and optional JSON. A Sentinel-1 SAFE product
-can be opened for inspection and a crop of one swath and polarisation loaded
-into that cube. The cube is the radar grid that is processed. CEOS, a DEM,
-and orbit files are not read. Opening a SAFE product does not deburst,
-calibrate, or form interferograms.
+can be opened for inspection, and many SAFE zips can be cropped into that
+cube as one date each. The cube is the radar grid that is processed. CEOS,
+a DEM, and orbit files are not read. Opening a SAFE product does not
+deburst or calibrate. Interferograms are a later pipeline stage on the
+cube, not part of opening the zip.
 
 ## Sentinel-1 SAFE
 
@@ -29,6 +30,18 @@ decimated amplitude preview. **Add to SLC stack (crop…)** reads one window
 into the `complex64` cube. The default band is IW1 VV. The date is the
 manifest start time. The wavelength is `c / radarFrequency` from the
 annotation when that value is present.
+
+File → **Open SAFE stack…** (also under Data) takes many of those zips, or
+a folder that contains them. A `.SAFE` folder is optional. The same swath
+and polarisation (default IW1 VV) and the same pixel window are read from
+each product. Dates are the manifest start times, sorted so the index
+increases with time. A product that cannot supply that band, or whose crop
+does not match the others, is skipped. The cube is `complex64`,
+`(n_dates, height, width)`. Pipeline → Interferogram and Run all stages
+then form later × conjugate(earlier) on that cube, with the usual date-gap
+setting. The products are not coregistered: the window is the same rows
+and columns in each file, which is a teaching crop, not a TOPS
+interferogram.
 
 Pixels are read later, in a window, with optional subsampling. An SLC
 sample packed in one int32 uses the low 16 bits as I and the high 16 bits

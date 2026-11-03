@@ -87,7 +87,7 @@ that technique and computes the stage.
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
-| | Sentinel-1 SLC | File, Data | Open a SAFE zip, folder, or manifest; ASF search; crop one swath into the stack |
+| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or many zips into one stack; ASF search; crop one swath (default IW1 VV) |
 
 Pipeline → Settings edits the date span, Goldstein α and window, coherence
 window, unwrap coherence floor, and two detection thresholds. The sample
@@ -146,15 +146,30 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
-**File → Open Sentinel-1 SAFE zip…** opens a Sentinel-1 `.zip` without
+**File → Open Sentinel-1 SAFE Product…** opens one Sentinel-1 `.zip` without
 extracting it. **Open SAFE folder…** and `manifest.safe` are optional.
 The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 `Intensity_`), and the quick-look. Double-click a band for a decimated
 amplitude preview. **Add to SLC stack (crop…)** reads one window (default
-IW1 VV) into the `complex64` stack. The date comes from the manifest start
-time, and the wavelength from the annotation radar frequency when it is
-present. This is open and crop only: no deburst, calibration, or
-interferogram.
+IW1 VV) from that product. The date is the manifest start time. The
+wavelength is `c / radarFrequency` from the annotation when that value is
+present.
+
+**File → Open SAFE stack…** (the same entry is under **Data**) builds a
+multi-date stack from many SAFE `.zip` files, or from a folder of those
+zips. `.SAFE` folders are optional. The zips are not extracted. Every
+product is read at the same swath and polarisation (default IW1 VV) and the
+same pixel window. The result is one `complex64` cube,
+`(n_dates, height, width)`. Each date is that product's start time, and
+the cube is sorted in time. A product that cannot supply the band is
+skipped. The status line reports progress as the files are read
+(`SAFE stack i/N`). You do not open Product Explorer once per zip.
+
+**Interferogram** and **Run all stages** then use that stack the same way
+they use a synthetic or `.npy` stack: pairs follow the date-gap setting,
+and each interferogram is later × conjugate(earlier). The SAFE products
+are not coregistered. There is no DEM, no orbit download, and no deburst.
+The shared window is a teaching crop, not a TOPS interferogram.
 
 **File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
 catalog. Search does not need a login. Import a crop from a local SAFE
@@ -201,7 +216,7 @@ including every displacement date. See
 
 ## Limitations
 
-- One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
+- One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model. Many SAFE zips share one pixel window; that stack is not coregistered.
 - Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.

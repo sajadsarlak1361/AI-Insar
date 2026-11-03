@@ -12,6 +12,7 @@ from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
+from ai_insar.gui.safe_stack_dialog import SafeStackDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.export_maps import export_displacement_map, export_velocity_map
@@ -33,7 +34,7 @@ from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe
 
 # Zip is the primary File → Open choice. A manifest is an optional extra.
 SAFE_OPEN_FILTER = "Sentinel-1 SAFE zip (*.zip);;Sentinel-1 manifest (manifest.safe)"
-from ai_insar.sentinel import import_slc_paths
+from ai_insar.sentinel import SafeStackLoad, import_slc_paths, load_safe_slc_stack
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
 from ai_insar.pipeline.unwrap import UNWRAP_LABELS, UNWRAP_METHODS, UNWRAP_SUMMARIES
 
@@ -294,6 +295,14 @@ class MainWindow(QtWidgets.QMainWindow):
         open_folder.setObjectName("openSafeFolderAction")
         open_folder.triggered.connect(self._click(self.open_safe_folder, None))
         file_menu.addAction(open_folder)
+        open_stack = QtGui.QAction("Open SAFE stack…", self)
+        open_stack.setObjectName("openSafeStackAction")
+        open_stack.setToolTip(
+            "Read many Sentinel-1 SAFE zips into one SLC stack "
+            "(same swath, polarisation, and pixel window)."
+        )
+        open_stack.triggered.connect(self._click(self.open_safe_stack, 0))
+        file_menu.addAction(open_stack)
         fetch = QtGui.QAction("Fetch Sentinel-1 SLC…", self)
         fetch.setObjectName("fetchSentinelAction")
         fetch.triggered.connect(self._click(self.fetch_sentinel, 0))
@@ -317,6 +326,7 @@ class MainWindow(QtWidgets.QMainWindow):
         data_menu.addAction(fetch)
         data_menu.addAction(open_product)
         data_menu.addAction(open_folder)
+        data_menu.addAction(open_stack)
         data_menu.addAction("Import local SAFE / TIFF…").triggered.connect(
             self._click(self.fetch_sentinel, 0)
         )
@@ -430,6 +440,44 @@ class MainWindow(QtWidgets.QMainWindow):
         if not directory:
             return
         self.open_safe_path(directory)
+
+    def open_safe_stack(self) -> None:
+        """Pick many SAFE zips and load them as one SLC stack."""
+        dialog = SafeStackDialog(self)
+        accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
+        if not accepted or dialog.load_result is None:
+            return
+        self.apply_safe_stack(dialog.load_result)
+
+    def load_safe_products(self, paths, **kwargs) -> None:
+        """Load many SAFE products, reporting progress as ``SAFE stack i/N``."""
+
+        def progress(index: int, total: int, message: str) -> None:
+            text = f"SAFE stack {index}/{total}: {message}"
+            self.statusBar().showMessage(text)
+            self._log(text)
+            QtWidgets.QApplication.processEvents()
+
+        self.apply_safe_stack(load_safe_slc_stack(list(paths), on_progress=progress, **kwargs))
+
+    def apply_safe_stack(self, result: SafeStackLoad) -> None:
+        stack = result.stack
+        self.workspace.stack = stack
+        self.workspace.clear_products()
+        skipped = result.skipped
+        self._product_status = (
+            f"SLC stack {stack.n_dates} dates, {stack.height}×{stack.width}, "
+            f"{stack.dates[0]} → {stack.dates[-1]}"
+        )
+        if skipped:
+            self._product_status += f", skipped {len(skipped)}"
+        self.statusBar().showMessage(self._product_status)
+        self._log(
+            f"Loaded SAFE SLC stack {stack.data.shape} {stack.data.dtype}. {stack.description}"
+        )
+        for label, reason in skipped:
+            self._log(f"Skipped {label}: {reason}")
+        self._preferred_layer = "SLC amplitude"
 
     def open_safe_path(self, path) -> None:
         """Inspect a SAFE zip (or a folder / manifest). Pixels are not read."""

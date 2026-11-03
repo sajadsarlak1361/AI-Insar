@@ -71,6 +71,7 @@ date, as `los_m_<date>.*`. See [data-format.md](data-format.md#map-export).
 | Load a `.npy` SLC stack | File → Load SLC stack… | Ctrl+O |
 | Open a Sentinel-1 SAFE `.zip` (not extracted) | File → Open Sentinel-1 SAFE Product… | |
 | Open a `.SAFE` folder | File → Open SAFE folder… | |
+| Many SAFE zips → one SLC stack | File or Data → Open SAFE stack… | |
 | Save whatever stages have finished | File → Save products… | Ctrl+S |
 | Export the velocity map (npy, PNG, TIFF) | File or View → Export velocity map… | |
 | Export one displacement date | File or View → Export displacement map… | |
@@ -88,8 +89,11 @@ File → Open Sentinel-1 SAFE Product… and Open SAFE folder… inspect a
 Sentinel-1 SLC SAFE product (zip, folder, or `manifest.safe`) in the
 Product Explorer. Double-click a band for an amplitude preview. **Add to
 SLC stack (crop…)** loads one IW1 VV window, by default, into the cube.
-That crop is the stack the numbered stages run on. It is not a deburst or
-a geocoded product. See [data-format.md](data-format.md#sentinel-1-safe).
+
+File → Open SAFE stack… loads many SAFE zips (or a folder of zips) as
+several dates in that same cube. Interferogram and Run all stages then
+run on it. The dates share a pixel window; they are not coregistered.
+See [data-format.md](data-format.md#sentinel-1-safe).
 
 ## What “good” looks like on the demo
 

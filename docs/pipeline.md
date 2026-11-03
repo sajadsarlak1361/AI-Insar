@@ -50,7 +50,8 @@ ifg = slc[later] * conj(slc[earlier])
 ```
 
 A reversed index raises `ValueError`. The result is `complex64`, shape
-`(n_pairs, height, width)`.
+`(n_pairs, height, width)`. A stack built from many Sentinel-1 SAFE zips
+uses this same function and the same date-gap setting.
 
 ### 3. Goldstein filter
 

@@ -11,6 +11,11 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 - File → Open Sentinel-1 SAFE Product… (and Open SAFE folder…) reads a
   Sentinel-1 SLC SAFE zip, folder, or `manifest.safe` for metadata, a
   quick-look, and a window of one swath and polarisation (default IW1 VV).
+  File → Open SAFE stack… reads many SAFE zips, or a folder of them, into
+  one stack: the same band and the same pixel window, dates from each
+  product start time. A product without that band is skipped. The zips are
+  not extracted. That stack can run the interferogram stage. The window is
+  not coregistered to a DEM or to the other dates.
   Data → Fetch Sentinel-1 SLC can search ASF and import that crop from a
   local zip, SAFE, measurement TIFF, or complex `.npy`. A downloaded zip
   does not have to be extracted first. Downloading needs Earthdata
