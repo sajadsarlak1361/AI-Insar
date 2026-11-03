@@ -180,11 +180,28 @@ The mask is a robust z-score of that velocity, gated by mean coherence and by
 a fraction of the scene’s peak speed, with small connected components removed.
 It flags both uplift and subsidence. It is not a trained neural network.
 
+## Time-series methods
+
+Stage 6 is not only SBAS. The **Stage 6 method** list (and Pipeline → Time
+series method, or Pipeline → Settings) chooses one of:
+
+| Method | What it does |
+| --- | --- |
+| SBAS | Coherence-weighted small-baseline inversion. Default. |
+| Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. The series is that rate times time. |
+| NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
+| PS linear | Keeps pixels with amplitude dispersion ≤ 0.4 or mean coherence ≥ 0.5, then uses the stacking velocity. Other pixels are left empty. |
+| Phase linking | Each date is the coherence-weighted mean of `phase[earlier] + unwrapped pair`. Uses the unwrapped network, not an EMI eigenvalue fit. |
+
+All five write the same LOS cube and velocity map. Negative velocity is motion
+away from the radar. Run all stages still uses SBAS unless you change the
+method first. This is a teaching set, not StaMPS or MintPy.
+
 ## Windows
 
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.1/ai-insar-windows.zip)
-(`ai-insar-windows.zip` on the [v0.2.0-rc.1 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.1)).
-That package includes the Sentinel-1 SLC menu and is not committed to git.
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.2/ai-insar-windows.zip)
+(`ai-insar-windows.zip` on the [v0.2.0-rc.2 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.2)).
+That package includes the Sentinel-1 SLC menu and the extra time-series methods. It is not committed to git.
 Unzip it and double-click `run_windows.bat`. It is a prerelease of the open
 fetch pull request, not the stable `v0.1.0` tag on `main`.
 

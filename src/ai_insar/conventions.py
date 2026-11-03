@@ -58,8 +58,11 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
   Each interferogram only has a plane removed, estimated on the image border.
 - Unwrapping is quality-guided path following. Dense residues can leave
   2*pi islands. It is not a minimum-cost-flow or SNAPHU unwrap.
-- SBAS solves a displacement at each date (first date fixed at zero) and
-  then a single LOS velocity. There is no seasonal or step model.
+- Time series is one of SBAS, interferogram stacking, a linear NSBAS-style
+  constraint, persistent-scatterer selection plus a linear rate, or
+  sequential coherence-weighted phase linking. Each still ends in a single
+  LOS velocity. There is no seasonal or step model, and this is not StaMPS
+  or MintPy.
 - The displacement mask is a coherence-gated robust velocity test plus a
   minimum fraction of the scene peak. It is not a trained neural network.
 - The built-in demo is a synthetic C-band subsidence bowl, not a real

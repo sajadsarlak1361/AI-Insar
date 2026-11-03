@@ -20,11 +20,12 @@ from ai_insar.pipeline.engine import (
     compute_detection,
     compute_filter,
     compute_interferograms,
-    compute_sbas,
+    compute_timeseries,
     compute_unwrap,
     run_all,
 )
 from ai_insar.pipeline.synthetic import generate_demo_stack
+from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS
 
 _LAYERS = (
     "SLC amplitude",
@@ -175,10 +176,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.run_filter,
             self.run_coherence,
             self.run_unwrap,
-            self.run_sbas,
+            self.run_timeseries,
             self.run_detection,
         )
         for number, (label, action, hint) in enumerate(zip(_STAGE_LABELS, actions, _STAGE_HELP), start=1):
+            if number == 6:
+                layout.addWidget(self._method_picker())
             button = QtWidgets.QPushButton(f"{number}    {label}")
             button.setObjectName(f"stageButton{number}")
             button.setToolTip(hint)
@@ -261,12 +264,23 @@ class MainWindow(QtWidgets.QMainWindow):
             ("Filter", self.run_filter, 2),
             ("Coherence", self.run_coherence, 3),
             ("Unwrap", self.run_unwrap, 4),
-            ("SBAS / time series", self.run_sbas, 5),
+            ("Run time series", self.run_timeseries, 5),
             ("Displacement detection mask", self.run_detection, 6),
         )
         for label, action, index in steps:
             item = pipeline.addAction(label)
             item.triggered.connect(self._click(action, index))
+        method_menu = pipeline.addMenu("Time series method")
+        self._method_group = QtGui.QActionGroup(self)
+        self._method_group.setExclusive(True)
+        for key in TIMESERIES_METHODS:
+            item = method_menu.addAction(TIMESERIES_LABELS[key])
+            item.setCheckable(True)
+            item.setData(key)
+            self._method_group.addAction(item)
+            if key == self.workspace.config.timeseries_method:
+                item.setChecked(True)
+            item.triggered.connect(lambda _checked=False, name=key: self.set_timeseries_method(name))
         pipeline.addSeparator()
         run_all = pipeline.addAction("Run all stages")
         run_all.setShortcut(QtGui.QKeySequence("Ctrl+R"))
@@ -375,9 +389,53 @@ class MainWindow(QtWidgets.QMainWindow):
         compute_unwrap(self.workspace, self._log)
         self._preferred_layer = "Unwrapped phase"
 
-    def run_sbas(self) -> None:
-        compute_sbas(self.workspace, self._log)
+    def run_timeseries(self) -> None:
+        compute_timeseries(self.workspace, self._log)
         self._preferred_layer = "LOS velocity"
+
+    def set_timeseries_method(self, method: str) -> None:
+        if method not in TIMESERIES_METHODS:
+            raise ValueError(f"unknown time-series method {method}")
+        if getattr(self, "_setting_method", False):
+            return
+        self._setting_method = True
+        try:
+            self._apply_timeseries_method(method)
+        finally:
+            self._setting_method = False
+
+    def _apply_timeseries_method(self, method: str) -> None:
+        self.workspace.config.timeseries_method = method
+        label = TIMESERIES_LABELS[method]
+        self.stage_buttons[5].setText(f"6    {label} / time series")
+        self.method_combo.blockSignals(True)
+        index = self.method_combo.findData(method)
+        if index >= 0:
+            self.method_combo.setCurrentIndex(index)
+        self.method_combo.blockSignals(False)
+        for action in self._method_group.actions():
+            action.setChecked(action.data() == method)
+        self._log(f"Time-series method set to {label}. Run stage 6 to apply it.")
+
+    def _method_picker(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        caption = QtWidgets.QLabel("Stage 6 method")
+        caption.setObjectName("subtle")
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.setObjectName("timeseriesMethod")
+        for key in TIMESERIES_METHODS:
+            self.method_combo.addItem(TIMESERIES_LABELS[key], key)
+        self.method_combo.currentIndexChanged.connect(self._method_combo_changed)
+        layout.addWidget(caption)
+        layout.addWidget(self.method_combo)
+        return box
+
+    def _method_combo_changed(self, index: int) -> None:
+        method = self.method_combo.itemData(index)
+        if method and method != self.workspace.config.timeseries_method:
+            self.set_timeseries_method(str(method))
 
     def run_detection(self) -> None:
         compute_detection(self.workspace, self._log)
@@ -391,7 +449,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.workspace.config, self)
-        dialog.exec()
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self.set_timeseries_method(self.workspace.config.timeseries_method)
 
     def _select_layer(self, name: str, *, refresh: bool) -> None:
         index = self.layer_combo.findText(name)

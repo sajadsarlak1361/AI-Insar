@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ai_insar.gui.qt import QtWidgets
 from ai_insar.pipeline.engine import PipelineConfig
+from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -14,6 +15,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Pipeline settings")
         self._config = config
         form = QtWidgets.QFormLayout()
+
+        self._method = QtWidgets.QComboBox()
+        for key in TIMESERIES_METHODS:
+            self._method.addItem(TIMESERIES_LABELS[key], key)
+        current = self._method.findData(config.timeseries_method)
+        if current >= 0:
+            self._method.setCurrentIndex(current)
+        form.addRow("Time series", self._method)
 
         self._span = QtWidgets.QSpinBox()
         self._span.setRange(1, 30)
@@ -76,6 +85,7 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     def _apply(self) -> None:
+        self._config.timeseries_method = str(self._method.currentData())
         self._config.max_date_span = int(self._span.value())
         self._config.goldstein_alpha = float(self._alpha.value())
         self._config.goldstein_window = int(self._window.value())
@@ -97,6 +107,10 @@ class SettingsDialog(QtWidgets.QDialog):
                 detection_peak_fraction=self._config.detection_peak_fraction,
                 detection_min_coherence=self._config.detection_min_coherence,
                 detection_min_pixels=self._config.detection_min_pixels,
+                timeseries_method=self._config.timeseries_method,
+                ps_da_max=self._config.ps_da_max,
+                ps_min_coherence=self._config.ps_min_coherence,
+                nsbas_weight=self._config.nsbas_weight,
             )
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, "Pipeline settings", str(exc))
