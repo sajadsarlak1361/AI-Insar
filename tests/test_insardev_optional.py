@@ -174,14 +174,14 @@ def test_phasediff_is_the_fallback_method_name(isolated_optional, monkeypatch):
     assert "interferogram" not in seen
 
 
-def test_mismatched_or_failing_insardev_falls_back(isolated_optional, monkeypatch):
+def test_mismatched_insardev_is_kept_and_a_failed_call_falls_back(isolated_optional, monkeypatch):
     slc = _sample_slc()
     pairs = [(0, 1)]
     seen: dict = {}
     _install_insardev(monkeypatch, seen, product="zeros")
     formed = form_interferograms(slc, pairs)
-    assert np.allclose(formed, _expected(slc, pairs))
-    assert form_interferograms.last_backend in {"numpy", "numba"}
+    assert np.allclose(formed, 0)
+    assert form_interferograms.last_backend == "insardev"
     assert seen["pairs"] == [(1, 0)]
 
     clear_optional_cache()
@@ -206,6 +206,17 @@ def test_numpy_backend_skips_insardev_even_when_installed(isolated_optional, mon
     formed = form_interferograms(slc, [(0, 1)], backend="insardev")
     assert form_interferograms.last_backend == "insardev"
     assert seen["pairs"] == [(1, 0)]
+
+    class Probe:
+        def align(self, ref=0):
+            seen["align_called"] = True
+            return "aligned"
+
+    skipped = align_loaded_stack(Probe(), ref=1)
+    assert skipped["applied"] is False
+    assert skipped["backend"] == "numpy"
+    assert "align_called" not in seen
+    assert "AI_INSAR_BACKEND=numpy" in skipped["note"]
 
 
 def test_bad_backend_name_is_rejected(isolated_optional):
@@ -247,22 +258,41 @@ def test_complex_cube_walks_a_batch_of_datasets():
     assert _complex_cube(np.zeros((2, 2), dtype=np.float32), array.shape) is None
 
 
-def test_zip_stack_stays_on_the_mit_reader(isolated_optional, monkeypatch, tmp_path):
+def test_zip_stack_prefers_load_and_falls_back_when_it_fails(isolated_optional, monkeypatch, tmp_path):
     tifffile = pytest.importorskip("tifffile")
     assert tifffile is not None
     from safe_factory import dated_safe_zip
 
     seen: dict = {}
-    _install_insardev(monkeypatch, seen, product="raise")
+    _install_insardev(monkeypatch, seen)
+    cube = np.full((2, 2, 2), 8 + 1j, dtype=np.complex64)
+    seen["cube"] = cube
     early = dated_safe_zip(tmp_path, "20210401", 2 + 0j)
     late = dated_safe_zip(tmp_path, "20210507", 0 + 3j)
     attempt = stack_scenes([late, early], height=2, width=2)
+    assert attempt.backend == "insardev"
+    assert np.allclose(attempt.stack.data, cube)
+    assert seen["load"] == [str(late), str(early)]
+
+    clear_optional_cache()
+    seen.clear()
+    _install_insardev(monkeypatch, seen, product="raise")
+    attempt = stack_scenes([late, early], height=2, width=2)
     assert attempt.backend == "numpy"
-    assert attempt.stack is not None
     assert attempt.stack.data.shape == (2, 2, 2)
     assert attempt.stack.dates[0] == np.datetime64("2021-04-01", "D")
-    assert "load" not in seen
+    assert np.allclose(attempt.stack.data[0], 2 + 0j)
+    assert seen["load"] == [str(late), str(early)]
     assert "crop" in attempt.note
+
+    clear_optional_cache()
+    seen.clear()
+    _install_insardev(monkeypatch, seen)
+    monkeypatch.setenv("AI_INSAR_BACKEND", "numpy")
+    attempt = stack_scenes([late, early], height=2, width=2)
+    assert attempt.backend == "numpy"
+    assert "load" not in seen
+    assert "AI_INSAR_BACKEND=numpy" in attempt.note
 
 
 def test_zarr_scene_calls_stack_load(isolated_optional, monkeypatch, tmp_path):
@@ -341,6 +371,15 @@ def test_coregister_and_safeload_call_bsd_wrappers(isolated_optional, monkeypatc
     assert aligned["backend"] == "insardev"
     assert aligned["result"] == "aligned-1"
 
+    monkeypatch.setenv("AI_INSAR_BACKEND", "numpy")
+    before = len(calls)
+    skipped = coregister_bursts("/data", "burst0", ["burst1"])
+    assert skipped["applied"] is False
+    assert skipped["backend"] == "numpy"
+    skipped_layout = translate_safe_bursts("safes", "out", ["burst0"])
+    assert skipped_layout["applied"] is False
+    assert len(calls) == before
+
 
 class _Alignable:
     def align(self, ref=0):
@@ -371,19 +410,19 @@ class _BrokenAlign:
         raise RuntimeError("no burst overlaps")
 
 
-def test_installed_insardev_matches_or_skips(isolated_optional):
+def test_installed_insardev_is_preferred_or_the_call_fails(isolated_optional):
     insardev = pytest.importorskip("insardev")
     if getattr(insardev, "__file__", None) in (None, ""):
         pytest.skip("insardev import is a test double")
     slc = _sample_slc()
     pairs = [(0, 1), (1, 2)]
     formed = form_interferograms(slc, pairs, backend="insardev")
+    assert formed.shape == (2, slc.shape[1], slc.shape[2])
+    assert formed.dtype == np.complex64
+    if form_interferograms.last_backend == "insardev":
+        return
+    assert form_interferograms.last_backend in {"numpy", "numba"}
     assert np.allclose(formed, _expected(slc, pairs))
-    if form_interferograms.last_backend != "insardev":
-        pytest.skip(
-            "installed insardev did not return a matching single-look interferogram; "
-            "the NumPy/Numba path was kept"
-        )
 
 
 def test_docs_keep_the_extra_honest():
@@ -404,6 +443,8 @@ def test_docs_keep_the_extra_honest():
     assert "is not a project extra" not in install
     assert "Stack.pairs" in readme
     assert "NumPy/Numba" in readme
+    assert "AI_INSAR_BACKEND=numpy" in readme
+    assert "personally accepted" in notice
     main, _, extras = project.partition("[project.optional-dependencies]")
     dependencies = main.split("dependencies = [", 1)[1].split("]", 1)[0]
     assert "insardev" not in dependencies

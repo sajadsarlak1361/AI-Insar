@@ -22,9 +22,10 @@ ESA SNAP is GPL and is not copied.
 ``Stack.pairs().interferogram()`` with no filter wavelength is the
 single-look product ``reference * conjugate(repeat)``. This module passes
 the later date as the reference so that product is ``later * conj(earlier)``.
-The interferogram stage keeps the array only when it matches the
-NumPy/Numba product. ``Stack.load`` is the geocoded-scene reader.
-``Stack.align`` is burst-phase alignment on a stack that load already built.
+When ``insardev`` is installed, that cube is kept even if the values differ
+from NumPy. The NumPy/Numba product runs only when the package is missing,
+the call fails, or ``AI_INSAR_BACKEND=numpy``. ``Stack.load`` and
+``Stack.align`` follow the same rule.
 """
 
 from __future__ import annotations
@@ -46,8 +47,10 @@ INSARDEV_INSTALL_NOTE = (
     "(Python 3.12 or newer). The same upstream package is pip install insardev. "
     "Read https://github.com/InSARdev/core/blob/main/insardev/LICENSE and "
     "https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE . "
-    "If the package is missing or its single-look interferogram does not match "
-    "later × conjugate(earlier), AI Insar keeps the NumPy/Numba product."
+    "When the package is installed, interferograms, Stack.load, and Stack.align "
+    "use it first. A value difference does not drop that result. "
+    "NumPy/Numba runs when the package is missing, the call fails, or "
+    "AI_INSAR_BACKEND=numpy."
 )
 
 BSD_INSTALL_NOTE = (
@@ -99,9 +102,9 @@ def use_insardev_backend(explicit: str | None = None) -> bool:
     """Return whether this call should ask ``insardev`` for interferograms.
 
     ``numpy``, ``numba``, and ``mit`` force the in-tree product. ``auto``
-    and ``insardev`` ask the optional package, then fall back if it is
-    missing or its values differ. ``AI_INSAR_BACKEND`` is used when
-    ``explicit`` is omitted.
+    and ``insardev`` ask the optional package first and keep a successful
+    result. The in-tree path runs when the package is missing or the call
+    fails. ``AI_INSAR_BACKEND`` is used when ``explicit`` is omitted.
     """
     import os
 
@@ -136,9 +139,10 @@ def insardev_status() -> dict[str, object]:
     version = getattr(module, "__version__", None)
     error = _LAST_INTERFEROGRAM_ERROR
     note = (
-        f"insardev {version} is installed. Interferograms call "
-        "Stack.pairs().interferogram() when that single-look product matches "
-        "later × conjugate(earlier). A SAFE zip crop stays on the MIT reader. "
+        f"insardev {version} is installed. Interferograms, Stack.load, and "
+        "Stack.align prefer that package. A successful cube is kept even when "
+        "it differs from the NumPy product. NumPy/Numba runs when a call fails "
+        "or AI_INSAR_BACKEND=numpy. "
         + INSARDEV_INSTALL_NOTE
     )
     if error:
@@ -200,42 +204,71 @@ def try_insardev_interferogram(
 
 
 def stack_scenes(paths, **kwargs) -> StackAttempt:
-    """Read many SAFE zips, or a geocoded scene list through ``Stack.load``.
+    """Read scenes with ``Stack.load`` first, then a SAFE zip crop if that fails.
 
-    Zip paths use the MIT crop reader. Any other path is handed to
-    ``insardev.Stack.load``. Keyword arguments are the zip reader's
-    ``swath``, ``pol``, crop, and ``progress`` options.
+    Keyword arguments are the zip reader's ``swath``, ``pol``, crop, and
+    ``progress`` options. ``AI_INSAR_BACKEND=numpy`` skips ``Stack.load``.
+    A cube from ``Stack.load`` is kept even when it differs from the crop.
     """
     files = [Path(path) for path in paths]
     if not files:
         raise ValueError("no Sentinel-1 SAFE zips were selected")
-    if all(path.suffix.lower() == ".zip" for path in files):
-        from ai_insar.safe_stack import stack_safe_zips
-
-        stack = stack_safe_zips(files, **kwargs)
-        return StackAttempt(
-            stack=stack,
-            backend="numpy",
-            note=(
-                "SAFE zip crop from the MIT reader. Shared row and column window. "
-                "insardev.Stack.load reads geocoded zarr scenes, so it is not used here."
-            ),
+    zips = all(path.suffix.lower() == ".zip" for path in files)
+    if use_insardev_backend():
+        loaded = _try_load_scenes(files)
+        if loaded is not None:
+            return loaded
+        if not zips:
+            if _load_module("insardev") is None:
+                raise ImportError(INSARDEV_INSTALL_NOTE)
+            detail = _LAST_LOAD_ERROR or "Stack.load did not return a complex cube"
+            raise ValueError(detail)
+    elif not zips:
+        raise ValueError(
+            "AI_INSAR_BACKEND=numpy reads SAFE zip crops only. "
+            "Geocoded scenes use insardev.Stack.load."
         )
-    loaded = _try_load_scenes(files)
-    if loaded is not None:
-        return loaded
-    if _load_module("insardev") is None:
-        raise ImportError(INSARDEV_INSTALL_NOTE)
-    detail = _LAST_LOAD_ERROR or "Stack.load did not return a complex cube"
-    raise ValueError(detail)
+    from ai_insar.safe_stack import stack_safe_zips
+
+    stack = stack_safe_zips(files, **kwargs)
+    if use_insardev_backend():
+        if _load_module("insardev") is None:
+            note = (
+                "SAFE zip crop from the MIT reader. insardev is not installed, "
+                "so Stack.load was not used."
+            )
+        elif _LAST_LOAD_ERROR:
+            note = (
+                "SAFE zip crop from the MIT reader after Stack.load failed "
+                f"({_LAST_LOAD_ERROR})."
+            )
+        else:
+            note = (
+                "SAFE zip crop from the MIT reader. "
+                "Stack.load did not return a complex cube."
+            )
+    else:
+        note = (
+            "SAFE zip crop from the MIT reader. "
+            "AI_INSAR_BACKEND=numpy skips insardev.Stack.load."
+        )
+    return StackAttempt(stack=stack, backend="numpy", note=note)
 
 
 def align_loaded_stack(stack, ref: int | str = 0) -> dict[str, object]:
     """Call ``Stack.align`` when the object has that method.
 
-    This is burst-phase alignment on a geocoded stack. A NumPy crop has no
-    burst overlaps, so callers pass the object ``Stack.load`` returned.
+    This is burst-phase alignment on a geocoded stack. A successful result
+    is kept. ``AI_INSAR_BACKEND=numpy`` skips the call. A missing method or
+    a failed call leaves the array unchanged.
     """
+    if not use_insardev_backend():
+        return {
+            "backend": "numpy",
+            "applied": False,
+            "result": None,
+            "note": "AI_INSAR_BACKEND=numpy skips Stack.align. The array is unchanged.",
+        }
     method = getattr(stack, "align", None)
     if not callable(method):
         return {
@@ -274,8 +307,17 @@ def coregister_bursts(
 
     The return values are that package's burst products. They are not
     resampled onto this workbench's crop window. A missing package or a
-    failed call leaves ``applied`` false.
+    failed call leaves ``applied`` false. ``AI_INSAR_BACKEND=numpy`` skips
+    the call.
     """
+    if not use_insardev_backend():
+        return {
+            "backend": "numpy",
+            "applied": False,
+            "note": "AI_INSAR_BACKEND=numpy skips S1.align_ref and S1.align_rep.",
+            "reference": None,
+            "aligned": None,
+        }
     module = _load_module("insardev_pygmtsar")
     if module is None or not hasattr(module, "S1"):
         return {
@@ -318,8 +360,15 @@ def translate_safe_bursts(safedir, datadir, bursts, **kwargs) -> dict[str, objec
     """Call ``insardev_toolkit.PyGMTSAR.safeload`` when that class imports.
 
     ``bursts`` are the ids the toolkit expects. This does not read a zip
-    crop into a ``complex64`` cube.
+    crop into a ``complex64`` cube. ``AI_INSAR_BACKEND=numpy`` skips the call.
     """
+    if not use_insardev_backend():
+        return {
+            "backend": "numpy",
+            "applied": False,
+            "result": None,
+            "note": "AI_INSAR_BACKEND=numpy skips PyGMTSAR.safeload.",
+        }
     module = _load_module("insardev_toolkit")
     worker = getattr(module, "PyGMTSAR", None) if module is not None else None
     if worker is None:
