@@ -11,6 +11,7 @@ from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
+from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.export_maps import export_displacement_map, export_velocity_map
@@ -28,6 +29,11 @@ from ai_insar.pipeline.engine import (
 )
 from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
 from ai_insar.pipeline.synthetic import generate_demo_stack
+from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe, select_measurement
+
+# Zip is the primary File → Open choice. A manifest is an optional extra.
+SAFE_OPEN_FILTER = "Sentinel-1 SAFE zip (*.zip);;Sentinel-1 manifest (manifest.safe)"
+from ai_insar.sentinel import import_slc_paths
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
 from ai_insar.pipeline.unwrap import UNWRAP_LABELS, UNWRAP_METHODS, UNWRAP_SUMMARIES
 
@@ -117,6 +123,10 @@ QMenu { background: #1b212c; border: 1px solid #3c4a63; }
 QMenu::item:selected { background: #2d6cdf; }
 QStatusBar { background: #151a23; color: #c5d0e0; }
 QSplitter::handle { background: #2c3648; }
+QDockWidget { color: #e7edf5; }
+QDockWidget::title { background: #151a23; padding: 6px; }
+QTreeWidget { background: #12171f; color: #e7edf5; border: 1px solid #3c4a63; }
+QTreeWidget::item:selected { background: #2d6cdf; }
 """
 
 
@@ -130,6 +140,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace = Workspace()
         self._busy = False
         self._preferred_layer: str | None = None
+        self.safe_product = None
+        self._product_status: str | None = None
         self.stage_buttons: list[QtWidgets.QPushButton] = []
         self._build()
         self.setStyleSheet(_STYLESHEET)
@@ -171,6 +183,15 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter)
         self._build_menus()
+        self.product_explorer = ProductExplorer(self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.product_explorer)
+        self.product_explorer.bandActivated.connect(
+            lambda swath, pol: self._guard(lambda: self.preview_safe_band(swath, pol), None)
+        )
+        self.product_explorer.quicklookActivated.connect(
+            lambda: self._guard(self.preview_safe_quicklook, None)
+        )
+        self.product_explorer.addToStackRequested.connect(self._click(self.add_safe_to_stack, 0))
         self.statusBar().showMessage("Ready")
 
     def _stage_panel(self) -> QtWidgets.QWidget:
@@ -265,6 +286,14 @@ class MainWindow(QtWidgets.QMainWindow):
         load = file_menu.addAction("Load SLC stack…")
         load.setShortcut(QtGui.QKeySequence("Ctrl+O"))
         load.triggered.connect(self._click(self.load_stack, 0))
+        open_product = QtGui.QAction("Open Sentinel-1 SAFE Product…", self)
+        open_product.setObjectName("openSafeProductAction")
+        open_product.triggered.connect(self._click(self.open_safe_product, None))
+        file_menu.addAction(open_product)
+        open_folder = QtGui.QAction("Open SAFE folder…", self)
+        open_folder.setObjectName("openSafeFolderAction")
+        open_folder.triggered.connect(self._click(self.open_safe_folder, None))
+        file_menu.addAction(open_folder)
         fetch = QtGui.QAction("Fetch Sentinel-1 SLC…", self)
         fetch.setObjectName("fetchSentinelAction")
         fetch.triggered.connect(self._click(self.fetch_sentinel, 0))
@@ -286,6 +315,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         data_menu = self.menuBar().addMenu("Data")
         data_menu.addAction(fetch)
+        data_menu.addAction(open_product)
+        data_menu.addAction(open_folder)
         data_menu.addAction("Import local SAFE / TIFF…").triggered.connect(
             self._click(self.fetch_sentinel, 0)
         )
@@ -348,7 +379,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._select_layer(self._preferred_layer, refresh=False)
                 self._preferred_layer = None
             self._refresh_view()
-            self.statusBar().showMessage("Ready", 4000)
+            if self._product_status:
+                self.statusBar().showMessage(self._product_status)
+            else:
+                self.statusBar().showMessage("Ready", 4000)
         except Exception as exc:
             self._log(f"ERROR: {exc}")
             self.statusBar().showMessage(str(exc), 12000)
@@ -380,9 +414,103 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
 
+    def open_safe_product(self) -> None:
+        path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Sentinel-1 SAFE zip",
+            "",
+            SAFE_OPEN_FILTER,
+        )
+        if not path:
+            return
+        self.open_safe_path(path)
+
+    def open_safe_folder(self) -> None:
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Open SAFE folder")
+        if not directory:
+            return
+        self.open_safe_path(directory)
+
+    def open_safe_path(self, path) -> None:
+        """Inspect a SAFE zip (or a folder / manifest). Pixels are not read."""
+        from pathlib import Path
+
+        product = resolve_safe(Path(path))
+        self.safe_product = product
+        self.product_explorer.set_product(product)
+        self.product_explorer.show()
+        self._product_status = format_product_status(product)
+        self.statusBar().showMessage(self._product_status)
+        self._log(f"Opened Sentinel-1 product {product.product_id}. {self._product_status}")
+
+    def preview_safe_band(self, swath: str, pol: str) -> None:
+        product = self._require_safe_product()
+        measurement = select_measurement(product, swath, pol)
+        amplitude = preview_amplitude(product, measurement)
+        self.product_explorer.show_preview(
+            amplitude,
+            f"Amplitude {measurement.swath} {measurement.polarisation}, "
+            f"{amplitude.shape[0]}×{amplitude.shape[1]} (decimated). Not geocoded.",
+        )
+        self._log(
+            f"Preview {measurement.swath} {measurement.polarisation} amplitude "
+            f"{amplitude.shape[0]}×{amplitude.shape[1]}."
+        )
+
+    def preview_safe_quicklook(self) -> None:
+        product = self._require_safe_product()
+        amplitude = preview_amplitude(product)
+        self.product_explorer.show_preview(
+            amplitude,
+            f"Quick-look {amplitude.shape[0]}×{amplitude.shape[1]}.",
+        )
+        self._log(f"Preview quick-look {amplitude.shape[0]}×{amplitude.shape[1]}.")
+
+    def add_safe_to_stack(self) -> None:
+        product = self._require_safe_product()
+        swath, pol = self.product_explorer.selected_swath_pol()
+        dialog = SlcCropDialog(self, product_id=product.product_id, swath=swath, pol=pol)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.import_safe_crop(
+            product,
+            swath=swath,
+            pol=pol,
+            row=int(dialog.row.value()),
+            col=int(dialog.col.value()),
+            height=int(dialog.height.value()),
+            width=int(dialog.width.value()),
+        )
+
+    def import_safe_crop(self, product, *, swath: str, pol: str, row: int, col: int, height: int, width: int) -> None:
+        stack = import_slc_paths(
+            [product.root],
+            swath=swath,
+            pol=pol,
+            row=row,
+            col=col,
+            height=height,
+            width=width,
+        )
+        self.workspace.stack = stack
+        self.workspace.clear_products()
+        self._log(
+            f"Added {swath} {pol} from {product.product_id} to the SLC stack "
+            f"{stack.data.shape} {stack.data.dtype}. {stack.description}"
+        )
+        self._preferred_layer = "SLC amplitude"
+
+    def _require_safe_product(self):
+        if self.safe_product is None:
+            raise RuntimeError("Open a Sentinel-1 SAFE product first.")
+        return self.safe_product
+
     def fetch_sentinel(self) -> None:
         dialog = FetchSentinelDialog(self)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted or dialog.stack is None:
+        accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
+        if dialog.downloaded_zips:
+            self.open_safe_path(dialog.downloaded_zips[0])
+        if not accepted or dialog.stack is None:
             return
         self.workspace.stack = dialog.stack
         self.workspace.clear_products()

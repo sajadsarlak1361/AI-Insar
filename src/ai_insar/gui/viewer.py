@@ -12,10 +12,16 @@ class ImageView(QtWidgets.QWidget):
 
     pixelActivated = Signal(int, int)
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        empty_text: str = "Generate or load an SLC stack, then run the numbered stages.",
+    ) -> None:
         super().__init__(parent)
         self._image: QtGui.QImage | None = None
         self._values: np.ndarray | None = None
+        self._empty_text = empty_text
         self.setMinimumSize(360, 280)
         self.setMouseTracking(True)
 
@@ -39,7 +45,7 @@ class ImageView(QtWidgets.QWidget):
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "Generate or load an SLC stack, then run the numbered stages.",
+                self._empty_text,
             )
             painter.end()
             return

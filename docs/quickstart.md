@@ -69,6 +69,8 @@ date, as `los_m_<date>.*`. See [data-format.md](data-format.md#map-export).
 | --- | --- | --- |
 | Generate sample SLC | File | Ctrl+N |
 | Load a `.npy` SLC stack | File → Load SLC stack… | Ctrl+O |
+| Open a Sentinel-1 SAFE `.zip` (not extracted) | File → Open Sentinel-1 SAFE Product… | |
+| Open a `.SAFE` folder | File → Open SAFE folder… | |
 | Save whatever stages have finished | File → Save products… | Ctrl+S |
 | Export the velocity map (npy, PNG, TIFF) | File or View → Export velocity map… | |
 | Export one displacement date | File or View → Export displacement map… | |
@@ -81,6 +83,13 @@ does not rerun anything; run the affected stages again. The dialog says so.
 File → Load expects a complex `.npy`. A JSON sidecar with the same stem
 (`slc.npy` and `slc.json`) is picked up automatically. See
 [data-format.md](data-format.md).
+
+File → Open Sentinel-1 SAFE Product… and Open SAFE folder… inspect a
+Sentinel-1 SLC SAFE product (zip, folder, or `manifest.safe`) in the
+Product Explorer. Double-click a band for an amplitude preview. **Add to
+SLC stack (crop…)** loads one IW1 VV window, by default, into the cube.
+That crop is the stack the numbered stages run on. It is not a deburst or
+a geocoded product. See [data-format.md](data-format.md#sentinel-1-safe).
 
 ## What “good” looks like on the demo
 

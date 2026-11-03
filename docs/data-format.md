@@ -1,8 +1,45 @@
 # Data format
 
-AI Insar reads one SLC cube and optional JSON. It does not read SAFE/ZIP
-products, CEOS, a DEM, or an orbit file. The cube is already the radar grid
-you want processed.
+AI Insar processes one SLC cube and optional JSON. A Sentinel-1 SAFE product
+can be opened for inspection and a crop of one swath and polarisation loaded
+into that cube. The cube is the radar grid that is processed. CEOS, a DEM,
+and orbit files are not read. Opening a SAFE product does not deburst,
+calibrate, or form interferograms.
+
+## Sentinel-1 SAFE
+
+File → **Open Sentinel-1 SAFE zip…** takes the product `.zip` first. The
+zip is not extracted. A `manifest.safe` file is an optional extra in the
+same dialog, and File → **Open SAFE folder…** is the optional folder path.
+The zip name must start with `s1`. ETAD (`_ETA_`) and COG (`_COG`) products
+are refused.
+
+Open finds the one `manifest.safe` and uses its directory as the zip root
+(`S1A_….SAFE/`). Metadata comes from that manifest. Bands are the files
+directly in `annotation/` and `measurement/`, paired by basename
+(`.xml` with `.tiff`). The manifest `dataObjectSection` is not used to find
+files. `annotation/calibration/`, `support/*.xsd`, and the product PDF are
+ignored. Width and height are `numberOfSamples` and `numberOfLines` in the
+annotation. The TIFF header is not read at open.
+
+The Product Explorer lists manifest metadata, bands grouped by swath
+(IW1, IW2, IW3) with `i_`, `q_`, and `Intensity_` labels, and the quick-look
+when `preview/quick-look.png` is present. Double-click a band for a
+decimated amplitude preview. **Add to SLC stack (crop…)** reads one window
+into the `complex64` cube. The default band is IW1 VV. The date is the
+manifest start time. The wavelength is `c / radarFrequency` from the
+annotation when that value is present.
+
+Pixels are read later, in a window, with optional subsampling. An SLC
+sample packed in one int32 uses the low 16 bits as I and the high 16 bits
+(`>> 16`) as Q. An uncompressed measurement TIFF is read by seeking to that
+zip entry. It is not extracted. A compressed entry extracts that one TIFF
+only. The quick-look PNG is read from `preview/quick-look.png` in memory.
+Install the optional reader with `pip install "ai-insar[slc]"`.
+
+File → **Fetch Sentinel-1 SLC…** can import that same zip, folder, or
+measurement TIFF. A zip downloaded from ASF does not have to be unzipped
+first.
 
 ## `slc.npy`
 

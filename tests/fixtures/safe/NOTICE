@@ -1,0 +1,30 @@
+Sentinel-1 SAFE fixture
+=======================
+
+The manifest.safe and annotation XML files under
+S1B_IW_SLC__1SDV_20210401T052622_20210401T052650_026269_032297_EFA4.SAFE
+come from the Apache-2.0 test data of bopen/xarray-sentinel:
+
+  https://github.com/bopen/xarray-sentinel
+  tests/data/S1B_IW_SLC__1SDV_20210401T052622_20210401T052650_026269_032297_EFA4.zip
+
+Copyright B-Open Solutions and the xarray-sentinel contributors.
+Licensed under the Apache License, Version 2.0. A copy is in
+LICENSE.Apache-2.0 in this directory.
+
+The underlying Sentinel-1 scene is Copernicus data from ESA. This tree is
+the reduced snapshot published with xarray-sentinel, not a full SLC product.
+
+Modifications in this repository
+--------------------------------
+- annotation/calibration/* and support/*.xsd are omitted. Product open does
+  not read schemas, calibration sidecars, or the product PDF.
+- measurement/*.tiff are replaced with small uncompressed complex64 rasters.
+  The upstream files are zstd-compressed placeholders (TIFF compression
+  50000) and are not readable with tifffile alone.
+- preview/quick-look.png was added here. That snapshot did not include
+  preview/.
+
+S1B_IW_SLC__1SDV_20210401T052622_20210401T052650_026269_032297_EFA4.zip is a
+ZIP_STORED archive of the same tree, so a measurement TIFF can be read by
+file offset without extracting the zip.

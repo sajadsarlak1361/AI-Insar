@@ -8,11 +8,15 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 ## Inputs and geometry
 
 - One complex stack in memory, on the radar grid, one polarization.
-- Data → Fetch Sentinel-1 SLC can search ASF and import a crop from a local
-  measurement TIFF or complex `.npy`. Downloading the zip needs Earthdata
+- File → Open Sentinel-1 SAFE Product… (and Open SAFE folder…) reads a
+  Sentinel-1 SLC SAFE zip, folder, or `manifest.safe` for metadata, a
+  quick-look, and a window of one swath and polarisation (default IW1 VV).
+  Data → Fetch Sentinel-1 SLC can search ASF and import that crop from a
+  local zip, SAFE, measurement TIFF, or complex `.npy`. A downloaded zip
+  does not have to be extracted first. Downloading needs Earthdata
   credentials and the optional `asf_search` package. There is still no DEM,
-  no geocoding, no earth flattening, no enhanced spectral diversity, and no
-  burst stitching.
+  no geocoding, no earth flattening, no calibration, no TOPS deburst, no
+  enhanced spectral diversity, and no burst stitching.
 - No multilook that changes the array shape. The coherence window and the
   Goldstein window are the spatial averaging.
 - Real arrays, non-finite values, and a date list whose length does not
