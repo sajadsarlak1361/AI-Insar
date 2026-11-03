@@ -12,7 +12,27 @@ import heapq
 import math
 
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import gaussian_filter, uniform_filter
+
+UNWRAP_METHODS: tuple[str, ...] = ("quality", "separable")
+UNWRAP_LABELS: dict[str, str] = {
+    "quality": "Quality-guided",
+    "separable": "Fast unwrap",
+}
+UNWRAP_SUMMARIES: dict[str, str] = {
+    "quality": (
+        "Quality-guided unwrap grows from the best coherence pixel and adds "
+        "wrapped neighbor differences. Numba runs the walk when installed; "
+        "otherwise it is a Python heap. Pixels below the coherence floor stay empty."
+    ),
+    "separable": (
+        "Fast unwrap smooths the complex interferogram with a Gaussian, then "
+        "uses NumPy's one-dimensional unwrap along range and azimuth, starting "
+        "from the middle of the image. The idea follows the MIT educational "
+        "example in InSARdev/edu (NISAR/nisar_numpy.py). It is much faster than "
+        "a residue-by-residue search and is meant for smooth fields."
+    ),
+}
 
 
 def reliability(phase: np.ndarray, coherence: np.ndarray) -> np.ndarray:
@@ -237,6 +257,44 @@ def _numba_unwrap():
 
     _NUMBA_UNWRAP = _kernel
     return _NUMBA_UNWRAP
+
+
+def unwrap_separable(
+    phase: np.ndarray,
+    coherence: np.ndarray,
+    *,
+    sigma: float = 2.0,
+    min_coherence: float = 0.2,
+) -> np.ndarray:
+    """Gaussian-smoothed separable unwrap.
+
+    Smooth the coherence-weighted complex phase, then call ``numpy.unwrap``
+    along range and along azimuth. The image is split at mid-azimuth and each
+    half is unwrapped outward so a bad edge does not cross the whole frame.
+    This follows the structure of the MIT-licensed educational unwrapper in
+    InSARdev/edu ``NISAR/nisar_numpy.py`` and is reimplemented here for stacks
+    that are already coregistered. It does not copy that file.
+    """
+    wrapped = np.asarray(phase, dtype=np.float64)
+    coh = np.clip(np.asarray(coherence, dtype=np.float64), 0.0, 1.0)
+    if wrapped.shape != coh.shape or wrapped.ndim != 2:
+        raise ValueError("phase and coherence must be 2-D and the same shape")
+    if sigma <= 0:
+        raise ValueError("sigma must be positive")
+    carrier = np.exp(1j * wrapped) * coh
+    smooth = gaussian_filter(carrier.real, sigma) + 1j * gaussian_filter(carrier.imag, sigma)
+    angle = np.angle(smooth)
+    mid = angle.shape[0] // 2
+    if mid == 0 or mid == angle.shape[0]:
+        field = np.unwrap(np.unwrap(angle, axis=1), axis=0)
+    else:
+        bottom = np.unwrap(np.unwrap(angle[mid:], axis=1), axis=0)
+        top = np.unwrap(np.unwrap(angle[:mid][::-1], axis=1), axis=0)[::-1]
+        shift = float(np.nanmedian(bottom[0]) - np.nanmedian(top[-1]))
+        top = top + shift
+        field = np.concatenate([top, bottom], axis=0)
+    field = np.where(coh >= float(min_coherence), field, np.nan)
+    return field.astype(np.float64)
 
 
 def residue_count(phase: np.ndarray) -> int:

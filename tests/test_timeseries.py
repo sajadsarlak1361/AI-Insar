@@ -38,7 +38,7 @@ def _peak_error(stack, velocity):
     return estimated, expected, correlation, float(finite.mean())
 
 
-@pytest.mark.parametrize("method", ["stacking", "nsbas", "ps", "linking"])
+@pytest.mark.parametrize("method", ["stacking", "nsbas", "ps", "linking", "seasonal"])
 def test_each_method_recovers_subsidence(method):
     stack = _scene()
     workspace = Workspace(
@@ -58,6 +58,18 @@ def test_each_method_recovers_subsidence(method):
     assert correlation > 0.9
     assert kept > 0.5
     assert workspace.config.timeseries_method == method
+
+
+def test_separable_unwrap_tracks_a_smooth_bowl():
+    from ai_insar.pipeline.unwrap import unwrap_separable
+
+    yy, xx = np.mgrid[0:60, 0:60]
+    true = 6.0 * np.exp(-((yy - 30.0) ** 2 + (xx - 30.0) ** 2) / (2.0 * 12.0**2))
+    wrapped = np.angle(np.exp(1j * true))
+    unwrapped = unwrap_separable(wrapped, np.ones_like(true), sigma=1.5, min_coherence=0.0)
+    finite = np.isfinite(unwrapped)
+    correlation = float(np.corrcoef(true[finite], unwrapped[finite])[0, 1])
+    assert correlation > 0.95
 
 
 def test_emi_recovers_a_subfringe_phase_series():
@@ -96,7 +108,7 @@ def test_method_combo_changes_stage_button():
     _app = QApplication.instance() or QApplication([])
     window = MainWindow()
     labels = [window.method_combo.itemText(index) for index in range(window.method_combo.count())]
-    assert labels == ["SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking"]
+    assert labels == ["SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking", "Seasonal"]
     assert "SBAS" in window.stage_buttons[5].text()
     window.set_timeseries_method("stacking")
     assert window.workspace.config.timeseries_method == "stacking"
@@ -104,7 +116,7 @@ def test_method_combo_changes_stage_button():
     window.set_timeseries_method("ps")
     assert "PS linear" in window.stage_buttons[5].text()
     titles = [action.text() for action in window.menuBar().actions()]
-    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking"):
+    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking", "Seasonal", "Quality-guided", "Fast unwrap"):
         assert name in titles
     stacking = window.findChild(QMenu, "methodMenu_stacking")
     assert stacking is not None

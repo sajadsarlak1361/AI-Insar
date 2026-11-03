@@ -74,7 +74,7 @@ def test_numbered_stage_buttons_run_the_pipeline(qapp):
     titles = [action.text() for action in window.menuBar().actions()]
     assert titles[:3] == ["File", "Data", "Pipeline"]
     assert titles[-2:] == ["View", "Help"]
-    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking"):
+    for name in ("SBAS", "Stacking", "NSBAS", "PS linear", "Phase linking", "Seasonal", "Quality-guided", "Fast unwrap"):
         assert name in titles
     fetch = window.findChild(QAction, "fetchSentinelAction")
     assert fetch is not None

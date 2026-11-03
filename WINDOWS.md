@@ -7,8 +7,8 @@ SciPy, and PySide6.
 
 ## Download the Windows zip from Releases
 
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.3/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.2.0-rc.3](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.3)).
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
 
 Unzip it, open the `ai-insar` folder, and double-click `run_windows.bat`.
 This prerelease includes the Sentinel-1 fetch menu and the extra time-series

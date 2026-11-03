@@ -26,6 +26,7 @@ from ai_insar.pipeline.engine import (
 )
 from ai_insar.pipeline.synthetic import generate_demo_stack
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, TIMESERIES_SUMMARIES
+from ai_insar.pipeline.unwrap import UNWRAP_LABELS, UNWRAP_METHODS, UNWRAP_SUMMARIES
 
 _LAYERS = (
     "SLC amplitude",
@@ -277,6 +278,7 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = pipeline.addAction("Settings…")
         settings.triggered.connect(self.open_settings)
 
+        self._build_unwrap_menus()
         self._build_method_menus()
 
         view = self.menuBar().addMenu("View")
@@ -405,6 +407,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.method_combo.setCurrentIndex(index)
         self.method_combo.blockSignals(False)
         self._log(f"Time-series method set to {label}. Run stage 6 to apply it.")
+
+    def _build_unwrap_menus(self) -> None:
+        """One top-level menu per unwrap technique."""
+        for key in UNWRAP_METHODS:
+            label = UNWRAP_LABELS[key]
+            menu = self.menuBar().addMenu(label)
+            menu.setObjectName(f"unwrapMenu_{key}")
+            run = menu.addAction(f"Run {label}")
+            run.setObjectName(f"runUnwrap_{key}")
+            run.triggered.connect(self._click(lambda name=key: self.run_named_unwrap(name), 4))
+            about = menu.addAction("What this method does")
+            about.triggered.connect(
+                lambda _checked=False, name=key: self._show_text(UNWRAP_LABELS[name], UNWRAP_SUMMARIES[name])
+            )
+
+    def run_named_unwrap(self, method: str) -> None:
+        if method not in UNWRAP_METHODS:
+            raise ValueError(f"unknown unwrap method {method}")
+        self.workspace.config.unwrap_method = method
+        self.stage_buttons[4].setText(f"5    {UNWRAP_LABELS[method]}")
+        self._log(f"Unwrap method set to {UNWRAP_LABELS[method]}.")
+        self.run_unwrap()
 
     def _build_method_menus(self) -> None:
         """One top-level menu per time-series technique, including SBAS."""

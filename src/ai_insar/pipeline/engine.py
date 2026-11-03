@@ -18,7 +18,14 @@ from ai_insar.pipeline.filtering import filter_stack
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
 from ai_insar.pipeline.synthetic import SLCStack
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
-from ai_insar.pipeline.unwrap import reliability, remove_ramp, residue_count, unwrap_quality_guided
+from ai_insar.pipeline.unwrap import (
+    UNWRAP_LABELS,
+    reliability,
+    remove_ramp,
+    residue_count,
+    unwrap_quality_guided,
+    unwrap_separable,
+)
 
 LogFn = Callable[[str], None]
 
@@ -46,6 +53,8 @@ class PipelineConfig:
     ps_da_max: float = 0.4
     ps_min_coherence: float = 0.5
     nsbas_weight: float = 0.25
+    unwrap_method: str = "quality"
+    unwrap_sigma: float = 2.0
 
     def __post_init__(self) -> None:
         if self.max_date_span < 1:
@@ -73,6 +82,10 @@ class PipelineConfig:
             raise ValueError("ps_da_max must be positive")
         if self.nsbas_weight <= 0:
             raise ValueError("nsbas_weight must be positive")
+        if self.unwrap_method not in ("quality", "separable"):
+            raise ValueError("unwrap_method must be 'quality' or 'separable'")
+        if self.unwrap_sigma <= 0:
+            raise ValueError("unwrap_sigma must be positive")
 
 
 @dataclass
@@ -199,10 +212,18 @@ def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
     for index in range(n_pairs):
         phase = np.angle(workspace.filtered[index]).astype(np.float64)
         coh = workspace.coherence[index].astype(np.float64)
-        quality = reliability(phase, coh)
-        # Low-coherence pixels are barriers: the integrator does not walk through them.
-        quality = np.where(coh >= cfg.unwrap_min_coherence, quality, -np.inf)
-        field = unwrap_quality_guided(phase, quality, min_quality=0.0)
+        if cfg.unwrap_method == "separable":
+            field = unwrap_separable(
+                phase,
+                coh,
+                sigma=cfg.unwrap_sigma,
+                min_coherence=cfg.unwrap_min_coherence,
+            )
+        else:
+            quality = reliability(phase, coh)
+            # Low-coherence pixels are barriers: the integrator does not walk through them.
+            quality = np.where(coh >= cfg.unwrap_min_coherence, quality, -np.inf)
+            field = unwrap_quality_guided(phase, quality, min_quality=0.0)
         field = remove_ramp(field, coh, border_px=cfg.ramp_border_px)
         unwrapped[index] = field
     workspace.unwrapped = unwrapped
@@ -212,8 +233,8 @@ def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
     valid = np.isfinite(unwrapped)
     _log(
         log,
-        "Unwrapped filtered phase with quality-guided integration and removed a "
-        f"border plane ({cfg.ramp_border_px} px). "
+        f"Unwrapped filtered phase with {UNWRAP_LABELS.get(cfg.unwrap_method, cfg.unwrap_method)} "
+        f"and removed a border plane ({cfg.ramp_border_px} px). "
         f"Finite pixels: {100.0 * valid.mean():.1f}%.",
     )
 

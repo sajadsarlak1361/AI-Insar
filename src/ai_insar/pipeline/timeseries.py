@@ -32,7 +32,7 @@ import numpy as np
 from ai_insar.conventions import los_from_phase
 from ai_insar.pipeline.sbas import design_matrix, invert_sbas, linear_velocity, weighted_normal
 
-TIMESERIES_METHODS: tuple[str, ...] = ("sbas", "stacking", "nsbas", "ps", "linking")
+TIMESERIES_METHODS: tuple[str, ...] = ("sbas", "stacking", "nsbas", "ps", "linking", "seasonal")
 
 TIMESERIES_LABELS: dict[str, str] = {
     "sbas": "SBAS",
@@ -40,6 +40,7 @@ TIMESERIES_LABELS: dict[str, str] = {
     "nsbas": "NSBAS",
     "ps": "PS linear",
     "linking": "Phase linking",
+    "seasonal": "Seasonal",
 }
 
 TIMESERIES_SUMMARIES: dict[str, str] = {
@@ -69,6 +70,12 @@ TIMESERIES_SUMMARIES: dict[str, str] = {
         "matrix (NumPy linalg.eigh), then lifts those wrapped phases with the "
         "unwrapped pairs so a step larger than π keeps its sign. "
         "Dates are solved sequentially and the pixel work stays in NumPy."
+    ),
+    "seasonal": (
+        "Seasonal least squares fits one velocity plus a one-year sine and "
+        "cosine to the unwrapped interferograms. The fit is a 3×3 system per "
+        "pixel. InSARdev/core decomposes series with STL; that code is "
+        "source-available and is not included here."
     ),
 }
 
@@ -317,6 +324,53 @@ def sequential_phase_link(
     return los_m, _finite_velocity(times, los_m)
 
 
+def seasonal_least_squares(
+    unwrapped_phase: np.ndarray,
+    pairs: Sequence[tuple[int, int]],
+    times_year: np.ndarray,
+    wavelength_m: float,
+    weights: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """One velocity plus an annual harmonic, solved for every pixel at once.
+
+    Each interferogram observes the change in
+    ``v t + b sin(2π t) + c cos(2π t)``. Three unknowns, weighted by
+    coherence squared. The reported velocity is the linear coefficient.
+    """
+    observations = np.asarray(unwrapped_phase, dtype=np.float64)
+    times = np.asarray(times_year, dtype=np.float64)
+    used = np.asarray(weights, dtype=np.float64)
+    _check_observations(observations, pairs, used)
+    earlier = np.array([pair[0] for pair in pairs], dtype=np.int64)
+    later = np.array([pair[1] for pair in pairs], dtype=np.int64)
+    elapsed = times - times[0]
+    sine = np.sin(2.0 * np.pi * elapsed)
+    cosine = np.cos(2.0 * np.pi * elapsed)
+    design = np.column_stack(
+        [
+            elapsed[later] - elapsed[earlier],
+            sine[later] - sine[earlier],
+            cosine[later] - cosine[earlier],
+        ]
+    )
+    los_increment = los_from_phase(observations, wavelength_m)
+    normal, right = weighted_normal(design, los_increment, used)
+    system = np.moveaxis(normal, (0, 1), (-2, -1))
+    target = np.moveaxis(right, 0, -1)
+    diag = np.arange(3)
+    system[..., diag, diag] += 1e-8
+    solved = np.linalg.solve(system, target[..., None])[..., 0]
+    velocity = solved[..., 0]
+    sine_amp = solved[..., 1]
+    cosine_amp = solved[..., 2]
+    los_m = (
+        velocity[None, :, :] * elapsed[:, None, None]
+        + sine_amp[None, :, :] * (sine - sine[0])[:, None, None]
+        + cosine_amp[None, :, :] * (cosine - cosine[0])[:, None, None]
+    )
+    return los_m, velocity
+
+
 def invert_timeseries(
     method: str,
     *,
@@ -364,6 +418,10 @@ def invert_timeseries(
             min_coherence=ps_min_coherence,
         )
         return los_m, velocity
+    if method == "seasonal":
+        return seasonal_least_squares(
+            unwrapped_phase, pairs, times_year, wavelength_m, weights
+        )
     los_m, velocity = sequential_phase_link(
         unwrapped_phase, pairs, times_year, wavelength_m, weights, coherence
     )

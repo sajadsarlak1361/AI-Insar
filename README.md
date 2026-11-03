@@ -183,7 +183,8 @@ It flags both uplift and subsidence. It is not a trained neural network.
 ## Time-series methods
 
 Stage 6 is not only SBAS. Each technique has its own menu in the menu bar
-(SBAS, Stacking, NSBAS, PS linear, Phase linking). **Run** in that menu
+(SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal), and so does each
+unwrap (Quality-guided, Fast unwrap). **Run** in that menu
 selects the method and computes the series. The same choice is on the
 **Stage 6 method** list and under Pipeline → Settings:
 
@@ -193,7 +194,8 @@ selects the method and computes the series. The same choice is on the
 | Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. The series is that rate times time. |
 | NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
 | PS linear | Keeps pixels with amplitude dispersion ≤ 0.4 or mean coherence ≥ 0.5, then uses the stacking velocity. Other pixels are left empty. |
-| Phase linking | Each date is the coherence-weighted mean of `phase[earlier] + unwrapped pair`. Uses the unwrapped network, not an EMI eigenvalue fit. |
+| Phase linking | EMI principal eigenvector of the coherence matrix (`numpy.linalg.eigh`), then unwrapped pairs restore steps larger than π. |
+| Seasonal | One velocity plus a one-year sine and cosine, a 3×3 weighted least squares per pixel. |
 
 All five write the same LOS cube and velocity map. Negative velocity is motion
 away from the radar. Run all stages still uses SBAS unless you change the
@@ -208,10 +210,24 @@ algorithm; ``pip install "ai-insar[fast]"`` runs that walk in Numba, and the
 pure Python heap is the fallback. Numba is optional and is not required for
 ``ai-insar check``.
 
+Sources considered from [InSARdev](https://github.com/InSARdev): the MIT
+educational unwrapper in
+[InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`
+(Gaussian smooth, then separable `numpy.unwrap`) is the model for **Fast
+unwrap**, reimplemented here. Sentinel-1 TOPS deramp, OpenCV coregistration,
+OR-Tools branch cuts, and geocoding in that repo need orbits and a DEM, so
+they are not part of this radar-grid workbench.
+[InSARdev/core](https://github.com/InSARdev/core) (`insardev`,
+InSARdev-SAL-1.0) is source-available, not MIT, and its code is not included.
+Its SBAS, PSI/ADI, and STL time-series ideas are the reason **Seasonal** is a
+small least-squares harmonic instead of a copy of that STL routine. The BSD
+pieces `insardev_pygmtsar` and `insardev_toolkit` preprocess Sentinel-1/NISAR
+scenes; this app still starts from an SLC stack you already have.
+
 ## Windows
 
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.3/ai-insar-windows.zip)
-(`ai-insar-windows.zip` on the [v0.2.0-rc.3 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.3)).
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
+(`ai-insar-windows.zip` on the [v0.2.0-rc.4 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
 That package includes the Sentinel-1 SLC menu and the extra time-series methods. It is not committed to git.
 Unzip it and double-click `run_windows.bat`. It is a prerelease of the open
 fetch pull request, not the stable `v0.1.0` tag on `main`.
