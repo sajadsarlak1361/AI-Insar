@@ -14,7 +14,8 @@ import math
 import numpy as np
 from scipy.ndimage import gaussian_filter, uniform_filter
 
-UNWRAP_METHODS: tuple[str, ...] = ("quality", "separable")
+# Fast unwrap is first: it is the performance default for Run all stages.
+UNWRAP_METHODS: tuple[str, ...] = ("separable", "quality")
 UNWRAP_LABELS: dict[str, str] = {
     "quality": "Quality-guided",
     "separable": "Fast unwrap",
@@ -26,11 +27,13 @@ UNWRAP_SUMMARIES: dict[str, str] = {
         "otherwise it is a Python heap. Pixels below the coherence floor stay empty."
     ),
     "separable": (
-        "Fast unwrap smooths the complex interferogram with a Gaussian, then "
-        "uses NumPy's one-dimensional unwrap along range and azimuth, starting "
+        "Fast unwrap is the default for Run all stages and ai-insar check. "
+        "It smooths the complex interferogram with a Gaussian, then uses "
+        "NumPy's one-dimensional unwrap along range and azimuth, starting "
         "from the middle of the image. The idea follows the MIT educational "
-        "example in InSARdev/edu (NISAR/nisar_numpy.py). It is much faster than "
-        "a residue-by-residue search and is meant for smooth fields."
+        "example in InSARdev/edu (NISAR/nisar_numpy.py). It is meant for "
+        "smooth fields. Quality-guided is still available when you need the "
+        "slower coherence-ordered walk."
     ),
 }
 

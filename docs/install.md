@@ -91,11 +91,20 @@ large crop read in tiles):
 pip install -e ".[slc]"
 ```
 
-Numba speeds the interferogram product and the quality-guided unwrap:
+Numba speeds the interferogram product, the Goldstein overlap-add, and the
+quality-guided unwrap. The default Goldstein filter is a batched SciPy FFT
+and the default unwrap is the fast separable path, so a large stack is
+already faster without this extra. Neither step needs `insardev`.
 
 ```bash
 pip install -e ".[fast]"
 ```
+
+Time the synthetic path with `python scripts/bench_pipeline.py`. To run the
+same Goldstein FFT on PyTorch, install Torch yourself and set
+`AI_INSAR_FILTER=torch`. The default device is CPU
+(`AI_INSAR_FILTER_DEVICE=cpu`). GPU is not required, and the tests pass
+without Torch.
 
 ## Optional InSARdev (InSARdev-SAL-1.0)
 

@@ -266,7 +266,7 @@ def test_slc_roundtrip_sorts_dates_and_saves_products(tmp_path: Path):
     assert mask.shape == (16, 18)
     payload = json.loads((out / "products.json").read_text(encoding="utf-8"))
     assert payload["config"]["timeseries_method"] == "sbas"
-    assert payload["config"]["unwrap_method"] == "quality"
+    assert payload["config"]["unwrap_method"] == "separable"
 
 
 def test_windows_zip_contains_launcher(tmp_path: Path):

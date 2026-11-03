@@ -14,7 +14,7 @@ import numpy as np
 from ai_insar.conventions import DEFAULT_MASK_FRACTION, phase_from_los
 from ai_insar.pipeline.coherence import coherence_stack
 from ai_insar.pipeline.detect import detect_displacement
-from ai_insar.pipeline.filtering import filter_stack
+from ai_insar.pipeline.filtering import filter_stack, goldstein_filter
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
 from ai_insar.pipeline.synthetic import SLCStack
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
@@ -53,7 +53,7 @@ class PipelineConfig:
     ps_da_max: float = 0.4
     ps_min_coherence: float = 0.5
     nsbas_weight: float = 0.25
-    unwrap_method: str = "quality"
+    unwrap_method: str = "separable"
     unwrap_sigma: float = 2.0
 
     def __post_init__(self) -> None:
@@ -175,11 +175,13 @@ def compute_filter(workspace: Workspace, log: LogFn | None = None) -> None:
         residue_count(np.angle(workspace.filtered[index]))
         for index in range(workspace.filtered.shape[0])
     ]
+    filter_backend = getattr(goldstein_filter, "last_backend", "numpy")
     _log(
         log,
         f"Goldstein filter: alpha={cfg.goldstein_alpha:.2f}, window={cfg.goldstein_window}. "
         f"Wrapped residues after filtering: {sum(residues)} "
-        f"(per pair min {min(residues)}, max {max(residues)}).",
+        f"(per pair min {min(residues)}, max {max(residues)}). "
+        f"Backend: batched FFT ({filter_backend}).",
     )
 
 
@@ -206,7 +208,11 @@ def compute_coherence(workspace: Workspace, log: LogFn | None = None) -> None:
 
 
 def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
-    """Stage 5. Quality-guided unwrap of the filtered phase, then remove a border plane."""
+    """Stage 5. Unwrap the filtered phase, then remove a border plane.
+
+    The default method is the fast separable unwrap. Quality-guided remains
+    available by setting ``unwrap_method`` to ``quality``.
+    """
     if workspace.filtered is None or workspace.coherence is None:
         raise PipelineError("Filter the interferograms and estimate coherence before unwrapping.")
     cfg = workspace.config

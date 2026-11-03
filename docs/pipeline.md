@@ -78,11 +78,17 @@ alpha. **Light (α = 0.3)**, **Default (α = 0.5)**, and **Strong (α = 0.8)**
 set alpha and run the stage. The window stays at the Settings value
 (default 32). Pipeline → Goldstein filter is the same call.
 
-`goldstein_filter` overlap-adds Hann-windowed FFTs. With α = 0 the windows
-reconstruct the input (tested). The default is α = 0.5, window 32, overlap
-0.5. The spectrum is smoothed before it is raised to α. Images smaller than
-8 pixels, or a requested window below 8, are returned unchanged. The engine
-logs the count of 2π residues on the wrapped filtered phase.
+`goldstein_filter` overlap-adds a batched FFT of complex patches. With α = 0
+the windows reconstruct the input (tested). The default is α = 0.5, window
+32, overlap 0.5. Each patch spectrum is multiplied by `|FFT| ** alpha`
+after an optional smooth of `|FFT|` (`spectrum_smooth`, default 3). The
+batched transform follows InSARdev `goldstein_numpy` (Alexey Pechnikov),
+ported in-tree with the owner's permission. It does not import `insardev`.
+`AI_INSAR_FILTER=torch` uses PyTorch for that FFT when Torch is installed;
+the default is SciPy. Numba (`pip install "ai-insar[fast]"`) speeds the
+overlap-add. Images smaller than 8 pixels, or a requested window below 8,
+are returned unchanged. The engine logs the count of 2π residues on the
+wrapped filtered phase.
 
 Unwrapping uses this phase. Coherence does not.
 
@@ -104,17 +110,20 @@ The estimate does not read the Goldstein output.
 
 ### 5. Unwrap
 
-The **Quality-guided** menu is the default. Reliability is coherence divided
-by one plus a local phase second-difference. Pixels below
+The **Fast unwrap** menu is the default for **Run all stages**, `ai-insar
+check`, and `ai-insar run`. It smooths the complex interferogram with a
+Gaussian and then calls `numpy.unwrap` along range and azimuth, starting
+from the middle of the image. That is the separable unwrap reimplemented
+from the MIT example in InSARdev/edu `NISAR/nisar_numpy.py`. It is aimed at
+smooth fields and is the performance path on CPU.
+
+The **Quality-guided** menu is still available. Reliability is coherence
+divided by one plus a local phase second-difference. Pixels below
 `unwrap_min_coherence` (default 0.2) are barriers. Integration starts at the
 highest reliability pixel and adds the wrapped neighbour difference
 (`atan2(sin Δ, cos Δ)`). Numba runs that walk when it is installed
-(`pip install "ai-insar[fast]"`); otherwise it is a Python heap.
-
-The **Fast unwrap** menu smooths the complex interferogram with a Gaussian
-and then calls `numpy.unwrap` along range and azimuth, starting from the
-middle of the image. That is the separable unwrap reimplemented from the MIT
-example in InSARdev/edu `NISAR/nisar_numpy.py`. It is aimed at smooth phase.
+(`pip install "ai-insar[fast]"`); otherwise it is a Python heap. Set
+`PipelineConfig.unwrap_method` to `quality` to use it from code.
 
 `remove_ramp` then fits a plane on a border frame (default 4 px, weights at
 least 0.3) and subtracts it, so the stable frame is the phase reference. A
@@ -197,7 +206,7 @@ These stay at the code default unless you construct `PipelineConfig` yourself:
 | `ramp_border_px` | 4 | Border used to fit the plane. |
 | `detection_min_coherence` | 0.3 | Coherence gate. Separate from the unwrap floor. |
 | `detection_min_pixels` | 12 | Smallest connected component kept. |
-| `unwrap_method` | `quality` | `quality` (Quality-guided menu) or `separable` (Fast unwrap menu). |
+| `unwrap_method` | `separable` | `separable` (Fast unwrap menu, the default) or `quality` (Quality-guided menu). |
 | `unwrap_sigma` | 2.0 | Gaussian width, in pixels, for Fast unwrap only. |
 | `ps_da_max` | 0.4 | Amplitude-dispersion ceiling for PS linear. |
 | `ps_min_coherence` | 0.5 | Mean-coherence floor for PS linear. A pixel passes if either test passes. |

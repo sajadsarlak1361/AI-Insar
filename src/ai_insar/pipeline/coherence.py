@@ -31,6 +31,8 @@ def coherence_map(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarra
     ``gamma = |mean(late * conj(early))| / sqrt(mean(|early|^2) * mean(|late|^2))``
     with a ``window`` by ``window`` boxcar. This uses the SLCs, not the
     Goldstein-filtered interferogram, so filtering cannot inflate coherence.
+    The same product and boxcar are the multilook coherence in the MIT
+    InSARdev/edu examples (``NISAR/nisar_numpy.py``, ``Sentinel-1/s1.py``).
     """
     s1 = np.asarray(early)
     s2 = np.asarray(late)
@@ -40,14 +42,7 @@ def coherence_map(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarra
         raise ValueError("coherence requires complex SLCs")
     if int(window) < 1:
         raise ValueError("window must be at least 1")
-    ifg = s2 * np.conj(s1)
-    size = int(window)
-    real = uniform_filter(ifg.real.astype(np.float64), size=size, mode="reflect")
-    imag = uniform_filter(ifg.imag.astype(np.float64), size=size, mode="reflect")
-    power1 = uniform_filter((s1.real.astype(np.float64) ** 2 + s1.imag.astype(np.float64) ** 2), size=size)
-    power2 = uniform_filter((s2.real.astype(np.float64) ** 2 + s2.imag.astype(np.float64) ** 2), size=size)
-    gamma = np.abs(real + 1j * imag) / np.sqrt(power1 * power2 + 1e-12)
-    return np.clip(gamma, 0.0, 1.0).astype(np.float32)
+    return _coherence_plane(s1, s2, int(window))
 
 
 def coherence_stack(
@@ -62,6 +57,26 @@ def coherence_stack(
     if len(pairs) == 0:
         raise ValueError("pairs is empty")
     out = np.empty((len(pairs), data.shape[1], data.shape[2]), dtype=np.float32)
+    size = int(window)
     for index, (earlier, later) in enumerate(pairs):
-        out[index] = coherence_map(data[int(earlier)], data[int(later)], window)
+        out[index] = _coherence_plane(data[int(earlier)], data[int(later)], size)
     return out
+
+
+def _coherence_plane(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarray:
+    """Boxcar coherence of one SLC pair. Same result as a multilook ratio on a single look grid."""
+    product = late * np.conj(early)
+    real = uniform_filter(product.real.astype(np.float64), size=window, mode="reflect")
+    imag = uniform_filter(product.imag.astype(np.float64), size=window, mode="reflect")
+    power1 = uniform_filter(
+        early.real.astype(np.float64) ** 2 + early.imag.astype(np.float64) ** 2,
+        size=window,
+        mode="reflect",
+    )
+    power2 = uniform_filter(
+        late.real.astype(np.float64) ** 2 + late.imag.astype(np.float64) ** 2,
+        size=window,
+        mode="reflect",
+    )
+    gamma = np.abs(real + 1j * imag) / np.sqrt(power1 * power2 + 1e-12)
+    return np.clip(gamma, 0.0, 1.0).astype(np.float32)

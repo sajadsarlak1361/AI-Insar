@@ -1,11 +1,17 @@
-"""Optional InSARdev calls. SAL and BSD sources are not copied into this tree.
+"""Optional InSARdev calls. The full SAL package is not a dependency.
+
+The batched Goldstein kernel is adapted into ``pipeline/filtering.py`` with
+the repository owner's permission, so the fast path does not import
+``insardev``. See NOTICE.
 
 InSARdev/core ships three licenses:
 
 - ``insardev`` is InSARdev-SAL-1.0 (source-available, not OSI open source).
   Section 4 allows non-commercial redistribution only when the copy stays
   under that same license, with the copyright notice and the license text.
-  This repository is MIT, so those modules are not vendored. The extra
+  This repository is MIT. The batched Goldstein kernel is adapted into
+  ``pipeline/filtering.py`` with the owner's permission (see NOTICE). The
+  rest of the package is not vendored. The extra
   ``pip install "ai-insar[insardev]"`` installs the upstream package for a
   caller who accepts SAL. Funded academic, institutional, and professional
   use needs a subscription. See NOTICE.
