@@ -49,8 +49,11 @@ Limitations
 AI Insar is a small-stack desktop workbench. It is not a replacement for
 ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
 
-- Inputs are in-memory SLC stacks on a radar grid. There is no DEM,
-  geocoding, earth-flattening, ESD, or burst stitching.
+- Inputs are in-memory SLC stacks on a radar grid. Data → Fetch Sentinel-1
+  SLC can search ASF and import a crop from a local measurement TIFF or
+  .npy. Downloading the zip needs Earthdata credentials and the optional
+  asf_search package. There is still no DEM, geocoding, earth-flattening,
+  ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.
 - Unwrapping is quality-guided path following. Dense residues can leave

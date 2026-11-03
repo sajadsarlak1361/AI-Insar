@@ -114,6 +114,49 @@ sorted so the index increases with time. Real-valued arrays are rejected.
 There is no DEM, geocoding, or orbit file. The stack is already the radar-grid
 cube you want to process.
 
+## Sentinel-1 SLC from ASF
+
+File → **Fetch Sentinel-1 SLC…** and the **Data** menu search the public ASF
+catalog. That search does not need a login. Pick a bounding box and a date
+range, then either:
+
+- **Import files…** or **Import SAFE folder…** to read a crop from measurement
+  GeoTIFFs or complex `.npy` planes you already downloaded, or
+- **Download selected…** to fetch the SLC zip from ASF.
+
+Download needs an Earthdata account. Put the login in the environment or in
+`~/.netrc`. Do not commit it and do not paste it into the repository:
+
+```bash
+export EARTHDATA_USERNAME="your-earthdata-user"
+export EARTHDATA_PASSWORD="your-earthdata-password"
+```
+
+```text
+machine urs.earthdata.nasa.gov
+login your-earthdata-user
+password your-earthdata-password
+```
+
+Downloading also needs the optional packages (`asf_search` for the transfer,
+`tifffile` and `zarr` to read a crop from a large measurement TIFF):
+
+```bash
+pip install "ai-insar[slc]"
+```
+
+A Sentinel-1 SLC zip is often several gigabytes. The dialog states the catalog
+size and asks before it downloads. After the zip is extracted, import the SAFE
+folder; the workbench reads one measurement raster per folder (IW1 VV when
+several are present) and the crop you set (default 256×256 at the origin). A
+window that starts at 0,0 and is larger than a small raster uses the whole
+raster. The imported cube is `complex64` with shape `(dates, height, width)`
+and then uses the same seven stages as the synthetic sample. It is not
+geocoded.
+
+The synthetic sample and File → Load SLC stack are unchanged. `ai-insar check`
+still uses only the built-in bowl and does not contact ASF.
+
 ## Synthetic demo
 
 `Generate / load sample SLC` builds eight 72×72 C-band acquisitions every

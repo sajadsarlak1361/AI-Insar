@@ -10,6 +10,7 @@ from ai_insar import __version__
 from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
 from ai_insar.io_stack import load_slc, save_products
@@ -237,12 +238,22 @@ class MainWindow(QtWidgets.QMainWindow):
         load = file_menu.addAction("Load SLC stack…")
         load.setShortcut(QtGui.QKeySequence("Ctrl+O"))
         load.triggered.connect(self._click(self.load_stack, 0))
+        fetch = QtGui.QAction("Fetch Sentinel-1 SLC…", self)
+        fetch.setObjectName("fetchSentinelAction")
+        fetch.triggered.connect(self._click(self.fetch_sentinel, 0))
+        file_menu.addAction(fetch)
         save = file_menu.addAction("Save products…")
         save.setShortcut(QtGui.QKeySequence("Ctrl+S"))
         save.triggered.connect(self._click(self.save_outputs, None))
         file_menu.addSeparator()
         quit_action = file_menu.addAction("Exit")
         quit_action.triggered.connect(self.close)
+
+        data_menu = self.menuBar().addMenu("Data")
+        data_menu.addAction(fetch)
+        data_menu.addAction("Import local SAFE / TIFF…").triggered.connect(
+            self._click(self.fetch_sentinel, 0)
+        )
 
         pipeline = self.menuBar().addMenu("Pipeline")
         steps = (
@@ -325,6 +336,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.stack = stack
         self.workspace.clear_products()
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
+        self._preferred_layer = "SLC amplitude"
+
+    def fetch_sentinel(self) -> None:
+        dialog = FetchSentinelDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted or dialog.stack is None:
+            return
+        self.workspace.stack = dialog.stack
+        self.workspace.clear_products()
+        stack = dialog.stack
+        self._log(
+            f"Imported SLC {stack.data.shape} {stack.data.dtype}. {stack.description}"
+        )
         self._preferred_layer = "SLC amplitude"
 
     def save_outputs(self) -> None:
