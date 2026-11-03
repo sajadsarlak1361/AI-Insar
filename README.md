@@ -30,6 +30,18 @@ pip install -e ".[dev]"            # includes pytest
 package: install from this checkout. Runtime dependencies are PySide6, NumPy,
 and SciPy. If PySide6 cannot be imported, the GUI tries PyQt6.
 
+Optional academic extra, Python 3.12 or newer:
+
+```bash
+pip install "ai-insar[insardev]"
+```
+
+That installs upstream `insardev` (InSARdev-SAL-1.0). The SAL sources stay
+out of this MIT tree. Installing or using the extra means you accept that
+license, including a subscription for funded academic use. The default
+install keeps the NumPy/Numba interferogram. Details:
+[InSARdev](#insardev) and [NOTICE](NOTICE).
+
 Notes: [docs/install.md](docs/install.md).
 
 Windows without a clone: the stable zip is
@@ -112,12 +124,13 @@ SBAS and NSBAS build the normal equations with NumPy `einsum` and
 InSAR.dev.
 
 [InSARdev/core](https://github.com/InSARdev/core) (`insardev`,
-InSARdev-SAL-1.0) is source-available. Its code is not in this repository.
-Seasonal exists because that project decomposes series with STL; this fit is
-a small least-squares harmonic, not a copy of that routine. TOPS deramp,
-OpenCV coregistration, OR-Tools branch cuts, and geocoding from
+InSARdev-SAL-1.0) is source-available. Its source stays upstream.
+`pip install "ai-insar[insardev]"` opts into that package. Seasonal exists
+because that project decomposes series with STL; this fit is a small
+least-squares harmonic, written here. TOPS deramp, OpenCV coregistration,
+OR-Tools branch cuts, and geocoding from
 [InSARdev/edu](https://github.com/InSARdev/edu) `Sentinel-1/s1.py` need orbits
-and a DEM, so they are not included.
+and a DEM, so this workbench leaves them out.
 
 Stage inputs, outputs, and the default table: [docs/pipeline.md](docs/pipeline.md).
 
@@ -211,7 +224,7 @@ including every displacement date. See
 ## Limitations
 
 - One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
-- A multi-zip SAFE stack uses one shared crop window. That is teaching crop-window alignment, not coregistration.
+- A multi-zip SAFE stack uses one shared crop window. That is teaching crop-window alignment, not coregistration. The `insardev` extra does not resample that crop.
 - Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
@@ -246,12 +259,27 @@ branch cuts, and geocoding from `s1.py` are not included.
 [InSARdev/core](https://github.com/InSARdev/core) `insardev` is
 InSARdev-SAL-1.0. That license allows non-commercial redistribution only
 when the copy stays under SAL. This repository is MIT, so those modules are
-not vendored. `pip install insardev` is optional and is your own acceptance
-of SAL, including the subscription for funded academic use. The SAFE stack
-and the interferogram stage do not call it. The BSD packages
-`insardev_pygmtsar` and `insardev_toolkit` are not copied either: they
-expect GMTSAR burst folders, orbits, and a DEM. ESA SNAP is GPL and is not
-copied. Full wording: [NOTICE](NOTICE).
+not vendored. `pip install "ai-insar[insardev]"` (Python 3.12+) installs
+the upstream package. Installing or using it is your acceptance of SAL,
+including the subscription for funded academic use. The same package is
+`pip install insardev` if you install it yourself.
+
+When that import succeeds, interferograms call
+`Stack.pairs().interferogram()` with the later date as the reference
+(single-look, no filter). The stage keeps that cube only when it matches
+`later × conjugate(earlier)`. Otherwise, and when you set
+`AI_INSAR_BACKEND=numpy`, the NumPy/Numba path runs. A SAFE zip crop stays
+on this project's reader: shared rows and columns, no coregistration.
+`Stack.load` is used for geocoded zarr scenes when that call returns a
+complex cube. `Stack.align` aligns burst phase on a loaded stack.
+
+`insardev_toolkit` (BSD-3-Clause) comes in with the extra because upstream
+depends on it. `PyGMTSAR.safeload` translates SAFE bursts when you pass
+burst ids. `insardev_pygmtsar` is BSD-3-Clause and is not part of the
+extra. Install it yourself if you want `S1.align_ref` and `S1.align_rep`.
+Those calls need a burst directory, orbits, and a DEM. They are not copied
+into this tree, and they do not resample the zip crop. ESA SNAP is GPL and
+is not copied. Full wording: [NOTICE](NOTICE).
 
 ## License
 

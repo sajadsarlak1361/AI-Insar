@@ -60,7 +60,10 @@ cube.
 This alignment is a teaching crop window. Pixels at the same row and column
 are not resampled onto a common radar grid. There is no coregistration,
 deburst, or orbit-based shift. Scenes that do not already share that window
-will not make a meaningful interferogram.
+will not make a meaningful interferogram. `pip install "ai-insar[insardev]"`
+does not change this crop. That extra calls `insardev` for interferograms
+when the single-look product matches `later * conjugate(earlier)`, and
+`Stack.load` for geocoded zarr scenes. See [NOTICE](../NOTICE).
 
 ## `slc.npy`
 
