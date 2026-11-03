@@ -199,10 +199,19 @@ All five write the same LOS cube and velocity map. Negative velocity is motion
 away from the radar. Run all stages still uses SBAS unless you change the
 method first. This is a teaching set, not StaMPS or MintPy.
 
+The inversions are batched. SBAS and NSBAS build the normal equations with
+NumPy ``einsum`` and solve them with ``numpy.linalg.solve``. Stacking is one
+reduction over the pair axis. Phase linking uses ``numpy.linalg.eigh`` on the
+per-pixel coherence matrix (EMI). Coherence and the Goldstein filter use
+SciPy's ``ndimage`` and NumPy FFTs. The quality-guided unwrap stays the same
+algorithm; ``pip install "ai-insar[fast]"`` runs that walk in Numba, and the
+pure Python heap is the fallback. Numba is optional and is not required for
+``ai-insar check``.
+
 ## Windows
 
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.2/ai-insar-windows.zip)
-(`ai-insar-windows.zip` on the [v0.2.0-rc.2 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.2)).
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.3/ai-insar-windows.zip)
+(`ai-insar-windows.zip` on the [v0.2.0-rc.3 prerelease](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.3)).
 That package includes the Sentinel-1 SLC menu and the extra time-series methods. It is not committed to git.
 Unzip it and double-click `run_windows.bat`. It is a prerelease of the open
 fetch pull request, not the stable `v0.1.0` tag on `main`.

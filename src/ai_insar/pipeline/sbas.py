@@ -31,6 +31,26 @@ def design_matrix(pairs: Sequence[tuple[int, int]], n_dates: int) -> np.ndarray:
     return matrix
 
 
+def weighted_normal(
+    design: np.ndarray,
+    observations: np.ndarray,
+    weights: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pixel-wise normal equations ``Gᵀ W G`` and ``Gᵀ W b`` via einsum.
+
+    ``design`` is ``(n_obs, n_unknown)`` and is the same at every pixel.
+    ``observations`` and ``weights`` are ``(n_obs, height, width)``. Non-finite
+    samples are dropped. This is the batched form of the old per-pair loop.
+    """
+    finite = np.isfinite(observations) & np.isfinite(weights)
+    weight = np.where(finite, np.clip(weights, 0.0, None), 0.0)
+    obs = np.where(finite, observations, 0.0)
+    gram = design[:, :, None] * design[:, None, :]
+    normal = np.einsum("kab,khw->abhw", gram, weight, optimize=True)
+    right = np.einsum("ku,khw->uhw", design, weight * obs, optimize=True)
+    return normal, right
+
+
 def linear_velocity(times_year: np.ndarray, los_m: np.ndarray) -> np.ndarray:
     """Per-pixel slope of LOS displacement against time, in meters per year."""
     times = np.asarray(times_year, dtype=np.float64)
@@ -77,7 +97,7 @@ def invert_sbas(
     observations = np.asarray(unwrapped_phase, dtype=np.float64)
     if observations.ndim != 3:
         raise ValueError("unwrapped_phase must have shape (n_pairs, height, width)")
-    n_pairs, height, width = observations.shape
+    n_pairs = observations.shape[0]
     if len(pairs) != n_pairs:
         raise ValueError("pairs and unwrapped_phase are different lengths")
     times = np.asarray(times_year, dtype=np.float64)
@@ -91,22 +111,7 @@ def invert_sbas(
         if used_weights.shape != observations.shape:
             raise ValueError("weights must match unwrapped_phase")
 
-    normal = np.zeros((n_unknown, n_unknown, height, width), dtype=np.float64)
-    right = np.zeros((n_unknown, height, width), dtype=np.float64)
-    for index in range(n_pairs):
-        row = matrix[index]
-        finite = np.isfinite(observations[index]) & np.isfinite(used_weights[index])
-        weight = np.where(finite, np.clip(used_weights[index], 0.0, None), 0.0)
-        obs = np.where(finite, observations[index], 0.0)
-        for col_a in range(n_unknown):
-            if row[col_a] == 0.0:
-                continue
-            right[col_a] += row[col_a] * weight * obs
-            for col_b in range(n_unknown):
-                if row[col_b] == 0.0:
-                    continue
-                normal[col_a, col_b] += (row[col_a] * row[col_b]) * weight
-
+    normal, right = weighted_normal(matrix, observations, used_weights)
     system = np.moveaxis(normal, (0, 1), (-2, -1))
     target = np.moveaxis(right, 0, -1)
     diag = np.arange(n_unknown)
@@ -115,7 +120,11 @@ def invert_sbas(
     # ``solve`` rejects a vector whose batch shape can be read as (M, K).
     solved = np.linalg.solve(system, target[..., None])[..., 0]
     phase_unknown = np.moveaxis(solved, -1, 0)
-    phase = np.concatenate([np.zeros((1, height, width), dtype=np.float64), phase_unknown], axis=0)
+    _height, _width = phase_unknown.shape[1:]
+    phase = np.concatenate(
+        [np.zeros((1, _height, _width), dtype=np.float64), phase_unknown],
+        axis=0,
+    )
     los_m = los_from_phase(phase, wavelength_m)
     velocity = linear_velocity(times, los_m)
     return los_m, velocity

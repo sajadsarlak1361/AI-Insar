@@ -19,8 +19,8 @@ ps
     Persistent-scatterer selection from amplitude dispersion or mean
     coherence, then the stacking velocity on the pixels that pass.
 linking
-    Sequential coherence-weighted phase linking on the unwrapped network:
-    each date is the weighted mean of ``phase[earlier] + unwrapped pair``.
+    EMI principal-eigenvector phase linking (batched ``eigh``), lifted with
+    the unwrapped pairs so steps larger than π keep their sign.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from ai_insar.conventions import los_from_phase
-from ai_insar.pipeline.sbas import design_matrix, invert_sbas, linear_velocity
+from ai_insar.pipeline.sbas import design_matrix, invert_sbas, linear_velocity, weighted_normal
 
 TIMESERIES_METHODS: tuple[str, ...] = ("sbas", "stacking", "nsbas", "ps", "linking")
 
@@ -65,9 +65,10 @@ TIMESERIES_SUMMARIES: dict[str, str] = {
         "velocity. Other pixels are left empty. This is not StaMPS."
     ),
     "linking": (
-        "Phase linking estimates each date as the coherence-weighted mean of "
-        "phase[earlier] + the unwrapped pair. It uses the unwrapped network "
-        "already computed. It is not the EMI eigenvalue method."
+        "Phase linking runs a batched EMI eigendecomposition of the coherence "
+        "matrix (NumPy linalg.eigh), then lifts those wrapped phases with the "
+        "unwrapped pairs so a step larger than π keeps its sign. "
+        "Dates are solved sequentially and the pixel work stays in NumPy."
     ),
 }
 
@@ -96,18 +97,18 @@ def stack_interferograms(
     times = np.asarray(times_year, dtype=np.float64)
     used = np.asarray(weights, dtype=np.float64)
     _check_observations(observations, pairs, used)
-    height, width = observations.shape[1:]
-    numerator = np.zeros((height, width), dtype=np.float64)
-    denominator = np.zeros((height, width), dtype=np.float64)
-    for index, (earlier, later) in enumerate(pairs):
-        span = float(times[later] - times[earlier])
-        if span <= 0:
-            raise ValueError("pair times must increase")
-        increment = los_from_phase(observations[index], wavelength_m)
-        weight = np.where(np.isfinite(increment), np.clip(used[index], 0.0, None), 0.0)
-        rate = np.where(weight > 0, increment / span, 0.0)
-        numerator += weight * rate
-        denominator += weight
+    earlier = np.array([pair[0] for pair in pairs], dtype=np.int64)
+    later = np.array([pair[1] for pair in pairs], dtype=np.int64)
+    span = times[later] - times[earlier]
+    if np.any(span <= 0):
+        raise ValueError("pair times must increase")
+    increment = los_from_phase(observations, wavelength_m)
+    finite = np.isfinite(increment) & np.isfinite(used)
+    weight = np.where(finite, np.clip(used, 0.0, None), 0.0)
+    rate = np.zeros_like(increment)
+    np.divide(increment, span[:, None, None], out=rate, where=weight > 0)
+    numerator = np.sum(weight * rate, axis=0)
+    denominator = np.sum(weight, axis=0)
     velocity = np.where(denominator > 0, numerator / np.maximum(denominator, 1e-12), np.nan)
     elapsed = (times - times[0])[:, None, None]
     los_m = velocity[None, :, :] * elapsed
@@ -139,26 +140,16 @@ def invert_nsbas(
     times = np.asarray(times_year, dtype=np.float64)
     used = np.asarray(weights, dtype=np.float64)
     _check_observations(observations, pairs, used)
-    n_pairs, height, width = observations.shape
+    _n_pairs, height, width = observations.shape
     n_dates = int(times.shape[0])
     matrix = design_matrix(pairs, n_dates)
     n_phase = n_dates - 1
     n_unknown = n_phase + 1
+    phase_normal, phase_right = weighted_normal(matrix, observations, used)
     normal = np.zeros((n_unknown, n_unknown, height, width), dtype=np.float64)
     right = np.zeros((n_unknown, height, width), dtype=np.float64)
-    for index in range(n_pairs):
-        row = matrix[index]
-        finite = np.isfinite(observations[index]) & np.isfinite(used[index])
-        weight = np.where(finite, np.clip(used[index], 0.0, None), 0.0)
-        obs = np.where(finite, observations[index], 0.0)
-        for col_a in range(n_phase):
-            if row[col_a] == 0.0:
-                continue
-            right[col_a] += row[col_a] * weight * obs
-            for col_b in range(n_phase):
-                if row[col_b] == 0.0:
-                    continue
-                normal[col_a, col_b] += (row[col_a] * row[col_b]) * weight
+    normal[:n_phase, :n_phase] = phase_normal
+    right[:n_phase] = phase_right
     penalty = float(constraint_weight)
     for date_index in range(1, n_dates):
         unknown = date_index - 1
@@ -236,43 +227,92 @@ def persistent_scatterer_velocity(
     return los_m, velocity, selected
 
 
+def emi_principal_phase(
+    coherence: np.ndarray,
+    interferometric_phase: np.ndarray,
+    pairs: Sequence[tuple[int, int]],
+    n_dates: int,
+) -> np.ndarray:
+    """Wrapped phase series from one batched Hermitian eigendecomposition.
+
+    This is the small-stack EMI / principal-eigenvector linker: the complex
+    coherence matrix is built per pixel and ``numpy.linalg.eigh`` returns its
+    dominant eigenvector. The phase of that vector is the linked wrapped phase,
+    referenced so date 0 has phase 0. Increments larger than π are not stored
+    in the complex matrix; :func:`sequential_phase_link` restores them from
+    the unwrapped pairs.
+    """
+    gamma = np.clip(np.asarray(coherence, dtype=np.float64), 0.0, 1.0)
+    phase = np.asarray(interferometric_phase, dtype=np.float64)
+    if gamma.shape != phase.shape or gamma.ndim != 3:
+        raise ValueError("coherence and phase must have shape (n_pairs, height, width)")
+    if len(pairs) != gamma.shape[0]:
+        raise ValueError("pairs and coherence are different lengths")
+    height, width = gamma.shape[1:]
+    covariance = np.zeros((height, width, n_dates, n_dates), dtype=np.complex128)
+    diagonal = np.arange(n_dates)
+    covariance[:, :, diagonal, diagonal] = 1.0
+    for index, (earlier, later) in enumerate(pairs):
+        sample = gamma[index] * np.exp(1j * phase[index])
+        sample = np.where(np.isfinite(phase[index]), sample, 0.0)
+        # C[later, earlier] = γ exp(i(φ_later-φ_earlier)) matches v vᴴ.
+        covariance[:, :, later, earlier] = sample
+        covariance[:, :, earlier, later] = np.conj(sample)
+    covariance = 0.5 * (covariance + np.conjugate(np.swapaxes(covariance, -1, -2)))
+    _values, vectors = np.linalg.eigh(covariance)
+    principal = vectors[..., -1]
+    reference = principal[..., :1]
+    gauge = np.exp(-1j * np.angle(reference))
+    gauge = np.where(np.abs(reference) > 0, gauge, 1.0)
+    linked = np.angle(principal * gauge)
+    return np.moveaxis(linked, -1, 0)
+
+
 def sequential_phase_link(
     unwrapped_phase: np.ndarray,
     pairs: Sequence[tuple[int, int]],
     times_year: np.ndarray,
     wavelength_m: float,
     weights: np.ndarray,
+    coherence: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Coherence-weighted sequential linking of the unwrapped network.
+    """EMI phase link, lifted onto the unwrapped network.
 
-    Date 0 is zero. Each later date is the weighted mean of
-    ``phase[earlier] + unwrapped(earlier, later)`` over pairs that touch it.
-    Short-baseline pairs that were already unwrapped supply the increments, so
-    a step larger than π is not re-wrapped. This is the sequential estimator
-    idea (one date at a time, coherence as the weight), not the EMI eigenvalue
-    decomposition of a full coherence matrix.
+    ``numpy.linalg.eigh`` estimates a wrapped phase at every date from the
+    complex coherence matrix. Each later date is then the coherence-weighted
+    mean of ``phase[earlier] + unwrapped pair`` so increments larger than π
+    keep the sign already unwrapped. If a date has no unwrapped link, the
+    wrapped EMI step from the previous date is used instead.
     """
     observations = np.asarray(unwrapped_phase, dtype=np.float64)
     used = np.asarray(weights, dtype=np.float64)
     times = np.asarray(times_year, dtype=np.float64)
     _check_observations(observations, pairs, used)
     n_dates = int(times.shape[0])
-    height, width = observations.shape[1:]
+    gamma = np.sqrt(np.clip(used, 0.0, None)) if coherence is None else np.asarray(coherence, dtype=np.float64)
+    emi = emi_principal_phase(gamma, observations, pairs, n_dates)
     by_later: dict[int, list[tuple[int, int]]] = {date: [] for date in range(n_dates)}
     for index, (earlier, later) in enumerate(pairs):
         by_later[int(later)].append((int(earlier), index))
-    phase = np.zeros((n_dates, height, width), dtype=np.float64)
+    phase = np.zeros((n_dates, observations.shape[1], observations.shape[2]), dtype=np.float64)
     for date in range(1, n_dates):
-        numerator = np.zeros((height, width), dtype=np.float64)
-        denominator = np.zeros((height, width), dtype=np.float64)
-        for earlier, index in by_later[date]:
-            estimate = phase[earlier] + observations[index]
-            weight = np.clip(used[index], 0.0, None)
-            finite = np.isfinite(estimate) & np.isfinite(weight) & np.isfinite(phase[earlier])
+        links = by_later[date]
+        if links:
+            earlier_index = [item[0] for item in links]
+            pair_index = [item[1] for item in links]
+            estimate = phase[earlier_index] + observations[pair_index]
+            weight = np.clip(used[pair_index], 0.0, None)
+            finite = np.isfinite(estimate) & np.isfinite(weight) & np.isfinite(phase[earlier_index])
             weight = np.where(finite, weight, 0.0)
-            numerator += weight * np.where(finite, estimate, 0.0)
-            denominator += weight
-        phase[date] = np.where(denominator > 0, numerator / np.maximum(denominator, 1e-12), np.nan)
+            numerator = np.sum(weight * np.where(finite, estimate, 0.0), axis=0)
+            denominator = np.sum(weight, axis=0)
+            linked = numerator / np.maximum(denominator, 1e-12)
+        else:
+            denominator = np.zeros(observations.shape[1:], dtype=np.float64)
+            linked = np.zeros(observations.shape[1:], dtype=np.float64)
+        emi_step = np.angle(np.exp(1j * (emi[date] - emi[date - 1])))
+        fallback = phase[date - 1] + emi_step
+        phase[date] = np.where(denominator > 0, linked, fallback)
     los_m = los_from_phase(phase, wavelength_m)
     return los_m, _finite_velocity(times, los_m)
 
@@ -325,7 +365,7 @@ def invert_timeseries(
         )
         return los_m, velocity
     los_m, velocity = sequential_phase_link(
-        unwrapped_phase, pairs, times_year, wavelength_m, weights
+        unwrapped_phase, pairs, times_year, wavelength_m, weights, coherence
     )
     return los_m, velocity
 

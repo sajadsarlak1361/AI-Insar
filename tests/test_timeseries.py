@@ -60,6 +60,21 @@ def test_each_method_recovers_subsidence(method):
     assert workspace.config.timeseries_method == method
 
 
+def test_emi_recovers_a_subfringe_phase_series():
+    from ai_insar.pipeline.timeseries import emi_principal_phase
+
+    dates = 4
+    true = np.array([0.0, 0.25, 0.55, 0.9])
+    pairs = [(i, j) for i in range(dates) for j in range(i + 1, dates)]
+    phase = np.zeros((len(pairs), 2, 2))
+    coherence = np.full_like(phase, 0.95)
+    for index, (earlier, later) in enumerate(pairs):
+        phase[index] = true[later] - true[earlier]
+    linked = emi_principal_phase(coherence, phase, pairs, dates)
+    offset = linked[:, 0, 0] - true
+    assert np.max(np.abs(linked[:, 0, 0] - true - np.median(offset))) < 0.05
+
+
 def test_sbas_remains_the_default():
     assert PipelineConfig().timeseries_method == "sbas"
     assert "sbas" in TIMESERIES_METHODS
