@@ -7,6 +7,17 @@ a network connection so pip can download NumPy, SciPy, and PySide6.
 The launcher does not bundle those libraries. It creates a virtual environment
 and installs the local project.
 
+## Download the Windows zip from Releases
+
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)).
+
+Unzip it, open the `ai-insar` folder, and double-click `run_windows.bat`.
+The zip is a source package of tag `v0.1.0` on `main`. It is attached to the
+GitHub Release and is not stored in the git tree (`dist/` stays gitignored).
+You still need Python 3.10+ and a network connection the first time, because
+the batch file installs NumPy, SciPy, and PySide6 into `.venv`.
+
 ## 1. Install Python
 
 1. Download Python from [python.org](https://www.python.org/downloads/windows/).

@@ -66,7 +66,8 @@ install from the checkout. PySide6, NumPy, and SciPy are the runtime
 dependencies. If PySide6 cannot be imported, the GUI tries PyQt6.
 
 Full notes, including how to confirm the install: [docs/install.md](docs/install.md).
-Windows: [WINDOWS.md](WINDOWS.md).
+
+On Windows you can skip the clone: [Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip) (`ai-insar-windows.zip` on the [v0.1.0 release](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)). Unzip it and double-click `run_windows.bat`. That asset is not committed to the git tree. Details: [WINDOWS.md](WINDOWS.md).
 
 ## Quick start
 
@@ -139,7 +140,7 @@ m/yr). Truth arrays exist only for this synthetic stack.
 | [docs/data-format.md](docs/data-format.md) | `slc.npy`, sidecar JSON, `products.json` |
 | [docs/cli.md](docs/cli.md) | `ai-insar --help`, exit codes, example `check` output |
 | [docs/limitations.md](docs/limitations.md) | What the chain does not do |
-| [WINDOWS.md](WINDOWS.md) | `run_windows.bat` and `dist/ai-insar-windows.zip` |
+| [WINDOWS.md](WINDOWS.md) | Release zip, `run_windows.bat`, and `dist/ai-insar-windows.zip` |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and how to keep docs honest |
 
 ## Tests
