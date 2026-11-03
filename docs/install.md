@@ -81,3 +81,23 @@ PYTHONPATH=src python -m ai_insar check
 ```
 
 Prefer `pip install -e .` so `ai-insar` is on `PATH`.
+
+## Optional readers
+
+Measurement GeoTIFFs inside a SAFE zip need `tifffile` (and `zarr` for a
+large crop read in tiles):
+
+```bash
+pip install -e ".[slc]"
+```
+
+Numba speeds the interferogram product and the quality-guided unwrap:
+
+```bash
+pip install -e ".[fast]"
+```
+
+`insardev` (InSARdev-SAL-1.0) is not a project extra and is not vendored.
+Installing it is optional and means you accept that license yourself,
+including a subscription for funded academic use. The SAFE stack does not
+import it. See [NOTICE](../NOTICE).

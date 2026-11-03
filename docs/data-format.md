@@ -2,9 +2,10 @@
 
 AI Insar processes one SLC cube and optional JSON. A Sentinel-1 SAFE product
 can be opened for inspection and a crop of one swath and polarisation loaded
-into that cube. The cube is the radar grid that is processed. CEOS, a DEM,
-and orbit files are not read. Opening a SAFE product does not deburst,
-calibrate, or form interferograms.
+into that cube. File → Open SAFE stack reads many zips into that same cube
+and can form interferograms from the shared crop. The cube is the radar
+grid that is processed. CEOS, a DEM, and orbit files are not read. Opening
+a SAFE product does not deburst or calibrate.
 
 ## Sentinel-1 SAFE
 
@@ -40,6 +41,26 @@ Install the optional reader with `pip install "ai-insar[slc]"`.
 File → **Fetch Sentinel-1 SLC…** can import that same zip, folder, or
 measurement TIFF. A zip downloaded from ASF does not have to be unzipped
 first.
+
+## SAFE stack
+
+File → **Open SAFE stack…** takes many product `.zip` files in one dialog.
+The user does not unzip them. Metadata is read from each `manifest.safe`,
+then one measurement window is read (default IW1 VV). The window row,
+column, height, and width are the same numbers on every date. Dates are
+sorted by the manifest start time. The array is `complex64`, shape
+`(n_dates, height, width)`.
+
+A progress dialog reports opening and reading file `i` of `N`.
+
+The checkbox forms interferograms on that stack:
+`slc[later] * conjugate(slc[earlier])`. Later pipeline stages use the same
+cube.
+
+This alignment is a teaching crop window. Pixels at the same row and column
+are not resampled onto a common radar grid. There is no coregistration,
+deburst, or orbit-based shift. Scenes that do not already share that window
+will not make a meaningful interferogram.
 
 ## `slc.npy`
 

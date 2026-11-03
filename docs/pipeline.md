@@ -49,8 +49,16 @@ therefore make 18 pairs (7 + 6 + 5), with temporal baselines of 36, 72, and
 ifg = slc[later] * conj(slc[earlier])
 ```
 
-A reversed index raises `ValueError`. The result is `complex64`, shape
+The product is a chunked NumPy multiply (`np.multiply` into a `complex64`
+buffer). Pairs are grouped so the indexed date cubes stay near 32 MiB.
+When Numba is installed (`pip install "ai-insar[fast]"`), the same product
+is a compiled parallel loop and that result is what the stage keeps. A
+reversed index raises `ValueError`. The result is `complex64`, shape
 `(n_pairs, height, width)`.
+
+File → Open SAFE stack… is another way to fill the SLC cube: many SAFE
+zips, one crop, time-sorted. Stage 2 then runs on that cube. The crop is
+not a coregistration. See [data-format.md](data-format.md#safe-stack).
 
 ### 3. Goldstein filter
 

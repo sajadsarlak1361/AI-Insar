@@ -1,0 +1,79 @@
+Third-party notices
+====================
+
+AI Insar is MIT. See LICENSE. The notes below are the attribution for
+InSARdev material this project uses, and the reason some InSARdev source
+is not in the tree.
+
+InSARdev/edu (MIT)
+------------------
+
+Copyright (c) 2026 InSARdev
+https://github.com/InSARdev/edu
+
+The MIT license requires this copyright and permission notice to travel
+with substantial portions of that software. The educational sources are
+not copied into this repository. Two patterns are reimplemented:
+
+- Fast unwrap in `src/ai_insar/pipeline/unwrap.py` follows
+  `NISAR/nisar_numpy.py`: Gaussian smooth, then `numpy.unwrap` along range
+  and azimuth, splitting azimuth at the middle of the image.
+- Interferograms in `src/ai_insar/pipeline/interferogram.py` are the complex
+  product `later * conjugate(earlier)`, the same product as
+  `NISAR/nisar_numpy.py` (`ref * conj(rep)` with the later date as ref) and
+  `Sentinel-1/s1.py` (`rep_aligned * conj(slc_ref)`).
+
+`Sentinel-1/s1.py` also demonstrates TOPS deramp, OpenCV amplitude
+coregistration, OR-Tools branch cuts, and geocoding. Those steps need
+orbits, OpenCV, and OR-Tools. They are not included. The SAFE zip stack
+uses a teaching crop window instead of that coregistration.
+
+InSARdev/core `insardev` (InSARdev-SAL-1.0)
+-------------------------------------------
+
+Copyright (c) 2025 Aleksei Pechnikov (Alexey Pechnikov)
+https://github.com/InSARdev/core/blob/main/insardev/LICENSE
+SPDX-License-Identifier: InSARdev-SAL-1.0
+
+This is a source-available license. It is not an OSI open-source license.
+Section 4 permits non-commercial redistribution of the software only when
+the copy keeps the copyright notice, includes that license, and (for a
+modified copy) stays under InSARdev-SAL-1.0. Commercial redistribution
+needs a separate written agreement. Funded academic, institutional, and
+professional use needs a subscription even to run the software.
+
+Those terms conflict with redistributing `insardev` inside this MIT
+project. No `insardev` module is vendored. `src/ai_insar/insardev_optional.py`
+only tries `import insardev` when someone has installed it themselves:
+
+    pip install insardev
+
+That install is optional. The SAFE zip reader and the interferogram stage
+do not call it. Read the license before installing. Do not commit a copy
+of the SAL sources into this repository.
+
+InSARdev/core `insardev_pygmtsar` and `insardev_toolkit` (BSD-3-Clause)
+-----------------------------------------------------------------------
+
+Copyright (c) 2025, Alexey Pechnikov
+https://github.com/InSARdev/core
+
+BSD-3-Clause would allow a copy that keeps the copyright notice, the
+license conditions, and the disclaimer, and that does not use the author's
+name to endorse this project. Those packages are still not vendored. They
+scan GMTSAR-style burst directories and depend on orbits, a DEM, pandas,
+geopandas, and xarray. They do not read a Sentinel-1 SAFE zip into a
+complex64 crop. Install them from InSARdev/core if you want that
+preprocessor. This workbench does not import them.
+
+ESA SNAP
+--------
+
+SNAP is GPL. None of its source is copied. The SAFE reader in
+`src/ai_insar/safe.py` is an independent reader of the public SAFE layout.
+
+Sentinel-1 SAFE test fixture
+----------------------------
+
+`tests/fixtures/safe/NOTICE` attributes the reduced Apache-2.0 snapshot
+from bopen/xarray-sentinel. That notice applies to the fixture only.
