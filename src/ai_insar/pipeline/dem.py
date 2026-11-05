@@ -22,17 +22,22 @@ _COPERNICUS_URL = (
     "https://copernicus-dem-30m.s3.eu-central-1.amazonaws.com/"
     "Copernicus_DSM_COG_10_{lat}_{lon}_DEM/Copernicus_DSM_COG_10_{lat}_{lon}_DEM.tif"
 )
-_GEOID_URL = "https://downloads.sourceforge.net/project/geographiclib/geoids-distrib/egm96-15.tar.bz2"
+_GEOID_URL = {
+    "EGM96": "https://downloads.sourceforge.net/project/geographiclib/geoids-distrib/egm96-15.tar.bz2",
+    "EGM2008": "https://downloads.sourceforge.net/project/geographiclib/geoids-distrib/egm2008-5.tar.bz2",
+}
+_GEOID_PGM = {"EGM96": "egm96-15.pgm", "EGM2008": "egm2008-5.pgm"}
 
 
 @dataclass
 class GeoidGrid:
-    """EGM96 undulation in metres. Bilinear in latitude and longitude."""
+    """Geoid undulation in metres. Bilinear in latitude and longitude."""
 
     lat_deg: np.ndarray
     lon_deg: np.ndarray
     undulation_m: np.ndarray
     source: str
+    model: str
 
     def undulation(self, lat_deg: float, lon_deg: float) -> float:
         lon = float(lon_deg) % 360.0
@@ -80,10 +85,17 @@ class ElevationModel:
         )
 
 
-def read_egm96_pgm(path: Path | str) -> GeoidGrid:
-    """Read a GeographicLib EGM96 PGM (offset and scale in the header)."""
+def read_geoid_pgm(path: Path | str) -> GeoidGrid:
+    """Read a GeographicLib geoid PGM. The header names EGM96 or EGM2008."""
     payload = Path(path).read_bytes()
     header, pixel_offset = _pgm_header(payload)
+    description = str(header.get("description", ""))
+    if "EGM2008" in description:
+        model = "EGM2008"
+    elif "EGM96" in description:
+        model = "EGM96"
+    else:
+        raise ValueError(f"{path} does not name EGM96 or EGM2008, so it is not used as a geoid")
     width = int(header["width"])
     height = int(header["height"])
     count = width * height
@@ -92,7 +104,15 @@ def read_egm96_pgm(path: Path | str) -> GeoidGrid:
     # Origin is the centre of the first post: 90N, 0E. Longitude increases east.
     lat = 90.0 - np.arange(height, dtype=np.float64) * (180.0 / (height - 1))
     lon = np.arange(width, dtype=np.float64) * (360.0 / width)
-    return GeoidGrid(lat_deg=lat, lon_deg=lon, undulation_m=undulation, source=str(path))
+    return GeoidGrid(lat_deg=lat, lon_deg=lon, undulation_m=undulation, source=str(path), model=model)
+
+
+def read_egm96_pgm(path: Path | str) -> GeoidGrid:
+    """Read an EGM96 PGM. An EGM2008 file is rejected."""
+    grid = read_geoid_pgm(path)
+    if grid.model != "EGM96":
+        raise ValueError(f"{path} is {grid.model}, not EGM96")
+    return grid
 
 
 def read_srtm_hgt(path: Path | str, geoid: GeoidGrid) -> ElevationModel:
@@ -102,6 +122,7 @@ def read_srtm_hgt(path: Path | str, geoid: GeoidGrid) -> ElevationModel:
     if source.suffix.lower() == ".gz" or raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     side = int(round(math.sqrt(len(raw) // 2)))
+    _require_geoid(geoid, "EGM96", "SRTM")
     if side * side * 2 != len(raw):
         raise ValueError(f"{source.name} is not a square SRTM HGT")
     heights = np.frombuffer(raw, dtype=">i2").reshape(side, side).astype(np.float64)
@@ -123,9 +144,9 @@ def read_srtm_hgt(path: Path | str, geoid: GeoidGrid) -> ElevationModel:
 def read_copernicus_tif(path: Path | str, geoid: GeoidGrid) -> ElevationModel:
     """Read one Copernicus 30 m GeoTIFF. Heights are EGM2008 orthometric.
 
-    The geoid applied here is EGM96. The EGM2008−EGM96 difference is not
-    removed and is recorded in ``provenance``.
+    The geoid must be EGM2008. EGM96 is refused rather than added to these heights.
     """
+    _require_geoid(geoid, "EGM2008", "Copernicus GLO-30")
     import tifffile
 
     source = Path(path)
@@ -152,28 +173,31 @@ def read_copernicus_tif(path: Path | str, geoid: GeoidGrid) -> ElevationModel:
         nodata=float("nan"),
         orthometric_datum="EGM2008",
         geoid=geoid,
-        provenance=(
-            f"Copernicus GLO-30 {source.name} (EGM2008 orthometric) + EGM96 undulation "
-            f"from {geoid.source}. EGM2008−EGM96 is not modelled."
-        ),
+        provenance=f"Copernicus GLO-30 {source.name} (EGM2008 orthometric) + {geoid.model} {geoid.source}",
     )
 
 
-def ensure_geoid(cache: Path | str) -> GeoidGrid:
-    """Return the cached EGM96 15-minute grid, downloading the public archive once."""
+def ensure_geoid(cache: Path | str, model: str = "EGM96") -> GeoidGrid:
+    """Return a cached geoid grid, downloading the public GeographicLib archive once."""
+    model = model.upper()
+    if model not in _GEOID_URL:
+        raise ValueError(f"{model} has no geoid grid in this build. EGM96 and EGM2008 are available.")
     folder = Path(cache)
     folder.mkdir(parents=True, exist_ok=True)
-    pgm = folder / "geoids" / "egm96-15.pgm"
+    pgm = folder / "geoids" / _GEOID_PGM[model]
     if not pgm.is_file():
-        archive = folder / "egm96-15.tar.bz2"
+        archive = folder / Path(_GEOID_URL[model]).name
         if not archive.is_file():
-            _download(_GEOID_URL, archive)
+            _download(_GEOID_URL[model], archive)
         with tarfile.open(archive, "r:bz2") as bundle:
             bundle.extractall(folder, filter="data")
-    return read_egm96_pgm(pgm)
+    grid = read_geoid_pgm(pgm)
+    if grid.model != model:
+        raise ValueError(f"{pgm.name} is {grid.model}, not {model}")
+    return grid
 
 
-def ensure_srtm(lat_deg: float, lon_deg: float, cache: Path | str, geoid: GeoidGrid) -> ElevationModel:
+def ensure_srtm(lat_deg: float, lon_deg: float, cache: Path | str, geoid: GeoidGrid | None = None) -> ElevationModel:
     """Download the SRTM-1 tile that contains the point, then open it."""
     folder = Path(cache)
     folder.mkdir(parents=True, exist_ok=True)
@@ -183,11 +207,13 @@ def ensure_srtm(lat_deg: float, lon_deg: float, cache: Path | str, geoid: GeoidG
         url = _SRTM_URL.format(folder=name[:3], name=name)
         _download(url, compressed)
     path = compressed if compressed.is_file() else folder / f"{name}.hgt"
+    if geoid is None:
+        geoid = ensure_geoid(folder, "EGM96")
     return read_srtm_hgt(path, geoid)
 
 
-def ensure_copernicus(lat_deg: float, lon_deg: float, cache: Path | str, geoid: GeoidGrid) -> ElevationModel:
-    """Download the Copernicus 30 m tile that contains the point, then open it."""
+def ensure_copernicus(lat_deg: float, lon_deg: float, cache: Path | str, geoid: GeoidGrid | None = None) -> ElevationModel:
+    """Download the Copernicus 30 m tile and convert it with EGM2008 only."""
     folder = Path(cache)
     folder.mkdir(parents=True, exist_ok=True)
     lat_tag, lon_tag = _copernicus_tags(lat_deg, lon_deg)
@@ -195,6 +221,8 @@ def ensure_copernicus(lat_deg: float, lon_deg: float, cache: Path | str, geoid: 
     if not destination.is_file():
         url = _COPERNICUS_URL.format(lat=lat_tag, lon=lon_tag)
         _download(url, destination)
+    if geoid is None or geoid.model != "EGM2008":
+        geoid = ensure_geoid(folder, "EGM2008")
     return read_copernicus_tif(destination, geoid)
 
 
@@ -305,6 +333,8 @@ def _pgm_header(payload: bytes) -> tuple[dict, int]:
                 header["offset"] = float(text.split()[-1])
             elif "Scale" in text:
                 header["scale"] = float(text.split()[-1])
+            elif "Description" in text:
+                header["description"] = text.split("Description", 1)[-1].strip()
             continue
         tokens.extend(line.split())
     header["width"] = int(tokens[0])
@@ -322,6 +352,14 @@ def _bracket(axis: np.ndarray, value: float) -> int:
     else:
         index = int(np.searchsorted(-axis, -value, side="right") - 1)
     return int(np.clip(index, 0, axis.shape[0] - 2))
+
+
+def _require_geoid(geoid: GeoidGrid, model: str, dem_name: str) -> None:
+    if geoid.model != model:
+        raise ValueError(
+            f"{dem_name} orthometric heights need the {model} geoid. "
+            f"{geoid.model} was supplied, so no ellipsoidal height was computed."
+        )
 
 
 def _corner_samples(grid: np.ndarray, row: int, col: int) -> np.ndarray:

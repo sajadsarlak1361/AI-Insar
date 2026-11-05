@@ -83,8 +83,6 @@ class PhaseToDisplacementDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        if self.format_box.currentText() == "BEAM-DIMAP" and self.save_box.isChecked():
-            return "BEAM-DIMAP is not written. Choose NumPy (.npy), or uncheck Save as."
         return ""
 
 
@@ -147,8 +145,6 @@ class TerrainCorrectionDialog(OperatorDialog):
             return message
         if self.image_resampling.currentText() == "DELAUNAY_INTERPOLATION":
             return "DELAUNAY_INTERPOLATION is not applied."
-        if self.save_box.isChecked() and self.format_box.currentText() == "BEAM-DIMAP":
-            return "BEAM-DIMAP is not written. Choose GeoTIFF, NumPy (.npy), or Google Earth KMZ."
         return ""
 
     def parameters(self) -> dict:

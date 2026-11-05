@@ -140,7 +140,10 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     assert ifg.validate() == ""
     ifg.save_box.setChecked(True)
     ifg.target.setText("scene")
-    assert "BEAM-DIMAP" in ifg.validate()
+    assert ifg.format_box.currentText() == "BEAM-DIMAP"
+    assert ifg.validate() == ""
+    ifg.format_box.setCurrentText("BMP")
+    assert "not written" in ifg.validate().lower()
     ifg.format_box.setCurrentText("NumPy (.npy)")
     ifg.directory.clear()
     assert "directory" in ifg.validate().lower()

@@ -1278,7 +1278,8 @@ class MainWindow(QtWidgets.QMainWindow):
         request = params["request"]
         for line in request.skipped:
             self._log(line)
-        if request.save and request.format_name != "NumPy (.npy)":
+        written = {"NumPy (.npy)", "BEAM-DIMAP", "GeoTIFF", "Google Earth KMZ"}
+        if request.save and request.format_name not in written:
             raise RuntimeError(f"{request.format_name} is not written by this build.")
         alpha = float(params["alpha"])
         fft_size = int(params["fft_size"])
@@ -1648,15 +1649,14 @@ class MainWindow(QtWidgets.QMainWindow):
         cache = Path("/tmp/safe-real/dem")
         if not cache.is_dir():
             cache = Path.home() / ".cache" / "ai-insar" / "dem"
-        geoid = ensure_geoid(cache)
         if dem_name == "External DEM":
             if not dem_path:
                 raise RuntimeError("External DEM is selected and no file was given.")
             path = Path(dem_path)
             if path.suffix.lower() in {".tif", ".tiff"}:
-                return read_copernicus_tif(path, geoid)
+                return read_copernicus_tif(path, ensure_geoid(cache, "EGM2008"))
             if "hgt" in path.name.lower():
-                return read_srtm_hgt(path, geoid)
+                return read_srtm_hgt(path, ensure_geoid(cache, "EGM96"))
             raise RuntimeError("External DEM must be a GeoTIFF or an SRTM .hgt file. A mean height is not sampled.")
         azimuth = grid.model.line_time(grid.row + grid.shape[0] // 2)
         slant = grid.model.slant_range_m(grid.col + grid.shape[1] // 2)
@@ -1665,9 +1665,9 @@ class MainWindow(QtWidgets.QMainWindow):
         lat_deg = float(np.rad2deg(lat))
         lon_deg = float(np.rad2deg(lon))
         if "SRTM" in dem_name:
-            return ensure_srtm(lat_deg, lon_deg, cache, geoid)
+            return ensure_srtm(lat_deg, lon_deg, cache, ensure_geoid(cache, "EGM96"))
         if "Copernicus" in dem_name:
-            return ensure_copernicus(lat_deg, lon_deg, cache, geoid)
+            return ensure_copernicus(lat_deg, lon_deg, cache)
         raise RuntimeError(
             f"{dem_name} is not fetched. Choose Copernicus 30 m, SRTM 1Sec HGT, "
             "an external GeoTIFF or HGT, or WGS84 ellipsoid (not terrain correction)."
@@ -1824,7 +1824,9 @@ class MainWindow(QtWidgets.QMainWindow):
             path = folder / f"{stem}.kmz"
             write_kmz(path, np.asarray(array), bounds)
         elif format_name == "BEAM-DIMAP":
-            raise RuntimeError("BEAM-DIMAP is not written. Choose NumPy, GeoTIFF, or KMZ.")
+            from ai_insar.pipeline.dimap import write_beam_dimap
+
+            path = write_beam_dimap(folder, stem, np.asarray(array), bounds)
         else:
             raise RuntimeError(f"{format_name} is not written by this build.")
         self._log(f"Saved {path.name}. Source files were not modified.")

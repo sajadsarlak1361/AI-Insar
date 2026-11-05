@@ -66,15 +66,19 @@ def test_phase_to_displacement_subset_and_save(qapp, tmp_path: Path):
         }
     )
     assert (tmp_path / "disp.npy").is_file()
-    with pytest.raises(RuntimeError, match="BEAM-DIMAP"):
-        window.apply_save_product(
-            {
-                "target": "disp",
-                "format_name": "BEAM-DIMAP",
-                "directory": str(tmp_path),
-                "band": "Displacement",
-            }
-        )
+    window.apply_save_product(
+        {
+            "target": "disp",
+            "format_name": "BEAM-DIMAP",
+            "directory": str(tmp_path),
+            "band": "Displacement",
+        }
+    )
+    from ai_insar.pipeline.dimap import read_beam_dimap_band
+
+    assert (tmp_path / "disp.dim").is_file()
+    restored = read_beam_dimap_band(tmp_path / "disp.dim")
+    assert restored.shape == window.workspace.los_m.shape[-2:]
     window.close()
     dialog.close()
 

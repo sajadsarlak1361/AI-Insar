@@ -291,10 +291,11 @@ class OperatorDialog(QtWidgets.QDialog):
         if self.save_box.isChecked():
             if not self.target.text().strip():
                 return "Enter a target product name."
-            if self.format_box.currentText() != "NumPy (.npy)":
+            written = {"NumPy (.npy)", "BEAM-DIMAP", "GeoTIFF", "Google Earth KMZ"}
+            if self.format_box.currentText() not in written:
                 return (
                     f"{self.format_box.currentText()} is not written by this build. "
-                    "Choose NumPy (.npy), or uncheck Save as."
+                    "Choose BEAM-DIMAP, GeoTIFF, KMZ, or NumPy (.npy), or uncheck Save as."
                 )
             if not self.directory.text().strip():
                 return "Choose a directory, or uncheck Save as."

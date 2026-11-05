@@ -71,13 +71,17 @@ def test_srtm_and_copernicus_heights_vary_and_skip_nodata():
     west = float(broken.lon_deg[0])
     _value, valid = broken.ellipsoidal_height(north, west)
     assert not valid
-    copernicus = DEM / "copernicus_N50_E012.tif"
-    if copernicus.is_file():
-        glo30 = read_copernicus_tif(copernicus, geoid)
-        other, other_valid = glo30.ellipsoidal_height(50.38, 12.74)
-        reference, reference_valid = srtm.ellipsoidal_height(50.38, 12.74)
-        assert other_valid and reference_valid
-        assert abs(other - reference) < 80.0
+    with pytest.raises(ValueError, match="EGM2008"):
+        read_copernicus_tif(DEM / "copernicus_N50_E012.tif", geoid)
+    egm2008 = ensure_geoid(DEM, "EGM2008")
+    assert egm2008.model == "EGM2008"
+    glo30 = read_copernicus_tif(DEM / "copernicus_N50_E012.tif", egm2008)
+    other, other_valid = glo30.ellipsoidal_height(50.38, 12.74)
+    reference, reference_valid = srtm.ellipsoidal_height(50.38, 12.74)
+    assert other_valid and reference_valid
+    assert glo30.orthometric_datum == "EGM2008"
+    assert srtm.orthometric_datum == "EGM96"
+    assert abs(other - reference) < 30.0
 
 
 def test_orbit_name_matches_platform_and_validity_window():
