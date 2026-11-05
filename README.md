@@ -228,19 +228,21 @@ by the manifest start time, and stores one `complex64` stack
 `(n_dates, height, width)`. With two or more dates the dialog can run the
 interferogram stage: each pair is later × conjugate(earlier). The window
 is the same rows and columns in each measurement. That is teaching
-crop-window alignment. There is no coregistration in the crop.
-Pipeline → ALIGN SLC can estimate one constant shift afterwards. It does
-not run as part of the crop or of **Run all stages**.
+crop-window alignment. The crop is not Back Geocoding.
+Radar → S-1 Back Geocoding resamples a secondary split window onto the
+reference by range-Doppler when both windows and both orbits are loaded.
+Pipeline → ALIGN SLC can estimate one constant amplitude shift afterwards.
+It does not run as part of the crop or of **Run all stages**.
 
 **Interferogram**, **Coherence**, **Goldstein**, **Topographic Phase
 Removal**, and **Apply Orbit File** open a parameter dialog and wait.
 Each dialog has an I/O tab, a Processing Parameters tab, a one-line
-formula, and Run / Close. Run uses the in-tree pipeline. A SNAP control
-with no backend stays disabled, with a short note. Optional saves use
-the SNAP product suffixes `_Ifg`, `_Coh`, `_Flt`, `_DInSAR`, `_Stack`,
-and `_Orb` on NumPy files. BEAM-DIMAP and orbit-file download are outside
-this build. Line-of-sight displacement follows `d = −(λ/4π) Δφ`
-(suffix `_Disp`).
+formula, and Run / Close. Run uses the in-tree pipeline when the required rasters and orbits are
+loaded. Optional saves use the SNAP product suffixes `_Ifg`, `_Coh`,
+`_Flt`, `_DInSAR`, `_Stack`, and `_Orb` on NumPy files. BEAM-DIMAP is not
+written. Apply Orbit File does not download orbits; a local EOF replaces
+the annotation state vectors and reports the metre shift. Line-of-sight
+displacement follows `d = −(λ/4π) Δφ` (suffix `_Disp`).
 
 `manifest.safe` inside a selected folder is accepted. Zips stay zipped.
 The Product Explorer is separate from this list: the stack keeps every
@@ -250,8 +252,8 @@ The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 amplitude preview. **Add to SLC stack (crop…)** reads one window (default
 IW1 VV) into the `complex64` stack. The date comes from the manifest start
 time, and the wavelength from the annotation radar frequency when it is
-present. This is open and crop only: no deburst, calibration, or
-interferogram.
+present. Opening a product does not deburst or coregister it. Radar →
+S-1 TOPS Deburst does that overlap cut when a split window is stored.
 
 **File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
 catalog. Search does not need a login. Import a crop from a local SAFE

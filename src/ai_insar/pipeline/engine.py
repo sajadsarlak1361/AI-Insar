@@ -115,6 +115,13 @@ class Workspace:
     topo_slant_range_m: float = 800_000.0
     topo_incidence_deg: float = 35.0
     safe_inputs: list[SafeInput] = field(default_factory=list)
+    swath_model: object | None = None
+    precise_orbit: object | None = None
+    secondary_orbit: object | None = None
+    reference_grid: object | None = None
+    secondary_grid: object | None = None
+    geocoded: np.ndarray | None = None
+    geocode_bounds: tuple | None = None
 
     def clear_products(self) -> None:
         self.pairs = None

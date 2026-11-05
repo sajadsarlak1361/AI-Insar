@@ -69,9 +69,8 @@ def export_snaphu(
                 "# snaphu is not part of this MIT package and is not replaced here.",
                 f"STATCOSTMODE {mode}",
                 f"INITMETHOD {method}",
-                "INFILE phase.img",
-                "OUTFILE unwrap.img",
-                "CORRFILE corr.img",
+                "# phase.img, corr.img, and unwrap.img are passed on the command line.",
+                "# snaphu 2.0.6 rejects those names in this file and on the command together.",
                 f"LINELENGTH {samples}",
                 f"NTILEROW {int(tile_rows)}",
                 f"NTILECOL {int(tile_columns)}",
@@ -132,8 +131,19 @@ def run_snaphu(export_folder: Path | str, install: Path | str) -> subprocess.Com
     if not conf.is_file():
         raise RuntimeError(f"{conf} is missing. Export before unwrapping.")
     binary = resolve_snaphu(install)
+    conf_text = conf.read_text(encoding="utf-8")
+    samples = _conf_int(conf_text, "LINELENGTH")
+    mode = _conf_word(conf_text, "STATCOSTMODE", "DEFO")
+    method = _conf_word(conf_text, "INITMETHOD", "MCF")
+    # LINELENGTH stays in the configuration. Passing it again makes snaphu 2.0.6
+    # treat the width as a second input file.
+    command = [str(binary), "-f", conf.name, "phase.img", "-c", "corr.img", "-o", "unwrap.img"]
+    command.append({"DEFO": "-d", "SMOOTH": "-s", "TOPO": "-t"}.get(mode, "-d"))
+    if mode == "NOSTATCOSTS":
+        command.append("-n")
+    command.append("--mcf" if method == "MCF" else "--mst")
     completed = subprocess.run(
-        [str(binary), "-f", str(conf)],
+        command,
         cwd=folder,
         capture_output=True,
         text=True,
@@ -214,6 +224,29 @@ def _read_envi_header(path: Path) -> tuple[int, int, int]:
     lines = _header_int(text, "lines")
     data_type = _header_int(text, "data type")
     return samples, lines, data_type
+
+
+def _conf_word(text: str, key: str, default: str) -> str:
+    value = _conf_value(text, key)
+    return default if value is None else value
+
+
+def _conf_int(text: str, key: str) -> int:
+    value = _conf_value(text, key)
+    if value is None:
+        raise RuntimeError(f"snaphu.conf has no {key}.")
+    return int(value)
+
+
+def _conf_value(text: str, key: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if parts[0].upper() == key.upper() and len(parts) > 1:
+            return parts[1]
+    return None
 
 
 def _header_int(text: str, name: str) -> int:

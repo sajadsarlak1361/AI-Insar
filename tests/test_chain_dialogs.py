@@ -51,9 +51,17 @@ def test_split_dialog_stays_empty_until_a_product_is_bound(qapp):
     assert "source:" in dialog._source_label
     product = resolve_safe(FIXTURE_ZIP)
     dialog.bind_product(product)
-    assert [dialog.subswath.itemText(i) for i in range(dialog.subswath.count())] == list(product.swaths)
-    assert "IW1" in [dialog.subswath.itemText(i) for i in range(dialog.subswath.count())]
+    names = [dialog.subswath.itemText(i) for i in range(dialog.subswath.count())]
+    assert names[0] == ""
+    assert names[1:] == list(product.swaths)
+    assert "IW1" in names
+    assert dialog.subswath.currentText() == ""
     assert dialog.pol_list.count() == len(product.polarisations)
+    assert dialog.burst_text.text() == "1 to 9999 (max number of bursts: 9999)"
+    assert dialog.target.text().endswith("_split")
+    assert "empty" in dialog.validate().lower()
+    dialog.subswath.setCurrentText("IW1")
+    dialog.pol_list.setCurrentRow(0)
     assert dialog.burst_text.text() == "1 to 9 (max number of bursts: 9)"
     assert dialog.validate() == ""
     window = MainWindow()

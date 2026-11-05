@@ -14,16 +14,17 @@ from ai_insar.safe import SafeProduct
 from ai_insar.snap_products import OPERATOR_HELP, PRODUCT_SUFFIX
 
 _BACKGEO_BLOCK = (
-    "S-1 Back Geocoding is not run. This build has no range-Doppler coregistration, "
-    "no TOPS deramp/reramp, and no DEM auto-download. The SAFE crop stack is not this operator."
+    "S-1 Back Geocoding was not run. Range-Doppler coregistration needs the reference "
+    "and the secondary as split radar windows, with an orbit for each date. "
+    "A SAFE crop is not this operator, and DEM auto-download is not fetched."
 )
 _ESD_BLOCK = (
-    "S-1 Enhanced Spectral Diversity is not run. Burst-overlap ESD "
-    "(periodogram or average cross-correlation) is not implemented."
+    "S-1 Enhanced Spectral Diversity was not run. Burst-overlap spectral diversity "
+    "needs the two burst looks from a coregistered pair. No overlap is loaded."
 )
 _DEBURST_BLOCK = (
-    "S-1 TOPS Deburst is not run. Overlap removal by zero-Doppler time is not implemented. "
-    "Reading the measurement raster would keep the burst overlap, so it is not a deburst."
+    "S-1 TOPS Deburst was not run. It needs a split swath so the overlap can be cut "
+    "at the mid azimuth time. No split is loaded, so this is not a deburst."
 )
 
 _DEM_OPTIONS = (
@@ -141,13 +142,18 @@ class TopsSplitDialog(OperatorDialog):
         self.source.setCurrentText(str(product.root))
         self.subswath.blockSignals(True)
         self.subswath.clear()
+        # The loaded-SAFE audit shows a blank initial subswath, not IW1.
+        self.subswath.addItem("")
         self.subswath.addItems(list(product.swaths))
+        self.subswath.setCurrentIndex(0)
         self.subswath.blockSignals(False)
         self.pol_list.clear()
         self.pol_list.addItems(list(product.polarisations))
-        if self.pol_list.count():
-            self.pol_list.setCurrentRow(0)
         self.pol_label.setText(", ".join(product.polarisations))
+        stem = product.product_id
+        if stem.upper().endswith(".SAFE"):
+            stem = stem[:-5]
+        self.target.setText(f"{stem}_split")
         self._refresh_bursts()
 
     def _refresh_bursts(self) -> None:
@@ -201,10 +207,11 @@ class TopsSplitDialog(OperatorDialog):
 class TopsDeburstDialog(OperatorDialog):
     """S-1 TOPS Deburst. The only processing control is an empty polarisation list."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None, *, can_run: bool = False) -> None:
+        self._can_run = can_run
         super().__init__(
             "S-1 TOPS Deburst",
-            "Deburst merges bursts in azimuth time and drops the overlap. This build does not do that merge.",
+            "Deburst keeps lines up to the mid azimuth time of each burst overlap and drops the rest.",
             suffix=PRODUCT_SUFFIX["deburst"],
             object_name="topsDeburstDialog",
             notes=_DEBURST_BLOCK,
@@ -234,19 +241,35 @@ class TopsDeburstDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        return _DEBURST_BLOCK
+        if not self._can_run:
+            return _DEBURST_BLOCK
+        return ""
 
     def block_reason(self) -> str:
         return _DEBURST_BLOCK
+
+    def parameters(self) -> dict:
+        item = self.pol_list.currentItem()
+        return {
+            "request": self.io_request(),
+            "polarisation": "" if item is None else item.text(),
+        }
 
 
 class EsdDialog(OperatorDialog):
     """S-1 Enhanced Spectral Diversity. Eighteen processing controls, SNAP 14 defaults."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None, *, sources: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        sources: list[str] | None = None,
+        can_run: bool = False,
+    ) -> None:
+        self._can_run = can_run
         super().__init__(
             "S-1 Enhanced Spectral Diversity",
-            "ESD estimates a constant azimuth shift from burst overlaps. This build does not compute that shift.",
+            "ESD estimates one azimuth shift from the burst-overlap double difference.",
             suffix="_ESD",
             object_name="esdDialog",
             notes=_ESD_BLOCK,
@@ -293,16 +316,30 @@ class EsdDialog(OperatorDialog):
                 float(field.text().strip())
             except ValueError:
                 return f"{name} must be a number."
-        return _ESD_BLOCK
+        if not self._can_run:
+            return _ESD_BLOCK
+        return ""
 
     def block_reason(self) -> str:
         return _ESD_BLOCK
+
+    def parameters(self) -> dict:
+        estimator = self.findChild(QtWidgets.QComboBox, "esdEstimator")
+        user_azimuth = self.findChild(QtWidgets.QCheckBox, "esdUserAzimuth")
+        azimuth = self.findChild(QtWidgets.QLineEdit, "esdAzimuthShift")
+        return {
+            "request": self.io_request(),
+            "estimator": "" if estimator is None else estimator.currentText(),
+            "user_azimuth": False if user_azimuth is None else user_azimuth.isChecked(),
+            "azimuth_shift": 0.0 if azimuth is None else float(azimuth.text().strip() or "0"),
+        }
 
 
 class BackGeocodingDialog(QtWidgets.QDialog):
     """Graph dialog: ProductSet-Reader, Back-Geocoding, Write. Run does not coregister."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None, *, runner=None) -> None:
+        self._runner = runner
         super().__init__(parent)
         self.setWindowTitle("S-1 Back Geocoding")
         self.setObjectName("backGeocodingDialog")
@@ -395,9 +432,27 @@ class BackGeocodingDialog(QtWidgets.QDialog):
     def validate(self) -> str:
         if not self.product_set.paths():
             return "Error: [NodeId: ProductSet-Reader] Please add a source product"
-        if self.dem.currentText() != "External DEM":
-            return _BACKGEO_BLOCK + " Copernicus and other auto-download DEMs are not fetched."
-        return _BACKGEO_BLOCK + " An external DEM file still needs the missing coregistration backend."
+        if len(self.product_set.paths()) < 2:
+            return _BACKGEO_BLOCK
+        if self.resampling.currentText() != "BILINEAR_INTERPOLATION":
+            return (
+                f"Resampling Type {self.resampling.currentText()} is not applied. "
+                "Only BILINEAR_INTERPOLATION is implemented."
+            )
+        return ""
+
+    def parameters(self) -> dict:
+        return {
+            "paths": [str(path) for path in self.product_set.paths()],
+            "dem": self.dem.currentText(),
+            "resampling": self.resampling.currentText(),
+            "mask_elevation": self.mask_elevation.isChecked(),
+            "output_deramp": self.output_deramp.isChecked(),
+            "disable_reramp": self.disable_reramp.isChecked(),
+            "target": self.target.text().strip(),
+            "format_name": self.format_box.currentText(),
+            "directory": self.directory.text().strip(),
+        }
 
     def block_reason(self) -> str:
         return _BACKGEO_BLOCK
@@ -412,4 +467,16 @@ class BackGeocodingDialog(QtWidgets.QDialog):
         self.status.setText("BEAM-DIMAP graph save is not written by this build.")
 
     def _run(self) -> None:
-        self.status.setText(self.validate())
+        message = self.validate()
+        if message:
+            self.status.setText(message)
+            return
+        if self._runner is None:
+            self.status.setText(_BACKGEO_BLOCK)
+            return
+        try:
+            self._runner(self.parameters())
+        except Exception as exc:
+            self.status.setText(str(exc))
+            return
+        self.accept()

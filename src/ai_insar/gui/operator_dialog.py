@@ -335,8 +335,7 @@ class InterferogramDialog(OperatorDialog):
             object_name="interferogramDialog",
             notes=(
                 "SNAP 14 batch 3: Subtract Flat-Earth Phase is checked. "
-                "This build does not estimate that polynomial, so Run is refused while it stays checked. "
-                "Uncheck it to form later × conjugate(earlier) only. "
+                "Run subtracts the ellipsoid range difference when both radar windows and both precise orbits are loaded. "
                 "The DEM list was not opened while Subtract Topographic Phase was unchecked."
             ),
             source_label="Source product:",
@@ -349,7 +348,10 @@ class InterferogramDialog(OperatorDialog):
         self.subtract_flat = QtWidgets.QCheckBox("Subtract Flat-Earth Phase")
         self.subtract_flat.setObjectName("ifgSubtractFlatEarth")
         self.subtract_flat.setChecked(True)
-        self.subtract_flat.setToolTip(_FLAT_NOTE)
+        self.subtract_flat.setToolTip(
+            "Subtracts -4π/λ (R_later − R_early) on the ellipsoid when both radar windows "
+            "and both precise orbits are loaded."
+        )
         self.flat_degree = _combo(tuple(str(value) for value in range(1, 9)), "5", "ifgFlatDegree")
         self.flat_points = _combo(
             ("301", "401", "501", "601", "701", "801", "901", "1001"),
@@ -446,20 +448,8 @@ class InterferogramDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        if self.subtract_flat.isChecked():
-            return (
-                "Subtract Flat-Earth Phase is checked. This build does not estimate that polynomial. "
-                "Uncheck it to form later × conjugate(earlier) only."
-            )
-        if self.output_flat.isChecked():
-            return "Output Flat Earth Phase is not written by this build."
         if self.subtract_ramp.isChecked():
             return "Subtract Residual Ramp (GSLC) is not implemented."
-        if self.subtract_topo.isChecked():
-            return (
-                "Subtract Topographic Phase is checked. The DEM list was not recorded in the SNAP 14 audit, "
-                "and Copernicus auto-download is not available."
-            )
         try:
             if int(self.coherence_range.text().strip()) < 1:
                 return "Coherence range window must be at least 1."
@@ -488,6 +478,9 @@ class InterferogramDialog(OperatorDialog):
             "square_pixel": self.square_pixel.isChecked(),
             "coherence_range": int(self.coherence_range.text().strip() or "0"),
             "coherence_azimuth": int(azimuth or "0"),
+            "flat_degree": int(self.flat_degree.currentText()),
+            "flat_points": int(self.flat_points.currentText()),
+            "orbit_degree": int(self.orbit_degree.currentText()),
         }
 
 
@@ -815,8 +808,9 @@ class ApplyOrbitDialog(OperatorDialog):
             object_name="applyOrbitDialog",
             notes=(
                 "SNAP 14 batch 3 recorded these eight orbit types. "
-                "No orbit-file download is installed. Run fails unless "
-                "'Do not fail if new orbit file is not found' is checked, and even then state vectors stay as they are."
+                "No orbit-file download is installed. A local EOF in 'Local orbit file' replaces state vectors. "
+                "With that path empty, Run fails unless 'Do not fail if new orbit file is not found' is checked, "
+                "and then the vectors stay as they are."
             ),
             source_label="source:",
             target_text="",
@@ -846,6 +840,10 @@ class ApplyOrbitDialog(OperatorDialog):
         form.addRow("Orbit State Vectors", self.orbit_type)
         form.addRow("Polynomial Degree", self.degree)
         form.addRow(self.do_not_fail)
+        self.orbit_file = QtWidgets.QLineEdit("")
+        self.orbit_file.setObjectName("orbitLocalFile")
+        self.orbit_file.setPlaceholderText("Local .EOF or .EOF.zip (auto-download is not installed)")
+        form.addRow("Local orbit file:", self.orbit_file)
         self.add_processing(form)
 
     def validate(self) -> str:
@@ -870,4 +868,5 @@ class ApplyOrbitDialog(OperatorDialog):
             "polynomial_degree": int(self.degree.text().strip()),
             "do_not_fail": self.do_not_fail.isChecked(),
             "source": self.source.currentText(),
+            "orbit_file": self.orbit_file.text().strip(),
         }

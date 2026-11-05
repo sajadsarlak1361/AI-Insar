@@ -133,10 +133,10 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     assert not ifg.coherence_azimuth.isEnabled()
     assert ifg.coherence_range.text() == "10"
     assert ifg.coherence_azimuth.text() == "2"
-    assert "Flat-Earth" in ifg.validate()
+    assert ifg.validate() == ""
     ifg.subtract_flat.setChecked(False)
     assert ifg.findChild(type(ifg.output_latlon), "ifgOutputLatLon") is not None
-    assert "not implemented" in ifg.subtract_flat.toolTip().lower() or "not applied" in ifg.subtract_flat.toolTip().lower()
+    assert "orbits" in ifg.subtract_flat.toolTip().lower()
     assert ifg.validate() == ""
     ifg.save_box.setChecked(True)
     ifg.target.setText("scene")

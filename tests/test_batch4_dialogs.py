@@ -69,7 +69,7 @@ def test_independent_multilook_averages_cells_and_square_pixel_does_not():
     assert complex_reduced.shape == (2, 2)
     window = MainWindow()
     window.workspace.interferograms = complex_values[None, ...]
-    with pytest.raises(RuntimeError, match="spacing"):
+    with pytest.raises(RuntimeError, match="swath geometry"):
         window.apply_multilook(
             {
                 "gr_square": True,
@@ -196,8 +196,10 @@ def test_batch4_dialogs_and_disabled_subset(qapp, tmp_path: Path):
     assert importer.status.text() == "Source product not selected"
     subset = window.findChild(QAction, "radarSubset")
     save_as = window.findChild(QAction, "radarSaveProductAs")
-    assert subset is not None and not subset.isEnabled()
-    assert save_as is not None and not save_as.isEnabled()
+    assert subset is not None and subset.isEnabled()
+    assert save_as is not None and save_as.isEnabled()
+    assert window.findChild(QAction, "radarPhaseToDisplacement") is not None
+    assert window.findChild(QAction, "fileViewKmz") is not None
     assert window.findChild(QAction, "radarMultilook") is not None
     assert window.findChild(QAction, "radarSnaphuExport") is not None
     assert window.findChild(QAction, "radarBatchSnaphu") is not None
