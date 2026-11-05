@@ -105,7 +105,9 @@
         "Replace |ka| by kt≈1733 Hz/s in the spectral separation: SNAP/vector ratios span about -5.4 to 0.46, so one scale cannot match the list.",
         "Drop the invalid-line margins (20 lines at the start, 19 at the end; overlap 7394:7521 and 7560:7687): block 2 stays -0.00159 px."
       ],
-      "first_block_divergence": "Block 2, samples 5109:7140, coherence 0.996, vector shift -0.00159 px, periodogram -0.00160 px, SNAP -0.000727 px. The cross phase is stable and is not SNAP's recorded shift. Block 1, samples 3078:5109, coherence 0.007, is rejected at 0.3; SNAP records +0.001666 px.",
+      "snap12_pixels_block2": "Samples 5109:7140, overlap lines 7394:7521 and 7560:7687. SNAP 12 slave phase median vs this build 0.00359 rad, amplitude relative median 0.00326, master max abs 0. Double-difference MLE of SNAP's own pixels: coherence 0.996, shift -0.001477 px. This build: -0.001588 px. The block file says -0.000727 px.",
+      "snap12_pixels_block3": "Samples 7140:9171, same overlap lines. Double-difference MLE of SNAP's own pixels: coherence 0.890, shift -0.002037 px. The block file says -0.000194 px.",
+      "first_block_divergence": "The file values are not the double-difference tone of those pixels. On SNAP's block 2 pixels the tone is -0.001477 px (this build -0.001588 px); the file says -0.000727 px. On block 3 the tone is -0.002037 px and the file says -0.000194 px. 5x5 coherence weights do not move the tone. A 2*|ka| separation hits only block 2 (-0.000738 vs -0.000727) and misses block 3. Block 1 remains coherence 0.007 here versus the file's +0.001666 px.",
       "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. On the full valid-sample overlap the same 10 range blocks give a mean near SNAP's applied -0.001511 px, and that mean is not acceptance. The threshold stays 0.3. Stages 5-15 are not run. No displacement product is claimed."
     },
     {
