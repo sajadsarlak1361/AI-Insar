@@ -28,13 +28,13 @@ from ai_insar.pipeline.tops_ops import (
     burst_overlap_rows,
     deburst_lines,
     deburst_window,
+    ellipsoid_geocode,
     enhanced_spectral_diversity,
     flat_earth_phase,
     overlap_doppler_separation_hz,
     radar_coordinates,
     square_pixel_azimuth_looks,
     subtract_phase,
-    terrain_correct,
     write_kmz,
 )
 from ai_insar.sentinel import read_tiff_window
@@ -174,7 +174,7 @@ def test_real_burst_chain_deburst_flat_earth_coregistration_and_snaphu(tmp_path:
     assert probe < 0.0
     assert abs(probe + early_model.wavelength_m / 4.0) < 1e-6
 
-    geocoded, bounds = terrain_correct(early_grid, early_orbit, out_rows=6, out_cols=6)
+    geocoded, bounds = ellipsoid_geocode(early_grid, early_orbit, out_rows=6, out_cols=6)
     west, south, east, north = bounds
     assert 9.0 < west < east < 14.5
     assert 49.0 < south < north < 52.0
@@ -220,7 +220,7 @@ def _assert_real_overlap_esd(model) -> None:
     width = 16
     master_early = read_tiff_window(EARLY_TIFF, early_rows[0], col, count, width)
     master_late = read_tiff_window(EARLY_TIFF, late_rows[0], col, count, width)
-    shift = enhanced_spectral_diversity(
+    shift, coherence = enhanced_spectral_diversity(
         master_early,
         master_late,
         master_early,
@@ -228,13 +228,16 @@ def _assert_real_overlap_esd(model) -> None:
         separation_hz=separation,
     )
     assert abs(shift) < 1e-6
+    assert coherence > 0.99
     injected = 2.0e-5
     phase = np.exp(1j * 2.0 * np.pi * separation * injected)
-    shifted = enhanced_spectral_diversity(
+    shifted, shifted_coherence = enhanced_spectral_diversity(
         master_early,
         master_late,
         master_early * phase,
         master_late,
         separation_hz=separation,
+        estimator="Average",
     )
     assert abs(shifted - injected) / injected < 0.05
+    assert shifted_coherence > 0.5

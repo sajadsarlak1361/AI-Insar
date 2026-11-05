@@ -79,11 +79,31 @@ def test_phase_to_displacement_subset_and_save(qapp, tmp_path: Path):
     dialog.close()
 
 
+def test_selected_reference_is_not_replaced_by_the_later_date(qapp):
+    from ai_insar.pipeline.engine import compute_interferograms
+
+    window = MainWindow()
+    data = np.zeros((2, 4, 4), dtype=np.complex64)
+    data[0] = 2
+    data[1] = 1j
+    window.workspace.stack = SLCStack(
+        data=data,
+        dates=np.array(["2021-06-30", "2021-07-12"], dtype="datetime64[D]"),
+        wavelength_m=0.055,
+    )
+    window.workspace.reference_index = 0
+    compute_interferograms(window.workspace, window._log)
+    assert np.allclose(window.workspace.interferograms[0], data[0] * np.conj(data[1]))
+    assert "not later × conjugate(earlier)" in window.log.toPlainText()
+    window.close()
+
+
 def test_terrain_dialog_lists_match_the_empty_product_audit(qapp):
     dialog = TerrainCorrectionDialog()
     dialog.save_box.setChecked(False)
     assert dialog.dem.currentText() == "Copernicus 30m Global DEM (Auto Download)"
-    assert dialog.dem.count() == 11
+    assert dialog.dem.count() == 12
+    assert dialog.dem.findText("WGS84 ellipsoid (not terrain correction)") >= 0
     assert dialog.dem_resampling.currentText() == "BILINEAR_INTERPOLATION"
     assert dialog.dem_resampling.findText("DELAUNAY_INTERPOLATION") >= 0
     assert dialog.image_resampling.findText("DELAUNAY_INTERPOLATION") < 0
@@ -92,7 +112,7 @@ def test_terrain_dialog_lists_match_the_empty_product_audit(qapp):
     assert not dialog.output_complex.isChecked()
     assert dialog.validate() == ""
     dialog.image_resampling.setCurrentText("NEAREST_NEIGHBOUR")
-    assert "not applied" in dialog.validate().lower()
+    assert dialog.validate() == ""
     dialog.close()
 
 

@@ -25,6 +25,7 @@ _DEM_OPTIONS = (
     "SRTM 1Sec HGT (Auto Download)",
     "SRTM 3Sec (Auto Download)",
     "External DEM",
+    "WGS84 ellipsoid (not terrain correction)",
 )
 _DEM_RESAMPLING = (
     "NEAREST_NEIGHBOUR",
@@ -144,8 +145,8 @@ class TerrainCorrectionDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        if self.image_resampling.currentText() != "BILINEAR_INTERPOLATION":
-            return "Image resampling other than BILINEAR_INTERPOLATION is not applied."
+        if self.image_resampling.currentText() == "DELAUNAY_INTERPOLATION":
+            return "DELAUNAY_INTERPOLATION is not applied."
         if self.save_box.isChecked() and self.format_box.currentText() == "BEAM-DIMAP":
             return "BEAM-DIMAP is not written. Choose GeoTIFF, NumPy (.npy), or Google Earth KMZ."
         return ""

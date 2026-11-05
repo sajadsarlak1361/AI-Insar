@@ -91,8 +91,13 @@ WGS84_MEAN_RADIUS_M = 6371000.0
 
 
 def read_swath_annotation(path: Path | str) -> SwathModel:
-    """Parse one measurement annotation XML into a :class:`SwathModel`."""
-    root = ET.parse(Path(path)).getroot()
+    """Parse one measurement annotation XML file into a :class:`SwathModel`."""
+    return read_swath_annotation_bytes(Path(path).read_bytes())
+
+
+def read_swath_annotation_bytes(payload: bytes) -> SwathModel:
+    """Parse annotation XML bytes. A zip member does not have to be extracted first."""
+    root = ET.fromstring(payload)
     frequency = float(_text(root, "radarFrequency"))
     wavelength = SPEED_OF_LIGHT_M_S / frequency
     image = _first(root, "imageInformation")
@@ -148,6 +153,15 @@ def read_swath_annotation(path: Path | str) -> SwathModel:
         bursts=tuple(bursts),
         orbit=Orbit(np.array(times), np.array(position), np.array(velocity)),
     )
+
+
+def read_swath_from_product(product, measurement) -> SwathModel:
+    """Read the annotation for one measurement from a SAFE folder or zip."""
+    from ai_insar.safe import _read_href
+
+    if not measurement.annotation_href:
+        raise ValueError(f"{product.product_id} has no annotation for {measurement.href}")
+    return read_swath_annotation_bytes(_read_href(product, measurement.annotation_href))
 
 
 def _local(tag: str) -> str:

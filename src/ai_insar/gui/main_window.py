@@ -653,6 +653,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.stack = stack
         self.workspace.dem_m = None
         self.workspace.safe_inputs = list(records)
+        reference = next(item for item in records if item.is_reference)
+        day = (reference.acquisition or "")[:10]
+        matched = np.where(stack.dates.astype(str) == day)[0] if day else np.array([])
+        self.workspace.reference_index = int(matched[0]) if matched.size == 1 else None
         self.workspace.clear_products()
         reference_name = next(item.file_name for item in records if item.is_reference)
         names = ", ".join(item.file_name for item in records)
@@ -1109,31 +1113,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._preferred_layer = "SLC amplitude"
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
-        """Keep the split window as a radar grid when the annotation file is readable."""
-        from pathlib import Path
-
-        from ai_insar.pipeline.s1_annotation import read_swath_annotation
+        """Keep the split window as a radar grid. Zip annotations are read in place."""
+        from ai_insar.pipeline.s1_annotation import read_swath_from_product
         from ai_insar.pipeline.tops_ops import RadarGrid
 
-        if product.is_zip or not measurement.annotation_href:
-            self._log("TOPS Split kept the burst lines. The annotation file was not a folder path, so no orbit grid was stored.")
+        if not measurement.annotation_href:
+            self._log("TOPS Split kept the burst lines. The measurement has no annotation.")
             return
-        annotation = Path(product.root) / str(measurement.annotation_href)
-        if not annotation.is_file():
-            self._log(f"TOPS Split kept the burst lines. Annotation {annotation.name} was not found.")
-            return
-        model = read_swath_annotation(annotation)
+        model = read_swath_from_product(product, measurement)
         grid = RadarGrid(int(row), 0, np.asarray(data, dtype=np.complex64), model)
-        if self.workspace.reference_grid is None:
+        selected = any(
+            item.is_reference and item.product_id == product.product_id for item in self.workspace.safe_inputs
+        )
+        if selected or self.workspace.reference_grid is None:
+            if selected and self.workspace.reference_grid is not None:
+                self.workspace.secondary_grid = self.workspace.reference_grid
+                self.workspace.secondary_orbit = self.workspace.precise_orbit
             self.workspace.reference_grid = grid
             self.workspace.swath_model = model
             if self.workspace.precise_orbit is None:
                 self.workspace.precise_orbit = model.orbit
-            self._log(f"Stored the reference radar window {data.shape} from {annotation.name}.")
+            self._log(f"Stored the reference radar window {data.shape} from the SAFE annotation.")
             return
         self.workspace.secondary_grid = grid
         self.workspace.secondary_orbit = model.orbit
-        self._log(f"Stored the secondary radar window {data.shape} from {annotation.name}.")
+        self._log(f"Stored the secondary radar window {data.shape} from the SAFE annotation.")
 
     def open_interferogram_dialog(self) -> None:
         dialog = InterferogramDialog(self, sources=self._source_names())
@@ -1206,18 +1210,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Flat-earth or topographic subtraction needs both radar windows and both precise orbits. "
                 "They are not on this stack."
             )
-        height = 0.0
+        dem = None
         if params.get("subtract_topo"):
-            if self.workspace.dem_m is None:
-                raise RuntimeError("Topographic subtraction needs a DEM height. None is loaded.")
-            height = float(np.nanmean(self.workspace.dem_m))
+            dem = getattr(self.workspace, "elevation", None)
+            if dem is None:
+                raise RuntimeError(
+                    "Topographic subtraction needs an elevation model sampled at each pixel. "
+                    "A single DEM mean is not used."
+                )
         phase = flat_earth_phase(
             early,
             later,
             early_orbit=early_orbit,
             later_orbit=later_orbit,
             degree=int(self._combo_int(params, "orbit_degree", 3)),
-            height_m=height,
+            height_m=0.0,
+            dem=dem,
         )
         ifg = self.workspace.interferograms
         if ifg is None or ifg.shape[0] < 1 or ifg.shape[1:] != phase.shape:
@@ -1359,6 +1367,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if orbit_file:
             self._install_precise_orbit(orbit_file, degree, params)
             return
+        orbit_type = str(params.get("orbit_type") or "")
+        if orbit_type.startswith("Sentinel Precise") or orbit_type.startswith("Sentinel Restituted"):
+            fetched = self._download_sentinel_orbit(params, degree)
+            if fetched:
+                return
         if not params["do_not_fail"]:
             raise RuntimeError(
                 "Apply Orbit File: no orbit-file download is installed. "
@@ -1467,19 +1480,21 @@ class MainWindow(QtWidgets.QMainWindow):
         late_orbit = self.workspace.secondary_orbit
         if early is None or late is None or early_orbit is None or late_orbit is None:
             raise RuntimeError(_BACKGEO_BLOCK)
-        if "Auto Download" in str(params.get("dem", "")):
-            self._log(f"{params.get('dem')} was not downloaded. Ellipsoid height 0 was used.")
-        if params.get("mask_elevation"):
-            self._log(
-                "Mask out areas with no elevation is checked. "
-                "The ellipsoid has a height at every pixel, so no sample was masked."
-            )
+        dem = self._elevation_model(str(params.get("dem") or ""), str(params.get("dem_path") or ""), early, early_orbit)
         resampled = backgeocode(
             early,
             late,
             reference_orbit=early_orbit,
             secondary_orbit=late_orbit,
+            dem=dem,
             reramp=not bool(params.get("disable_reramp")),
+            resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
+            max_solves=4096,
+            max_residual_px=0.05,
+        )
+        self._log(
+            f"Back-geocoding map stride {backgeocode.last_stride}, "
+            f"check residual {backgeocode.last_residual_px:.4f} pixels."
         )
         self.workspace.secondary_grid = RadarGrid(early.row, early.col, resampled, early.model)
         self._log(
@@ -1495,19 +1510,22 @@ class MainWindow(QtWidgets.QMainWindow):
             overlap_doppler_separation_hz,
         )
 
-        if params.get("estimator") and params["estimator"] != "Periodogram":
-            raise RuntimeError(
-                f"ESD estimator {params['estimator']} is not implemented. "
-                "Periodogram is the burst-overlap double difference."
-            )
         early = self.workspace.reference_grid
         late = self.workspace.secondary_grid
         if early is None or late is None or early.shape != late.shape or early.row != late.row:
             raise RuntimeError(_ESD_BLOCK)
+        estimator = str(params.get("estimator") or "Periodogram")
         if params.get("user_azimuth"):
+            from ai_insar.pipeline.tops_ops import RadarGrid, apply_azimuth_pixel_shift
+
             pixels = float(params["azimuth_shift"])
-            seconds = pixels * early.model.azimuth_time_interval_s
-            self._log(f"ESD used the supplied azimuth shift {pixels:.4f} lines ({seconds:.6e} s).")
+            shifted = apply_azimuth_pixel_shift(late.data, pixels, early.model.azimuth_time_interval_s)
+            self.workspace.secondary_grid = RadarGrid(late.row, late.col, shifted, late.model)
+            self.workspace.esd_azimuth_shift_s = pixels * early.model.azimuth_time_interval_s
+            self._log(
+                f"ESD applied the supplied azimuth shift {pixels:.4f} lines "
+                f"({self.workspace.esd_azimuth_shift_s:.6e} s) to the secondary."
+            )
             return
         model = early.model
         for index in range(len(model.bursts) - 1):
@@ -1515,18 +1533,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if not _covers(early, start_a, stop_a) or not _covers(early, start_b, stop_b):
                 continue
             separation = overlap_doppler_separation_hz(model, index)
-            shift = enhanced_spectral_diversity(
+            shift, coherence = enhanced_spectral_diversity(
                 _slice(early, start_a, stop_a),
                 _slice(early, start_b, stop_b),
                 _slice(late, start_a, stop_a),
                 _slice(late, start_b, stop_b),
                 separation_hz=separation,
+                estimator=estimator,
             )
+            self.workspace.esd_azimuth_shift_s = shift
             lines = shift / model.azimuth_time_interval_s
             self._log(
-                f"ESD burst {index + 1}/{index + 2}: azimuth shift {shift:.6e} s "
-                f"({lines:.4f} lines), spectral separation {separation:.1f} Hz. "
-                "A shift near zero is not a coherence."
+                f"ESD {estimator} burst {index + 1}/{index + 2}: azimuth shift {shift:.6e} s "
+                f"({lines:.4f} lines), coherence {coherence:.3f}, spectral separation {separation:.1f} Hz."
             )
             return
         raise RuntimeError(
@@ -1553,53 +1572,134 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_request(request, displacement, PRODUCT_SUFFIX["displacement"])
 
     def apply_terrain_correction(self, params: dict) -> None:
-        from ai_insar.pipeline.tops_ops import terrain_correct
+        from ai_insar.pipeline.tops_ops import ellipsoid_geocode, terrain_correct
 
         grid = self.workspace.reference_grid
         orbit = self.workspace.precise_orbit
         if grid is None or orbit is None:
-            raise RuntimeError("Range-Doppler terrain correction needs a split swath and an orbit.")
-        if params.get("projection") not in (None, "", "WGS84(DD)"):
-            raise RuntimeError(f"Map projection {params.get('projection')} is not written. Output is WGS84 geographic.")
-        if params.get("image_resampling") not in (None, "BILINEAR_INTERPOLATION"):
-            raise RuntimeError("Image resampling other than BILINEAR_INTERPOLATION is not applied.")
-        dem_name = str(params.get("dem") or "")
-        height = 0.0
-        if dem_name == "External DEM":
-            dem_path = str(params.get("dem_path") or "").strip()
-            if not dem_path:
-                raise RuntimeError("External DEM is selected and no file was given.")
-            dem = np.load(dem_path)
-            height = float(np.nanmean(dem))
-            self._log(f"External DEM mean height {height:.2f} m was used for every pixel.")
-        else:
-            if params.get("mask_elevation"):
-                self._log(
-                    f"{dem_name or 'The selected DEM'} was not downloaded. "
-                    "Mask out areas without elevation was not applied. Ellipsoid height 0 was used."
+            raise RuntimeError("Range-Doppler geocoding needs a split swath and an orbit.")
+        projection = str(params.get("projection") or "WGS84(DD)")
+        mode = "utm" if "utm" in projection.lower() else "geographic"
+        if mode == "geographic" and projection not in {"", "WGS84(DD)", "Geographic Lat/Lon (WGS 84)"}:
+            if "geographic" not in projection.lower() and "wgs84" not in projection.lower():
+                raise RuntimeError(
+                    f"Map projection {projection} is not implemented. "
+                    "Geographic WGS84 and automatic UTM are written."
                 )
-            else:
-                self._log(f"{dem_name or 'Ellipsoid'} height 0 was used. No DEM was downloaded.")
+        resampling = str(params.get("image_resampling") or "BILINEAR_INTERPOLATION")
+        dem_name = str(params.get("dem") or "")
         out_rows = max(8, min(48, max(grid.shape[0] // 4, 8)))
         out_cols = max(8, min(48, max(grid.shape[1] // 4, 8)))
-        image, bounds = terrain_correct(
-            grid,
-            orbit,
-            height_m=height,
-            out_rows=out_rows,
-            out_cols=out_cols,
-        )
+        if "ellipsoid" in dem_name.lower():
+            image, bounds = ellipsoid_geocode(
+                grid,
+                orbit,
+                height_m=0.0,
+                out_rows=out_rows,
+                out_cols=out_cols,
+                resampling=resampling,
+            )
+            self._log(
+                f"Ellipsoid geocoding at height 0, not terrain correction. "
+                f"Shape {image.shape}. Bounds {bounds}."
+            )
+            heights = None
+        else:
+            dem = self._elevation_model(dem_name, str(params.get("dem_path") or ""), grid, orbit)
+            self.workspace.elevation = dem
+            image, bounds, heights = terrain_correct(
+                grid,
+                orbit,
+                dem,
+                out_rows=out_rows,
+                out_cols=out_cols,
+                resampling=resampling,
+                projection=mode,
+            )
+            finite = heights[np.isfinite(heights)]
+            missing = int(heights.size - finite.size)
+            spread = float(np.std(finite)) if finite.size else float("nan")
+            self._log(
+                f"Range-Doppler terrain correction sampled {dem.provenance}. "
+                f"Ellipsoidal height std {spread:.2f} m, no-data pixels {missing}. "
+                f"Orthometric datum {dem.orthometric_datum}."
+            )
         stored = image if params.get("output_complex") else np.abs(image).astype(np.float32)
         self.workspace.geocoded = stored
         self.workspace.geocode_bounds = bounds
         west, south, east, north = bounds
-        self._log(
-            f"Range-Doppler terrain correction {stored.shape} on WGS84. "
-            f"West {west:.5f}, south {south:.5f}, east {east:.5f}, north {north:.5f}."
-        )
+        self._log(f"Geocoded {stored.shape}. West {west:.5f}, south {south:.5f}, east {east:.5f}, north {north:.5f}.")
         request = params.get("request")
         if request is not None and getattr(request, "save", False):
             self._write_product(request.directory, request.target or "terrain", request.format_name, stored, bounds)
+
+    def _elevation_model(self, dem_name: str, dem_path: str, grid, orbit):
+        from pathlib import Path
+
+        from ai_insar.pipeline.dem import (
+            ensure_copernicus,
+            ensure_geoid,
+            ensure_srtm,
+            read_copernicus_tif,
+            read_srtm_hgt,
+        )
+        from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_point_at_height
+
+        cache = Path("/tmp/safe-real/dem")
+        if not cache.is_dir():
+            cache = Path.home() / ".cache" / "ai-insar" / "dem"
+        geoid = ensure_geoid(cache)
+        if dem_name == "External DEM":
+            if not dem_path:
+                raise RuntimeError("External DEM is selected and no file was given.")
+            path = Path(dem_path)
+            if path.suffix.lower() in {".tif", ".tiff"}:
+                return read_copernicus_tif(path, geoid)
+            if "hgt" in path.name.lower():
+                return read_srtm_hgt(path, geoid)
+            raise RuntimeError("External DEM must be a GeoTIFF or an SRTM .hgt file. A mean height is not sampled.")
+        azimuth = grid.model.line_time(grid.row + grid.shape[0] // 2)
+        slant = grid.model.slant_range_m(grid.col + grid.shape[1] // 2)
+        ground = ground_point_at_height(orbit, azimuth, slant, 0.0)
+        lat, lon, _height = ecef_to_geodetic(ground)
+        lat_deg = float(np.rad2deg(lat))
+        lon_deg = float(np.rad2deg(lon))
+        if "SRTM" in dem_name:
+            return ensure_srtm(lat_deg, lon_deg, cache, geoid)
+        if "Copernicus" in dem_name:
+            return ensure_copernicus(lat_deg, lon_deg, cache, geoid)
+        raise RuntimeError(
+            f"{dem_name} is not fetched. Choose Copernicus 30 m, SRTM 1Sec HGT, "
+            "an external GeoTIFF or HGT, or WGS84 ellipsoid (not terrain correction)."
+        )
+
+    def _download_sentinel_orbit(self, params: dict, degree: int) -> bool:
+        from pathlib import Path
+
+        from ai_insar.pipeline.orbit_download import download_orbit
+        from ai_insar.safe import resolve_safe
+
+        source = str(params.get("source") or "")
+        path = Path(source)
+        if not path.exists():
+            return False
+        try:
+            product = resolve_safe(path)
+        except Exception:
+            return False
+        if not product.start_utc:
+            raise RuntimeError(f"{product.product_id} has no start time, so an orbit file cannot be chosen.")
+        when = np.datetime64(product.start_utc.replace("Z", ""))
+        platform = product.product_id[:3].upper()
+        kind = "RESORB" if "Restituted" in str(params.get("orbit_type") or "") else "POEORB"
+        cache = Path("/tmp/safe-real/orbits")
+        cache.mkdir(parents=True, exist_ok=True)
+        orbit_path_pair = download_orbit(when, platform, cache, kind=kind)
+        _orbit, orbit_path = orbit_path_pair
+        copied = dict(params)
+        copied["orbit_file"] = str(orbit_path)
+        self._install_precise_orbit(str(orbit_path), degree, copied)
+        return True
 
     def apply_subset(self, params: dict) -> None:
         from ai_insar.pipeline.tops_ops import RadarGrid

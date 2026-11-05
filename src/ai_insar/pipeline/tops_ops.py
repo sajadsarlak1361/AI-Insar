@@ -145,19 +145,20 @@ def flat_earth_phase(
     later_orbit: Orbit,
     degree: int = 3,
     height_m: float = 0.0,
-    max_solves: int = 4096,
+    dem: object | None = None,
+    max_solves: int | None = None,
 ) -> np.ndarray:
     """Geometric reference-surface phase, later minus earlier, in radians.
 
-    ``phi = -4π/λ (R_later - R_early)`` on the ellipsoid (or a constant
-    height). The same orbit for both dates returns zeros. Windows larger
-    than ``max_solves`` are solved on a stride and interpolated; the phase
-    surface is smooth, and the samples are still range-Doppler ranges.
+    ``phi = -4π/λ (R_later - R_early)``. ``height_m`` is one ellipsoidal
+    height. ``dem`` samples a different ellipsoidal height at every pixel
+    and is the topographic term. A missing DEM sample stays NaN.
     """
     if early.shape != later.shape or early.row != later.row or early.col != later.col:
         raise ValueError("flat-earth phase needs two windows on the same radar grid")
     rows, cols = early.shape
-    stride = _solve_stride(rows, cols, max_solves)
+    limit = rows * cols if max_solves is None else int(max_solves)
+    stride = _solve_stride(rows, cols, limit)
     row_index = _sample_index(rows, stride)
     col_index = _sample_index(cols, stride)
     coarse = np.empty((row_index.size, col_index.size), dtype=np.float64)
@@ -168,6 +169,13 @@ def flat_earth_phase(
         for j, col in enumerate(col_index):
             slant = early.model.slant_range_m(early.col + int(col))
             ground = ground_point_at_height(early_orbit, azimuth, slant, height_m, degree=degree)
+            if dem is not None:
+                lat, lon, _got = ecef_to_geodetic(ground)
+                sampled_height, valid = dem.ellipsoidal_height(float(np.rad2deg(lat)), float(np.rad2deg(lon)))
+                if not valid:
+                    coarse[i, j] = np.nan
+                    continue
+                ground = ground_point_at_height(early_orbit, azimuth, slant, sampled_height, degree=degree)
             early_range = _range_at(early_orbit, azimuth, ground, degree)
             later_guess = repeat_azimuth_time(early.model, absolute, later.model)
             later_time = later_orbit.zero_doppler_time(ground, later_guess, degree)
@@ -271,51 +279,240 @@ def backgeocode(
     secondary_orbit: Orbit,
     degree: int = 3,
     height_m: float = 0.0,
-    max_solves: int = 4096,
+    dem: object | None = None,
+    max_solves: int | None = None,
+    max_residual_px: float = 0.05,
     reramp: bool = True,
+    resampling: str = "BILINEAR_INTERPOLATION",
 ) -> np.ndarray:
     """Resample ``secondary`` onto ``reference`` by range-Doppler geolocation.
 
-    Both images are deramped first. Reference samples are located on the
-    constant-height ellipsoid and the secondary value is bilinearly
-    interpolated there, then reramped in the reference geometry unless
-    ``reramp`` is false. A window larger than ``max_solves`` is located on a
-    stride and the line/sample map is interpolated. This is not a shared crop
-    and not an amplitude cross-correlation.
+    Both images are deramped first. Each reference sample is located on the
+    ellipsoid or on ``dem`` and the secondary value is resampled there, then
+    reramped unless ``reramp`` is false. ``max_solves=None`` solves every
+    pixel. A smaller budget interpolates the line/sample map and is kept only
+    when check pixels stay within ``max_residual_px`` of a dense solve.
     """
+    backgeocode.last_stride = 1
+    backgeocode.last_residual_px = 0.0
     reference_deramped = deramp(reference, remove=True)
     secondary_deramped = deramp(secondary, remove=True)
     rows, cols = reference.shape
-    stride = _solve_stride(rows, cols, max_solves)
+    limit = rows * cols if max_solves is None else int(max_solves)
+    stride = _solve_stride(rows, cols, limit)
+    residual = 0.0
+    while True:
+        line_s, sample_s, row_index, col_index = _locate_grid(
+            reference,
+            secondary,
+            reference_orbit=reference_orbit,
+            secondary_orbit=secondary_orbit,
+            degree=degree,
+            height_m=height_m,
+            dem=dem,
+            stride=stride,
+        )
+        dense = stride == 1 and row_index.size == rows and col_index.size == cols
+        if not dense:
+            full_line = _interpolate_grid(row_index, col_index, line_s, rows, cols)
+            full_sample = _interpolate_grid(row_index, col_index, sample_s, rows, cols)
+            residual = _map_residual(
+                reference,
+                secondary,
+                full_line,
+                full_sample,
+                reference_orbit=reference_orbit,
+                secondary_orbit=secondary_orbit,
+                degree=degree,
+                height_m=height_m,
+                dem=dem,
+                row_index=row_index,
+                col_index=col_index,
+            )
+            if residual <= float(max_residual_px) or stride == 1:
+                line_s, sample_s = full_line, full_sample
+                break
+            stride = max(1, stride // 2)
+            continue
+        residual = 0.0
+        break
+    backgeocode.last_stride = int(stride)
+    backgeocode.last_residual_px = float(residual)
+    sampled = resample_complex(secondary_deramped, line_s, sample_s, resampling)
+    if not reramp:
+        return sampled
+    return deramp(RadarGrid(reference.row, reference.col, sampled, reference.model), remove=False)
+
+
+def _locate_grid(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    *,
+    reference_orbit: Orbit,
+    secondary_orbit: Orbit,
+    degree: int,
+    height_m: float,
+    dem: object | None,
+    stride: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rows, cols = reference.shape
     row_index = _sample_index(rows, stride)
     col_index = _sample_index(cols, stride)
     line_s = np.empty((row_index.size, col_index.size), dtype=np.float64)
     sample_s = np.empty_like(line_s)
     for i, row in enumerate(row_index):
-        absolute = reference.row + int(row)
-        azimuth = reference.model.line_time(absolute)
         for j, col in enumerate(col_index):
-            slant = reference.model.slant_range_m(reference.col + int(col))
-            ground = ground_point_at_height(reference_orbit, azimuth, slant, height_m, degree=degree)
-            line, sample = radar_coordinates(
-                secondary.model,
-                secondary_orbit,
-                ground,
-                guess=repeat_azimuth_time(reference.model, absolute, secondary.model),
+            line_s[i, j], sample_s[i, j] = _one_secondary_coordinate(
+                reference,
+                secondary,
+                int(row),
+                int(col),
+                reference_orbit=reference_orbit,
+                secondary_orbit=secondary_orbit,
                 degree=degree,
+                height_m=height_m,
+                dem=dem,
             )
-            line_s[i, j] = line - secondary.row
-            sample_s[i, j] = sample - secondary.col
-    if not (stride == 1 and row_index.size == rows and col_index.size == cols):
-        line_s = _interpolate_grid(row_index, col_index, line_s, rows, cols)
-        sample_s = _interpolate_grid(row_index, col_index, sample_s, rows, cols)
-    sampled = np.zeros((rows, cols), dtype=np.complex64)
-    for row in range(rows):
-        for col in range(cols):
-            sampled[row, col] = _bilinear(secondary_deramped, float(line_s[row, col]), float(sample_s[row, col]))
-    if not reramp:
-        return sampled
-    return deramp(RadarGrid(reference.row, reference.col, sampled, reference.model), remove=False)
+    return line_s, sample_s, row_index, col_index
+
+
+def _one_secondary_coordinate(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    row: int,
+    col: int,
+    *,
+    reference_orbit: Orbit,
+    secondary_orbit: Orbit,
+    degree: int,
+    height_m: float,
+    dem: object | None,
+) -> tuple[float, float]:
+    absolute = reference.row + int(row)
+    azimuth = reference.model.line_time(absolute)
+    slant = reference.model.slant_range_m(reference.col + int(col))
+    height = float(height_m)
+    ground = ground_point_at_height(reference_orbit, azimuth, slant, height, degree=degree)
+    if dem is not None:
+        lat, lon, _got = ecef_to_geodetic(ground)
+        sampled, valid = dem.ellipsoidal_height(float(np.rad2deg(lat)), float(np.rad2deg(lon)))
+        if not valid:
+            return float("nan"), float("nan")
+        ground = ground_point_at_height(reference_orbit, azimuth, slant, sampled, degree=degree)
+    line, sample = radar_coordinates(
+        secondary.model,
+        secondary_orbit,
+        ground,
+        guess=repeat_azimuth_time(reference.model, absolute, secondary.model),
+        degree=degree,
+    )
+    return line - secondary.row, sample - secondary.col
+
+
+def _map_residual(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    line_s: np.ndarray,
+    sample_s: np.ndarray,
+    *,
+    reference_orbit: Orbit,
+    secondary_orbit: Orbit,
+    degree: int,
+    height_m: float,
+    dem: object | None,
+    row_index: np.ndarray,
+    col_index: np.ndarray,
+) -> float:
+    """Largest line or sample error of the interpolated map at off-lattice pixels."""
+    rows, cols = reference.shape
+    rng = np.random.default_rng(1)
+    errors = []
+    lattice_rows = set(int(item) for item in row_index)
+    lattice_cols = set(int(item) for item in col_index)
+    for _ in range(16):
+        row = int(rng.integers(0, rows))
+        col = int(rng.integers(0, cols))
+        if row in lattice_rows and col in lattice_cols:
+            continue
+        true_line, true_sample = _one_secondary_coordinate(
+            reference,
+            secondary,
+            row,
+            col,
+            reference_orbit=reference_orbit,
+            secondary_orbit=secondary_orbit,
+            degree=degree,
+            height_m=height_m,
+            dem=dem,
+        )
+        if not np.isfinite(true_line) or not np.isfinite(line_s[row, col]):
+            continue
+        errors.append(max(abs(true_line - line_s[row, col]), abs(true_sample - sample_s[row, col])))
+    return 0.0 if not errors else float(max(errors))
+
+
+def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
+    """Resample a complex image. Unsupported names raise instead of changing kernel."""
+    from scipy.ndimage import map_coordinates
+
+    name = str(method).strip().upper()
+    line = np.asarray(line, dtype=np.float64)
+    sample = np.asarray(sample, dtype=np.float64)
+    valid = np.isfinite(line) & np.isfinite(sample)
+    line = np.where(valid, line, 0.0)
+    sample = np.where(valid, sample, 0.0)
+    orders = {
+        "NEAREST_NEIGHBOUR": 0,
+        "BILINEAR_INTERPOLATION": 1,
+        "CUBIC_CONVOLUTION": 3,
+        "BICUBIC_INTERPOLATION": 3,
+    }
+    rows, cols = image.shape
+    if name in orders:
+        coords = np.stack((np.asarray(line, dtype=np.float64), np.asarray(sample, dtype=np.float64)))
+        real = map_coordinates(np.asarray(image.real), coords, order=orders[name], mode="constant", cval=0.0)
+        imag = map_coordinates(np.asarray(image.imag), coords, order=orders[name], mode="constant", cval=0.0)
+        out = (real + 1j * imag).astype(np.complex64)
+        out[~valid] = 0
+        return out
+    radius = {"BISINC_5_POINT_INTERPOLATION": 2, "BISINC_11_POINT_INTERPOLATION": 5, "BISINC_21_POINT_INTERPOLATION": 10}
+    if name not in radius:
+        raise ValueError(f"{method} is not an implemented resampling kernel.")
+    out = _sinc_resample(image, line, sample, radius[name])
+    out[~valid] = 0
+    return out
+
+
+def _sinc_resample(image: np.ndarray, line: np.ndarray, sample: np.ndarray, radius: int) -> np.ndarray:
+    rows, cols = image.shape
+    out = np.zeros(line.shape, dtype=np.complex64)
+    line = np.asarray(line, dtype=np.float64)
+    sample = np.asarray(sample, dtype=np.float64)
+    for row in range(line.shape[0]):
+        for col in range(line.shape[1]):
+            yy = line[row, col]
+            xx = sample[row, col]
+            if not np.isfinite(yy) or not np.isfinite(xx):
+                continue
+            y0 = int(np.floor(yy))
+            x0 = int(np.floor(xx))
+            value = 0j
+            norm = 0.0
+            for dy in range(-radius, radius + 1):
+                iy = y0 + dy
+                if iy < 0 or iy >= rows:
+                    continue
+                wy = float(np.sinc(yy - iy))
+                for dx in range(-radius, radius + 1):
+                    ix = x0 + dx
+                    if ix < 0 or ix >= cols:
+                        continue
+                    weight = wy * float(np.sinc(xx - ix))
+                    value += weight * image[iy, ix]
+                    norm += weight
+            if norm != 0.0:
+                out[row, col] = value / norm
+    return out
 
 
 def _solve_stride(rows: int, cols: int, max_solves: int) -> int:
@@ -449,12 +646,14 @@ def enhanced_spectral_diversity(
     slave_late: np.ndarray,
     *,
     separation_hz: float,
-) -> float:
-    """Azimuth shift, in seconds, from the burst-overlap double difference.
+    estimator: str = "Periodogram",
+    coherence_threshold: float = 0.2,
+) -> tuple[float, float]:
+    """Azimuth shift in seconds and the double-difference coherence.
 
-    ``early`` and ``late`` are the two burst looks of the same overlap, already
-    the same shape. A shift of zero means the double-difference phase is zero.
-    It is not a coherence estimate.
+    ``Average`` is the coherence-weighted argument. ``Periodogram`` is the
+    unweighted single-tone peak. Coherence below ``coherence_threshold``
+    raises, and the shift is not returned as a measurement.
     """
     looks = (master_early, master_late, slave_early, slave_late)
     shape = np.asarray(master_early).shape
@@ -462,11 +661,33 @@ def enhanced_spectral_diversity(
         raise ValueError("ESD overlap looks must share one shape")
     if float(separation_hz) <= 0.0:
         raise ValueError("spectral separation must be positive")
+    name = str(estimator).strip().lower()
+    if name not in {"average", "periodogram"}:
+        raise ValueError(f"{estimator} is not an ESD estimator. Use Average or Periodogram.")
     ifg_early = np.asarray(slave_early, dtype=np.complex64) * np.conj(np.asarray(master_early, dtype=np.complex64))
     ifg_late = np.asarray(slave_late, dtype=np.complex64) * np.conj(np.asarray(master_late, dtype=np.complex64))
     cross = ifg_early * np.conj(ifg_late)
-    phase = np.angle(np.sum(cross))
-    return float(phase / (2.0 * np.pi * float(separation_hz)))
+    weight = np.abs(cross)
+    coherence = float(np.abs(np.sum(cross)) / (np.sum(weight) + 1e-12))
+    if coherence < float(coherence_threshold):
+        raise RuntimeError(
+            f"ESD coherence {coherence:.3f} is below {float(coherence_threshold):.2f}. "
+            "The azimuth shift was not applied."
+        )
+    if name == "average":
+        phase = np.angle(np.sum(cross * weight))
+    else:
+        phase = np.angle(np.sum(cross))
+    return float(phase / (2.0 * np.pi * float(separation_hz))), coherence
+
+
+def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
+    """Shift a complex image by ``pixels`` azimuth lines with a Fourier ramp."""
+    spectrum = np.fft.fft(np.asarray(image, dtype=np.complex64), axis=0)
+    frequency = np.fft.fftfreq(image.shape[0], d=float(azimuth_time_interval_s))
+    seconds = float(pixels) * float(azimuth_time_interval_s)
+    spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[:, None] * seconds)
+    return np.fft.ifft(spectrum, axis=0).astype(np.complex64)
 
 
 def deburst_window(data: np.ndarray, model: SwathModel, row: int, col: int) -> RadarGrid:
@@ -516,7 +737,7 @@ def _with_orbit(model: SwathModel, orbit: Orbit) -> SwathModel:
     )
 
 
-def terrain_correct(
+def ellipsoid_geocode(
     grid: RadarGrid,
     orbit: Orbit,
     *,
@@ -524,46 +745,138 @@ def terrain_correct(
     out_rows: int = 8,
     out_cols: int = 8,
     degree: int = 3,
+    resampling: str = "BILINEAR_INTERPOLATION",
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
-    """Inverse range-Doppler resample onto a WGS84 latitude/longitude grid.
+    """Inverse range-Doppler resample at one ellipsoidal height.
 
-    Each output coordinate is converted to ECEF at ``height_m`` and located
-    in radar line and sample. Pixels outside the source window stay zero.
-    This is not a forward scatter of the source samples.
+    This is not terrain correction. Every output coordinate uses ``height_m``.
     """
+    return _geocode(
+        grid,
+        orbit,
+        height_of=lambda _lat, _lon: (float(height_m), True),
+        out_rows=out_rows,
+        out_cols=out_cols,
+        degree=degree,
+        resampling=resampling,
+        surface="ellipsoid",
+    )
+
+
+def terrain_correct(
+    grid: RadarGrid,
+    orbit: Orbit,
+    dem: object,
+    *,
+    out_rows: int = 8,
+    out_cols: int = 8,
+    degree: int = 3,
+    resampling: str = "BILINEAR_INTERPOLATION",
+    projection: str = "geographic",
+) -> tuple[np.ndarray, tuple[float, float, float, float], np.ndarray]:
+    """Inverse range-Doppler resample using a DEM height at every output coordinate.
+
+    Returns the image, ``(west, south, east, north)`` in degrees, and the
+    ellipsoidal height used at each output pixel (NaN where the DEM is no-data).
+    """
+    if dem is None:
+        raise ValueError("Terrain correction needs a DEM. Ellipsoid height 0 is not a substitute.")
+
+    def height_of(lat_deg: float, lon_deg: float) -> tuple[float, bool]:
+        return dem.ellipsoidal_height(lat_deg, lon_deg)
+
+    image, bounds, heights = _geocode(
+        grid,
+        orbit,
+        height_of=height_of,
+        out_rows=out_rows,
+        out_cols=out_cols,
+        degree=degree,
+        resampling=resampling,
+        surface="dem",
+        projection=projection,
+    )
+    return image, bounds, heights
+
+
+def _geocode(
+    grid: RadarGrid,
+    orbit: Orbit,
+    *,
+    height_of,
+    out_rows: int,
+    out_cols: int,
+    degree: int,
+    resampling: str,
+    surface: str,
+    projection: str = "geographic",
+):
     if int(out_rows) < 2 or int(out_cols) < 2:
-        raise ValueError("terrain-correction grid must be at least 2 by 2")
+        raise ValueError("output grid must be at least 2 by 2")
+    mode = str(projection).strip().lower()
+    if mode not in {"geographic", "wgs84(dd)", "utm"}:
+        raise ValueError(f"{projection} is not implemented. Use geographic or UTM.")
     rows, cols = grid.shape
     lats: list[float] = []
     lons: list[float] = []
     for row, col in ((0, 0), (0, cols - 1), (rows - 1, 0), (rows - 1, cols - 1)):
         azimuth = grid.model.line_time(grid.row + row)
         slant = grid.model.slant_range_m(grid.col + col)
-        ground = ground_point_at_height(orbit, azimuth, slant, height_m, degree=degree)
+        ground = ground_point_at_height(orbit, azimuth, slant, 0.0, degree=degree)
         lat, lon, _height = ecef_to_geodetic(ground)
         lats.append(float(np.rad2deg(lat)))
         lons.append(float(np.rad2deg(lon)))
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
-    if north - south <= 0.0 or east - west <= 0.0:
-        raise ValueError("terrain-correction footprint has no area")
-    lat_axis = np.linspace(north, south, int(out_rows))
-    lon_axis = np.linspace(west, east, int(out_cols))
-    sampled = np.zeros((int(out_rows), int(out_cols)), dtype=np.complex64)
+    if mode == "utm":
+        from ai_insar.pipeline.dem import utm_to_wgs84, wgs84_to_utm
+
+        corners = [wgs84_to_utm(lat, lon) for lat, lon in zip(lats, lons)]
+        eastings = [item[0] for item in corners]
+        northings = [item[1] for item in corners]
+        zone = corners[0][2]
+        northern = north >= 0.0
+        east_axis = np.linspace(min(eastings), max(eastings), int(out_cols))
+        north_axis = np.linspace(max(northings), min(northings), int(out_rows))
+        lat_axis = np.empty((int(out_rows), int(out_cols)))
+        lon_axis = np.empty_like(lat_axis)
+        for row_index, northing in enumerate(north_axis):
+            for col_index, easting in enumerate(east_axis):
+                lat_axis[row_index, col_index], lon_axis[row_index, col_index] = utm_to_wgs84(
+                    float(easting), float(northing), zone, northern=northern
+                )
+        _geocode.last_utm_zone = zone
+        _geocode.last_utm_bounds = (min(eastings), min(northings), max(eastings), max(northings))
+    else:
+        lat_axis = np.linspace(north, south, int(out_rows))
+        lon_axis = np.linspace(west, east, int(out_cols))
+        lat_axis, lon_axis = np.meshgrid(lat_axis, lon_axis, indexing="ij")
+        _geocode.last_utm_zone = None
+        _geocode.last_utm_bounds = None
+    line = np.full((int(out_rows), int(out_cols)), np.nan)
+    sample = np.full_like(line, np.nan)
+    heights = np.full_like(line, np.nan)
     guess = grid.model.line_time(grid.row + rows // 2)
-    for row_index, lat_deg in enumerate(lat_axis):
-        for col_index, lon_deg in enumerate(lon_axis):
-            xyz = geodetic_to_ecef(
-                np.deg2rad(lat_deg),
-                np.deg2rad(lon_deg),
-                np.asarray(height_m, dtype=np.float64),
-            )
+    for row_index in range(int(out_rows)):
+        for col_index in range(int(out_cols)):
+            lat_deg = float(lat_axis[row_index, col_index])
+            lon_deg = float(lon_axis[row_index, col_index])
+            height, valid = height_of(lat_deg, lon_deg)
+            if not valid:
+                continue
+            heights[row_index, col_index] = height
+            xyz = geodetic_to_ecef(np.deg2rad(lat_deg), np.deg2rad(lon_deg), np.asarray(height, dtype=np.float64))
             try:
-                line, sample = radar_coordinates(grid.model, orbit, xyz, guess=guess, degree=degree)
+                absolute, pixel = radar_coordinates(grid.model, orbit, xyz, guess=guess, degree=degree)
             except ValueError:
                 continue
-            sampled[row_index, col_index] = _bilinear(grid.data, line - grid.row, sample - grid.col)
-    return sampled, (west, south, east, north)
+            line[row_index, col_index] = absolute - grid.row
+            sample[row_index, col_index] = pixel - grid.col
+    image = resample_complex(grid.data, line, sample, resampling)
+    _geocode.last_surface = surface
+    if surface == "ellipsoid":
+        return image, (west, south, east, north)
+    return image, (west, south, east, north), heights
 
 
 def geocode_window(
