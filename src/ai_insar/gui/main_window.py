@@ -954,14 +954,6 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog.source.blockSignals(False)
         dialog.bind_product(reference)
 
-        def _rebind(text: str) -> None:
-            for product in products:
-                if str(product.root) == text:
-                    dialog.bind_product(product)
-                    return
-
-        dialog.source.currentTextChanged.connect(_rebind)
-
     def open_deburst_dialog(self) -> None:
         dialog = TopsDeburstDialog(self, can_run=self.workspace.reference_grid is not None)
         if self.safe_product is not None:
@@ -1206,17 +1198,42 @@ class MainWindow(QtWidgets.QMainWindow):
             f"rows {row}:{row + height}, samples {width}, from {Path(params['source']).name}. "
             "Burst overlap is still in the lines. This is not a deburst."
         )
-        self.workspace.stack = SLCStack(
-            data=np.asarray(data, dtype=np.complex64)[None, ...],
-            dates=np.array([day], dtype="datetime64[D]"),
-            wavelength_m=float(wavelength),
-            sensor="Sentinel-1 SLC",
-            description=description,
-        )
-        self.workspace.clear_products()
+        request = params["request"]
+        if (
+            getattr(self.workspace, "pair_stack", None) is None
+            and self.workspace.stack is not None
+            and self.workspace.stack.n_dates > 1
+        ):
+            self.workspace.pair_stack = self.workspace.stack
         self._store_split_grid(product, measurement, data, row)
+        if request.open_in_app:
+            self.workspace.stack = SLCStack(
+                data=np.asarray(data, dtype=np.complex64)[None, ...],
+                dates=np.array([day], dtype="datetime64[D]"),
+                wavelength_m=float(wavelength),
+                sensor="Sentinel-1 SLC",
+                description=description,
+            )
+            self._preferred_layer = "SLC amplitude"
+        if request.save:
+            from ai_insar.pipeline.dimap import write_beam_dimap
+
+            if request.format_name != "BEAM-DIMAP":
+                self._write_product(request.directory, request.target, request.format_name, data, None)
+            else:
+                path = write_beam_dimap(
+                    request.directory,
+                    request.target,
+                    data,
+                    None,
+                    band_name=f"{measurement.swath}_{measurement.polarisation}",
+                )
+                self._log(f"Saved {path}. Source files were not modified.")
         self._log(description)
-        self._preferred_layer = "SLC amplitude"
+        self._log(
+            f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
+            f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field."
+        )
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
         """Keep the split window as a radar grid. Zip annotations are read in place."""
@@ -1231,19 +1248,18 @@ class MainWindow(QtWidgets.QMainWindow):
         selected = any(
             item.is_reference and item.product_id == product.product_id for item in self.workspace.safe_inputs
         )
+        # Replace only this date's window. The other date, the SAFE list, and the
+        # imported pair stay where they are.
         if selected or self.workspace.reference_grid is None:
-            if selected and self.workspace.reference_grid is not None:
-                self.workspace.secondary_grid = self.workspace.reference_grid
-                self.workspace.secondary_orbit = self.workspace.precise_orbit
             self.workspace.reference_grid = grid
             self.workspace.swath_model = model
-            if self.workspace.precise_orbit is None:
-                self.workspace.precise_orbit = model.orbit
-            self._log(f"Stored the reference radar window {data.shape} from the SAFE annotation.")
+            self._log(
+                f"Stored the reference split {data.shape} from {product.product_id}. "
+                "The annotation orbit stays on this window. It is not a precise orbit."
+            )
             return
         self.workspace.secondary_grid = grid
-        self.workspace.secondary_orbit = model.orbit
-        self._log(f"Stored the secondary radar window {data.shape} from the SAFE annotation.")
+        self._log(f"Stored the secondary split {data.shape} from {product.product_id}.")
 
     def open_interferogram_dialog(self) -> None:
         dialog = InterferogramDialog(self, sources=self._source_names())

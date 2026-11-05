@@ -125,6 +125,7 @@ class TopsSplitDialog(OperatorDialog):
         self.burst_first.setValue(1)
         self.burst_last.setValue(9999)
         self.subswath.currentTextChanged.connect(lambda _text: self._refresh_bursts())
+        self.source.currentTextChanged.connect(self._on_source_edited)
         form.addRow("Subswath:", self.subswath)
         form.addRow("Polarisations:", self.pol_label)
         form.addRow(self.pol_list)
@@ -136,10 +137,36 @@ class TopsSplitDialog(OperatorDialog):
         form.addRow(burst_row)
         self.add_processing(form)
 
+    def _on_source_edited(self, text: str) -> None:
+        """Typing or choosing a SAFE folder or zip binds that product's metadata."""
+        if getattr(self, "_binding", False):
+            return
+        from pathlib import Path
+
+        from ai_insar.safe import resolve_safe
+
+        path = Path(text.strip())
+        if not path.exists():
+            return
+        try:
+            product = resolve_safe(path)
+        except (OSError, ValueError) as exc:
+            self.error.setText(str(exc))
+            return
+        self.bind_product(product)
+
     def bind_product(self, product: SafeProduct) -> None:
         """Fill subswath, polarisation, and burst count from this product only."""
+        self._binding = True
+        try:
+            self._bind_product(product)
+        finally:
+            self._binding = False
+
+    def _bind_product(self, product: SafeProduct) -> None:
         self._product = product
-        self.source.setCurrentText(str(product.root))
+        if self.source.currentText().strip() != str(product.root):
+            self.source.setCurrentText(str(product.root))
         self.subswath.blockSignals(True)
         self.subswath.clear()
         # The loaded-SAFE audit shows a blank initial subswath, not IW1.

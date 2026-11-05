@@ -44,15 +44,89 @@ def burst_rows(model: SwathModel, burst_index: int) -> tuple[int, int]:
     return start, start + model.lines_per_burst
 
 
-def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
-    """Multiply by the conjugate of the TOPS azimuth chirp, burst by burst.
+def deramp(grid: RadarGrid, *, remove: bool = True, orbit: Orbit | None = None) -> np.ndarray:
+    """Remove or restore the TOPS azimuth phase, burst by burst.
 
-    ``remove=False`` puts the chirp back (reramp). The FM rate is the
-    annotation polynomial at each sample's two-way time.
+    ``remove=False`` reramps. With Doppler polynomials on the swath, the phase
+    is the steering-rate FM chirp about the range-dependent reference time
+    plus Doppler-centroid demodulation. Otherwise the legacy centre-burst
+    chirp is used.
     """
-    out = np.array(grid.data, dtype=np.complex64, copy=True)
-    rows, cols = out.shape
+    phase = tops_phase(grid, orbit=orbit)
+    sign = 1.0 if remove else -1.0
+    return (np.asarray(grid.data, dtype=np.complex64) * np.exp(1j * sign * phase)).astype(np.complex64)
+
+
+def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
+    """Deramp plus demodulation phase in radians, one value per pixel.
+
+    Azimuth time is measured from the first line of the burst. The FM rate is
+    ``ka * ks / (ka - ks)``, with ``ks`` the Doppler rate of the antenna
+    steering. The reference time is the mid-burst time shifted by
+    ``f_dc / ka``. Demodulation uses ``-2π f_dc η`` with that same azimuth
+    time. Polynomials are the burst-indexed annotation records.
+    """
     model = grid.model
+    rows, cols = grid.shape
+    if not model.fm_rates or not model.dc_estimates:
+        return _legacy_chirp(grid)
+    speed = _speed(model, orbit or model.orbit)
+    if speed <= 0.0 or model.wavelength_m <= 0.0:
+        return _legacy_chirp(grid)
+    steering = 2.0 * speed * float(model.azimuth_steering_rate_rad_s) / float(model.wavelength_m)
+    samples = grid.col + np.arange(cols, dtype=np.float64)
+    tau = model.slant_range_time_s + 2.0 * samples * model.range_pixel_spacing_m / 299_792_458.0
+    phase = np.zeros((rows, cols), dtype=np.float64)
+    interval = float(model.azimuth_time_interval_s)
+    eta_mid = model.lines_per_burst * interval / 2.0
+    anchor = int(model.first_valid_pixel)
+    for burst_index, _burst in enumerate(model.bursts):
+        burst_row, burst_stop = burst_rows(model, burst_index)
+        local_start = max(burst_row, grid.row)
+        local_stop = min(burst_stop, grid.row + rows)
+        if local_start >= local_stop:
+            continue
+        fm = model.fm_rates[min(burst_index, len(model.fm_rates) - 1)]
+        dc = model.dc_estimates[min(burst_index, len(model.dc_estimates) - 1)]
+        ka = _polynomial(fm.coefficients, tau - fm.t0_s)
+        fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
+        ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
+        fdc_anchor = float(_polynomial(dc.coefficients, _two_way(model, anchor) - dc.t0_s))
+        if abs(ka_anchor) < 1e-6:
+            continue
+        rate = ka * steering / (ka - steering) if abs(steering) > 1e-6 else ka
+        reference = eta_mid + fdc_anchor / ka_anchor - np.divide(fdc, ka, out=np.zeros_like(fdc), where=np.abs(ka) > 1e-6)
+        line = np.arange(local_start, local_stop, dtype=np.float64) - burst_row
+        eta = line * interval
+        delta = eta[:, None] - reference[None, :]
+        block = -np.pi * rate[None, :] * delta**2 - 2.0 * np.pi * fdc[None, :] * eta[:, None]
+        phase[local_start - grid.row : local_stop - grid.row] = block
+    return phase
+
+
+def _two_way(model: SwathModel, sample: float) -> float:
+    return float(model.slant_range_time_s + 2.0 * float(sample) * model.range_pixel_spacing_m / 299_792_458.0)
+
+
+def _polynomial(coefficients: np.ndarray, delta: np.ndarray | float) -> np.ndarray:
+    value = np.zeros_like(delta, dtype=np.float64)
+    power = np.ones_like(delta, dtype=np.float64)
+    for coefficient in np.asarray(coefficients, dtype=np.float64):
+        value = value + float(coefficient) * power
+        power = power * delta
+    return value
+
+
+def _speed(model: SwathModel, orbit: Orbit) -> float:
+    when = model.bursts[len(model.bursts) // 2].azimuth_time
+    _position, velocity = orbit.interpolate(when, 3)
+    return float(np.linalg.norm(velocity))
+
+
+def _legacy_chirp(grid: RadarGrid) -> np.ndarray:
+    """Centre-burst FM chirp used when the annotation has no polynomial list."""
+    model = grid.model
+    rows, cols = grid.shape
     coefficients = model.fm_rate
     c0 = float(coefficients[0])
     c1 = float(coefficients[1]) if coefficients.size > 1 else 0.0
@@ -60,8 +134,8 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
     sample = grid.col + np.arange(cols, dtype=np.float64)
     delta_tau = 2.0 * sample * model.range_pixel_spacing_m / 299_792_458.0
     rate = c0 + c1 * delta_tau + c2 * delta_tau**2
-    sign = -1.0 if remove else 1.0
-    for burst_index, burst in enumerate(model.bursts):
+    phase = np.zeros((rows, cols), dtype=np.float64)
+    for burst_index, _burst in enumerate(model.bursts):
         burst_row, burst_stop = burst_rows(model, burst_index)
         local_start = max(burst_row, grid.row)
         local_stop = min(burst_stop, grid.row + rows)
@@ -70,10 +144,10 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
         line = np.arange(local_start, local_stop, dtype=np.float64) - burst_row
         center = (model.lines_per_burst - 1) / 2.0
         eta = (line - center) * model.azimuth_time_interval_s
-        phase = np.pi * rate[None, :] * (eta[:, None] ** 2)
-        slc = out[local_start - grid.row : local_stop - grid.row]
-        slc *= np.exp(1j * sign * phase).astype(np.complex64)
-    return out
+        # The legacy multiplier was exp(-j * pi * rate * eta^2) on removal,
+        # which is exp(j * phi) for phi = -pi * rate * eta^2.
+        phase[local_start - grid.row : local_stop - grid.row] = -np.pi * rate[None, :] * (eta[:, None] ** 2)
+    return phase
 
 
 def deburst_output_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
@@ -361,8 +435,8 @@ def backgeocode(
     """
     backgeocode.last_stride = 1
     backgeocode.last_residual_px = 0.0
-    reference_deramped = deramp(reference, remove=True)
-    secondary_deramped = deramp(secondary, remove=True)
+    reference_deramped = deramp(reference, remove=True, orbit=reference_orbit)
+    secondary_deramped = deramp(secondary, remove=True, orbit=secondary_orbit)
     rows, cols = reference.shape
     limit = rows * cols if max_solves is None else int(max_solves)
     stride = _solve_stride(rows, cols, limit)
@@ -407,7 +481,11 @@ def backgeocode(
     sampled = resample_complex(secondary_deramped, line_s, sample_s, resampling)
     if not reramp:
         return sampled
-    return deramp(RadarGrid(reference.row, reference.col, sampled, reference.model), remove=False)
+    return deramp(
+        RadarGrid(reference.row, reference.col, sampled, reference.model),
+        remove=False,
+        orbit=reference_orbit,
+    )
 
 
 def _locate_grid(
@@ -800,6 +878,10 @@ def _with_orbit(model: SwathModel, orbit: Orbit) -> SwathModel:
         fm_rate=model.fm_rate,
         bursts=model.bursts,
         orbit=orbit,
+        fm_rates=model.fm_rates,
+        dc_estimates=model.dc_estimates,
+        azimuth_steering_rate_rad_s=model.azimuth_steering_rate_rad_s,
+        first_valid_pixel=model.first_valid_pixel,
     )
 
 
