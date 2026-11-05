@@ -101,7 +101,13 @@ class ProductExplorer(QtWidgets.QDockWidget):
     def set_product(self, product: SafeProduct | None) -> None:
         self.set_products([] if product is None else [product], reference_id=None if product is None else product.product_id)
 
-    def set_products(self, products: list[SafeProduct], *, reference_id: str | None = None) -> None:
+    def set_products(
+        self,
+        products: list[SafeProduct],
+        *,
+        reference_id: str | None = None,
+        secondary_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
         self._products = list(products)
         self.tree.clear()
         self.preview.set_raster(None, None)
@@ -111,17 +117,22 @@ class ProductExplorer(QtWidgets.QDockWidget):
             placeholder = QtWidgets.QTreeWidgetItem(["No Sentinel-1 product open"])
             self.tree.addTopLevelItem(placeholder)
             return
+        secondary = set(secondary_ids or ())
         self._product = next((item for item in products if item.product_id == reference_id), products[0])
         self.preview_caption.setText("Double-click a band to preview amplitude.")
+        focus = None
         for product in products:
-            title = product.product_id
-            if reference_id and product.product_id == reference_id:
-                title = f"{title} (reference)"
+            title = _product_title(product, reference_id=reference_id, secondary_ids=secondary)
             root = QtWidgets.QTreeWidgetItem([title])
             root.setData(0, _ROLE, ("product", product.product_id))
             self._append_product(root, product)
             self.tree.addTopLevelItem(root)
-        self.tree.expandAll()
+            if product.product_id == reference_id or focus is None:
+                focus = root
+        # Keep every product name on screen. Expanding both SAFE trees hides the second date.
+        self.tree.collapseAll()
+        if focus is not None:
+            self.tree.scrollToItem(focus)
 
     def product(self) -> SafeProduct | None:
         return self._product
@@ -230,6 +241,18 @@ class ProductExplorer(QtWidgets.QDockWidget):
         action = menu.addAction("Add to SLC stack (crop…)")
         action.triggered.connect(lambda _checked=False: self.addToStackRequested.emit())
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+
+def _product_title(product: SafeProduct, *, reference_id: str | None, secondary_ids: set[str]) -> str:
+    """Date plus product id, with the pair role the explorer must keep visible."""
+    when = (product.start_utc or "")[:10]
+    if reference_id and product.product_id == reference_id:
+        role = " (reference)"
+    elif product.product_id in secondary_ids:
+        role = " (secondary)"
+    else:
+        role = ""
+    return f"{when} {product.product_id}{role}".strip()
 
 
 def _find_measurement(product: SafeProduct, swath: str, pol: str):

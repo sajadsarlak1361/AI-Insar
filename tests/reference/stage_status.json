@@ -41,13 +41,13 @@
       "snap14_complex_samples": 68912584,
       "snap14_unequal_pairs": 0,
       "snap14_max_abs": 0,
-      "snap14_verdict": "PASS_SAMPLES_ONLY on revision 44b7457, before abstracted metadata was written",
+      "snap14_verdict": "PASS on d600cbc. Coordinator SNAP 14 compared both dates: 68912584 complex samples, unequal 0, SHA256 identical, and PRODUCT, first_line_time, last_line_time, subset_offset_y 6032, tie_point_grids, and units matched.",
       "pixel0_june": "30-JUN-2021 05:26:15.752882",
       "pixel0_july": "12-JUL-2021 05:26:16.426464",
       "subset_offset_y": 6032,
       "scene_start_is_not_pixel0": true,
       "matched": true,
-      "note": "All 68,912,584 complex samples matched SNAP 14 with zero residual. That build's DIMAP had no Abstracted_Metadata. This revision writes the burst-window clock, subset_offset_y, product id, annotation, and geolocation tie points taken from the SAFE. Scene start stays on the source-band record and is not first_line_time. SNAP 12 GPT Apply-Orbit-File and Back-Geocoding opened a window of that DIMAP. SNAP 14 has not re-read this revision."
+      "note": "Coordinator SNAP 14 acceptance of d600cbc is PASS for both dates: all 68,912,584 complex samples, SHA256 identical, and the burst-window metadata (PRODUCT, first_line_time, last_line_time, subset_offset_y 6032, tie grids, units). Scene start stays on the source-band record and is not first_line_time. The same desktop run still showed Product Explorer keeping only the June product after the July split, the next Split dialog returning to the June source and /home/box, and the empty-source note remaining after a product was bound. Those dialog fixes are in this revision and were checked offscreen. The desktop has not opened this revision."
     },
     {
       "order": 2,
@@ -107,8 +107,10 @@
       ],
       "snap12_pixels_block2": "Samples 5109:7140, overlap lines 7394:7521 and 7560:7687. SNAP 12 slave phase median vs this build 0.00359 rad, amplitude relative median 0.00326, master max abs 0. Double-difference MLE of SNAP's own pixels: coherence 0.996, shift -0.001477 px. This build: -0.001588 px. The block file says -0.000727 px.",
       "snap12_pixels_block3": "Samples 7140:9171, same overlap lines. Double-difference MLE of SNAP's own pixels: coherence 0.890, shift -0.002037 px. The block file says -0.000194 px.",
-      "first_block_divergence": "The file values are not the double-difference tone of those pixels. On SNAP's block 2 pixels the tone is -0.001477 px (this build -0.001588 px); the file says -0.000727 px. On block 3 the tone is -0.002037 px and the file says -0.000194 px. 5x5 coherence weights do not move the tone. A 2*|ka| separation hits only block 2 (-0.000738 vs -0.000727) and misses block 3. Block 1 remains coherence 0.007 here versus the file's +0.001666 px.",
-      "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. On the full valid-sample overlap the same 10 range blocks give a mean near SNAP's applied -0.001511 px, and that mean is not acceptance. The threshold stays 0.3. Stages 5-15 are not run. No displacement product is claimed."
+      "first_block_divergence": "The file is not the amplitude-weighted double-difference tone. On the valid overlap (rows 7394:7521 and 7560:7687) that tone is -0.001477 px on SNAP pixels and -0.001588 px in this build for block 2, against the file value -0.000727 px. Replaying SpectralDiversityOp on those SNAP pixels does reproduce the file.",
+      "snap_block_file_construction": "The azimuth_shift.txt row is the raw per-block Periodogram in pixels. Phase is arg((master_early·conj(slave_early))·conj(master_late·conj(slave_late))). Weight is Inv Quadratic: sqrt(5x5 coherence) of the early interferogram when coherence > 0.3, else 0. The 0.3 gate is that per-pixel weight. It is not a double-difference coherence gate and it was not changed. Spectral separation is kt(range)·(linesPerBurst-overlapLines)·dt, read at column blockIndex·blockWidth (sample 0 of the swath, not the first valid sample). kt uses the first FM polynomial because the split product indexes the uncut FM list by the raster burst. The line after the block row, Mean azimuth shift, is the negated mean of blockShift·meanWeight. On the SNAP 12 back-geocoded overlap this reconstruction matches all 10 file values with maximum absolute difference 3.3e-7 px, and the applied value -0.001511319 px against the file -0.001511316 px.",
+      "this_build_block2_with_that_estimator_px": -0.000497,
+      "note": "The same estimator on this build's block 2 coregistration returns -0.000497 px, not the file's -0.000727 px. The tone of the double difference was already close. The coherence-weighted periodogram still sees a residual, so the 10-block list does not match and the applied shift is not accepted. The threshold stays 0.3. Stages 5-15 are not run. No displacement product is claimed."
     },
     {
       "order": "5-15",

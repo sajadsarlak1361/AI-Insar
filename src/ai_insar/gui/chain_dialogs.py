@@ -84,6 +84,12 @@ def _combo(items: tuple[str, ...], current: str, name: str) -> QtWidgets.QComboB
     return box
 
 
+_SPLIT_EMPTY_NOTE = (
+    "With no source, Subswath is an empty combo and Bursts reads "
+    "'1 to 9999 (max number of bursts: 9999)'. IW names are not shown until a product is bound."
+)
+
+
 class TopsSplitDialog(OperatorDialog):
     """S-1 TOPS Split. Subswath and polarisations stay empty until a product is bound."""
 
@@ -93,10 +99,7 @@ class TopsSplitDialog(OperatorDialog):
             "TOPS Split keeps one subswath, polarisation, and burst range. It does not deburst.",
             suffix=PRODUCT_SUFFIX.get("split", "_split"),
             object_name="topsSplitDialog",
-            notes=(
-                "With no source, Subswath is an empty combo and Bursts reads "
-                "'1 to 9999 (max number of bursts: 9999)'. IW names are not shown until a product is bound."
-            ),
+            notes=_SPLIT_EMPTY_NOTE,
             parent=parent,
             source_label="source:",
             target_text="",
@@ -122,10 +125,16 @@ class TopsSplitDialog(OperatorDialog):
         self.burst_last.setObjectName("splitBurstLast")
         for box in (self.burst_first, self.burst_last):
             box.setRange(1, 9999)
+            # Apply the typed burst when the box loses focus. Updating on every
+            # digit keeps a 1..9999 box resizing and stalls entry.
+            box.setKeyboardTracking(False)
         self.burst_first.setValue(1)
         self.burst_last.setValue(9999)
         self.subswath.currentTextChanged.connect(lambda _text: self._refresh_bursts())
-        self.source.currentTextChanged.connect(self._on_source_edited)
+        self.source.currentIndexChanged.connect(self._on_source_index)
+        line = self.source.lineEdit()
+        if line is not None:
+            line.editingFinished.connect(self._on_source_finished)
         form.addRow("Subswath:", self.subswath)
         form.addRow("Polarisations:", self.pol_label)
         form.addRow(self.pol_list)
@@ -137,21 +146,59 @@ class TopsSplitDialog(OperatorDialog):
         form.addRow(burst_row)
         self.add_processing(form)
 
-    def _on_source_edited(self, text: str) -> None:
-        """Typing or choosing a SAFE folder or zip binds that product's metadata."""
+    def _on_source_index(self, index: int) -> None:
+        """A listed SAFE is already parsed. Bind it without reading the product again."""
+        if getattr(self, "_binding", False) or index < 0:
+            return
+        cached = self.source.itemData(index)
+        text = self.source.itemText(index).strip()
+        if text and self.source.currentText().strip() != text:
+            return
+        from ai_insar.safe import SafeProduct
+
+        if isinstance(cached, SafeProduct):
+            self.error.setText("")
+            self.bind_product(cached)
+            return
+        if text:
+            self._resolve_source_text(text)
+
+    def _on_source_finished(self) -> None:
+        """Resolve a typed SAFE folder when the field is left, not on each key."""
         if getattr(self, "_binding", False):
             return
+        text = self.source.currentText().strip()
+        if self._product is not None and str(self._product.root) == text:
+            self.error.setText("")
+            self._set_bound_note()
+            return
+        self._resolve_source_text(text)
+
+    def _resolve_source_text(self, text: str) -> None:
+        """Bind a SAFE folder or zip. A missing path does not change the current product."""
         from pathlib import Path
 
-        from ai_insar.safe import resolve_safe
+        from ai_insar.safe import SafeProduct, resolve_safe
 
-        path = Path(text.strip())
+        raw = text.strip()
+        if not raw:
+            return
+        index = self.source.findText(raw)
+        if index >= 0:
+            cached = self.source.itemData(index)
+            if isinstance(cached, SafeProduct):
+                self.error.setText("")
+                self.bind_product(cached)
+                return
+        path = Path(raw)
         if not path.exists():
             return
         try:
             product = resolve_safe(path)
         except (OSError, ValueError) as exc:
             self.error.setText(str(exc))
+            if self._product is None:
+                self.notes.setText(_SPLIT_EMPTY_NOTE)
             return
         self.error.setText("")
         self.bind_product(product)
@@ -166,8 +213,14 @@ class TopsSplitDialog(OperatorDialog):
 
     def _bind_product(self, product: SafeProduct) -> None:
         self._product = product
+        self.error.setText("")
         if self.source.currentText().strip() != str(product.root):
             self.source.setCurrentText(str(product.root))
+        listed = self.source.findText(str(product.root))
+        if listed >= 0 and not isinstance(self.source.itemData(listed), SafeProduct):
+            self.source.setItemData(listed, product)
+        elif listed < 0:
+            self.source.addItem(str(product.root), product)
         self.subswath.blockSignals(True)
         self.subswath.clear()
         # The loaded-SAFE audit shows a blank initial subswath, not IW1.
@@ -183,6 +236,32 @@ class TopsSplitDialog(OperatorDialog):
             stem = stem[:-5]
         self.target.setText(f"{stem}_split")
         self._refresh_bursts()
+        self._set_bound_note()
+
+    def _set_bound_note(self) -> None:
+        product = self._product
+        if product is None:
+            self.notes.setText(_SPLIT_EMPTY_NOTE)
+            return
+        swath = self.subswath.currentText().strip()
+        swaths = ", ".join(product.swaths) or "none"
+        if swath:
+            self.notes.setText(
+                f"Source {product.product_id} is bound. {swath} bursts are "
+                f"{self.burst_text.text()}. This is not a deburst."
+            )
+            return
+        self.notes.setText(
+            f"Source {product.product_id} is bound. Swaths: {swaths}. "
+            "Choose a subswath to set its burst count. This is not a deburst."
+        )
+
+    def _max_bursts(self) -> int:
+        product = self._product
+        if product is None:
+            return 0
+        counts = [len(measurement.bursts) for measurement in product.measurements if measurement.bursts]
+        return max(counts) if counts else 0
 
     def _refresh_bursts(self) -> None:
         product = self._product
@@ -194,17 +273,27 @@ class TopsSplitDialog(OperatorDialog):
                     count = len(measurement.bursts)
                     break
         if count < 1:
+            count = self._max_bursts()
+        if count < 1:
             self.burst_text.setText("1 to 9999 (max number of bursts: 9999)")
             self.burst_first.setRange(1, 9999)
             self.burst_last.setRange(1, 9999)
             self.burst_first.setValue(1)
             self.burst_last.setValue(9999)
+            self._set_bound_note()
             return
+        previous_first = int(self.burst_first.value())
+        previous_last = int(self.burst_last.value())
         self.burst_text.setText(f"1 to {count} (max number of bursts: {count})")
         self.burst_first.setRange(1, count)
         self.burst_last.setRange(1, count)
-        self.burst_first.setValue(1)
-        self.burst_last.setValue(count)
+        if 1 <= previous_first <= previous_last <= count:
+            self.burst_first.setValue(previous_first)
+            self.burst_last.setValue(previous_last)
+        else:
+            self.burst_first.setValue(1)
+            self.burst_last.setValue(count)
+        self._set_bound_note()
 
     def validate(self) -> str:
         message = self.validate_io()

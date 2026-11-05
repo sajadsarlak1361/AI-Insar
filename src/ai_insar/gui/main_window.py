@@ -198,6 +198,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._preferred_layer: str | None = None
         self.safe_product = None
         self.safe_products = []
+        self._split_product_ids: set[str] = set()
+        self._split_io: dict | None = None
         self._product_status: str | None = None
         self.stage_buttons: list[QtWidgets.QPushButton] = []
         self._build()
@@ -728,9 +730,7 @@ class MainWindow(QtWidgets.QMainWindow):
             products[0] if products else None,
         )
         self.safe_product = reference_product
-        if products:
-            self.product_explorer.set_products(products, reference_id=None if reference_product is None else reference_product.product_id)
-            self.product_explorer.show()
+        self._show_safe_products()
         self.workspace.reference_grid = None
         self.workspace.secondary_grid = None
         self.workspace.precise_orbit = None
@@ -765,17 +765,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
 
     def open_safe_path(self, path) -> None:
-        """Inspect a SAFE zip (or a folder / manifest). Pixels are not read."""
+        """Inspect a SAFE zip (or a folder / manifest). Pixels are not read.
+
+        A second date is added beside the first. Opening the same product id
+        again refreshes that entry and does not drop the other date.
+        """
         from pathlib import Path
 
         product = resolve_safe(Path(path))
-        self.safe_product = product
-        self.safe_products = [product]
-        self.product_explorer.set_product(product)
-        self.product_explorer.show()
-        self._product_status = format_product_status(product)
+        self._remember_safe_product(product)
+        shown = self.safe_product or product
+        self._product_status = format_product_status(shown)
         self.statusBar().showMessage(self._product_status)
-        self._log(f"Opened Sentinel-1 product {product.product_id}. {self._product_status}")
+        self._log(
+            f"Opened Sentinel-1 product {product.product_id}. "
+            f"{len(self.safe_products)} product(s) in the explorer. {self._product_status}"
+        )
 
     def preview_safe_band(self, swath: str, pol: str) -> None:
         product = self._require_safe_product()
@@ -947,12 +952,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if not products:
             return
         reference = self.safe_product if self.safe_product in products else products[0]
+        pending = [product for product in products if product.product_id not in self._split_product_ids]
+        # The first split starts on the reference. The next split starts on a date
+        # that has not been split yet, so the source line does not stay on the previous date.
+        chosen = reference if not self._split_product_ids or not pending else pending[0]
         dialog.source.blockSignals(True)
         dialog.source.clear()
         for product in products:
-            dialog.source.addItem(str(product.root), product.product_id)
+            dialog.source.addItem(str(product.root), product)
         dialog.source.blockSignals(False)
-        dialog.bind_product(reference)
+        dialog.bind_product(chosen)
+        remembered = self._split_io
+        if not remembered:
+            return
+        dialog.directory.setText(str(remembered.get("directory", dialog.directory.text())))
+        if remembered.get("format"):
+            dialog.format_box.setCurrentText(str(remembered["format"]))
+        dialog.save_box.setChecked(bool(remembered.get("save", True)))
+        dialog.open_box.setChecked(bool(remembered.get("open", True)))
 
     def open_deburst_dialog(self) -> None:
         dialog = TopsDeburstDialog(self, can_run=self.workspace.reference_grid is not None)
@@ -1199,6 +1216,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "Burst overlap is still in the lines. This is not a deburst."
         )
         request = params["request"]
+        self._split_io = {
+            "directory": request.directory,
+            "format": request.format_name,
+            "save": bool(request.save),
+            "open": bool(request.open_in_app),
+        }
         if (
             getattr(self.workspace, "pair_stack", None) is None
             and self.workspace.stack is not None
@@ -1250,6 +1273,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
             f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field."
         )
+        self._split_product_ids.add(product.product_id)
         self._remember_split_product(product)
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
@@ -1278,16 +1302,40 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.secondary_grid = grid
         self._log(f"Stored the secondary split {data.shape} from {product.product_id}.")
 
-    def _remember_split_product(self, product) -> None:
-        """Keep every split source in the explorer. A later date does not replace the first."""
-        products = list(self.safe_products)
-        if not any(item.product_id == product.product_id for item in products):
+    def _remember_safe_product(self, product) -> None:
+        """Insert one SAFE without dropping a different date already in the explorer."""
+        products = []
+        replaced = False
+        for item in self.safe_products:
+            if item.product_id == product.product_id:
+                products.append(product)
+                replaced = True
+            else:
+                products.append(item)
+        if not replaced:
             products.append(product)
         self.safe_products = products
-        if self.safe_product is None:
+        if self.safe_product is None or self.safe_product.product_id == product.product_id:
             self.safe_product = product
+        self._show_safe_products()
+
+    def _remember_split_product(self, product) -> None:
+        """Keep every split source in the explorer. A later date does not replace the first."""
+        self._remember_safe_product(product)
+
+    def _show_safe_products(self) -> None:
+        products = list(self.safe_products)
+        if not products:
+            self.product_explorer.set_products([])
+            return
         reference = self.safe_product if self.safe_product in products else products[0]
-        self.product_explorer.set_products(products, reference_id=reference.product_id)
+        self.safe_product = reference
+        secondary = [product.product_id for product in products if product.product_id != reference.product_id]
+        self.product_explorer.set_products(
+            products,
+            reference_id=reference.product_id,
+            secondary_ids=secondary,
+        )
         self.product_explorer.show()
         self._product_status = format_product_status(reference)
 
@@ -1680,8 +1728,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def apply_esd(self, params: dict) -> None:
         from ai_insar.pipeline.tops_ops import (
             burst_overlap_rows,
-            enhanced_spectral_diversity,
-            overlap_doppler_separation_hz,
+            esd_applied_shift_px,
+            overlap_block_shifts,
+            spectral_separation_hz,
+            valid_overlap_rows,
         )
 
         early = self.workspace.reference_grid
@@ -1689,6 +1739,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if early is None or late is None or early.shape != late.shape or early.row != late.row:
             raise RuntimeError(_ESD_BLOCK)
         estimator = str(params.get("estimator") or "Periodogram")
+        if estimator.strip().lower() != "periodogram":
+            raise RuntimeError(
+                f"ESD estimator {estimator} is not the Periodogram that writes the block azimuth shifts."
+            )
         if params.get("user_azimuth"):
             from ai_insar.pipeline.tops_ops import RadarGrid, apply_azimuth_pixel_shift
 
@@ -1703,23 +1757,40 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         model = early.model
         for index in range(len(model.bursts) - 1):
-            (start_a, stop_a), (start_b, stop_b) = burst_overlap_rows(model, index)
+            (start_a, stop_a), (start_b, stop_b) = valid_overlap_rows(model, index)
             if not _covers(early, start_a, stop_a) or not _covers(early, start_b, stop_b):
                 continue
-            separation = overlap_doppler_separation_hz(model, index)
-            shift, coherence = enhanced_spectral_diversity(
-                _slice(early, start_a, stop_a),
-                _slice(early, start_b, stop_b),
-                _slice(late, start_a, stop_a),
-                _slice(late, start_b, stop_b),
+            x0 = max(int(model.bursts[index].first_valid_sample), int(model.bursts[index + 1].first_valid_sample))
+            x1 = min(int(model.bursts[index].last_valid_sample), int(model.bursts[index + 1].last_valid_sample))
+            if early.col > x0 or early.col + early.shape[1] <= x1:
+                raise RuntimeError(
+                    "ESD block shifts need the valid-sample overlap. This window does not cover it."
+                )
+            local_x0 = x0 - int(early.col)
+            local_x1 = x1 - int(early.col) + 1
+            overlap_lines = burst_overlap_rows(model, index)[0][1] - burst_overlap_rows(model, index)[0][0]
+            # A split product keeps the full FM list and indexes it by the burst
+            # number inside the raster, which is 0 for the first written burst.
+            fm_index = index - int(early.row) // int(model.lines_per_burst)
+            separation = spectral_separation_hz(model, fm_index, overlap_lines)
+            reports = overlap_block_shifts(
+                _slice(early, start_a, stop_a)[:, local_x0:local_x1],
+                _slice(early, start_b, stop_b)[:, local_x0:local_x1],
+                _slice(late, start_a, stop_a)[:, local_x0:local_x1],
+                _slice(late, start_b, stop_b)[:, local_x0:local_x1],
                 separation_hz=separation,
-                estimator=estimator,
+                azimuth_time_interval_s=model.azimuth_time_interval_s,
+                n_blocks=int(params.get("n_blocks") or 10),
+                coherence_threshold=float(params.get("coherence_threshold") or 0.3),
             )
-            self.workspace.esd_azimuth_shift_s = shift
-            lines = shift / model.azimuth_time_interval_s
+            applied_px = esd_applied_shift_px(reports)
+            self.workspace.esd_azimuth_shift_s = applied_px * model.azimuth_time_interval_s
+            listed = " ".join(f"{float(item['shift_px']):+.6f}" for item in reports)
             self._log(
-                f"ESD {estimator} burst {index + 1}/{index + 2}: azimuth shift {shift:.6e} s "
-                f"({lines:.4f} lines), coherence {coherence:.3f}, spectral separation {separation:.1f} Hz."
+                f"ESD {estimator} overlap {index + 1}: block shifts (px) {listed}. "
+                f"Applied azimuth shift {applied_px:.6f} px "
+                f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
+                "The secondary was not resampled."
             )
             return
         raise RuntimeError(

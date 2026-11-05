@@ -822,6 +822,51 @@ def burst_overlap_rows(model: SwathModel, burst_index: int) -> tuple[tuple[int, 
     return (early, early + count), (late, late + count)
 
 
+def valid_overlap_rows(model: SwathModel, burst_index: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Overlap rows after the invalid-line margins SNAP drops.
+
+    ``burst_overlap_rows`` is the time overlap. The early burst loses the lines
+    after its last valid line, and the next burst loses the lines before its
+    first valid line. Both returned ranges have the same length.
+    """
+    early, late = burst_overlap_rows(model, burst_index)
+    drop_start = int(model.bursts[burst_index + 1].first_valid_line)
+    drop_end = int(model.lines_per_burst) - 1 - int(model.bursts[burst_index].last_valid_line)
+    trimmed = (
+        (early[0] + drop_start, early[1] - drop_end),
+        (late[0] + drop_start, late[1] - drop_end),
+    )
+    if trimmed[0][1] - trimmed[0][0] < 8 or trimmed[0][1] - trimmed[0][0] != trimmed[1][1] - trimmed[1][0]:
+        raise ValueError("trimmed burst overlap is not a usable rectangle")
+    return trimmed
+
+
+def spectral_separation_hz(model: SwathModel, burst_index: int, overlap_lines: int) -> np.ndarray:
+    """Per-sample spectral separation ``kt(range) · (linesPerBurst − overlap) · Δt``.
+
+    ``kt = ka · ks / (ka − ks)``. ``ka`` is the FM polynomial at ``burst_index``
+    in the list the product still carries. On a split swath SNAP indexes that
+    list by the burst number inside the raster, which is the first polynomial
+    when the list was not cut down to the written bursts. One value per range
+    sample, in Hz. The azimuth interval is inside the cycle time, so the
+    values are hertz, not hertz times a line.
+    """
+    if burst_index < 0 or burst_index >= len(model.fm_rates):
+        raise ValueError(f"FM polynomial {burst_index} is not in this swath")
+    if int(overlap_lines) < 0 or int(overlap_lines) >= int(model.lines_per_burst):
+        raise ValueError("overlap line count must be inside one burst")
+    interval = float(model.azimuth_time_interval_s)
+    samples = np.arange(int(model.samples_per_burst), dtype=np.float64)
+    tau = model.slant_range_time_s + 2.0 * samples * float(model.range_pixel_spacing_m) / 299_792_458.0
+    fm = model.fm_rates[int(burst_index)]
+    ka = _polynomial(fm.coefficients, tau - fm.t0_s)
+    speed = _speed(model, model.orbit)
+    steering = 2.0 * speed * float(model.azimuth_steering_rate_rad_s) / float(model.wavelength_m)
+    kt = ka * steering / (ka - steering) if abs(steering) > 1e-6 else ka
+    cycle = (int(model.lines_per_burst) - int(overlap_lines)) * interval
+    return np.asarray(kt * cycle, dtype=np.float64)
+
+
 def overlap_doppler_separation_hz(model: SwathModel, burst_index: int) -> float:
     """Spectral separation, in Hz, of the two TOPS looks in one overlap.
 
@@ -881,24 +926,126 @@ def enhanced_spectral_diversity(
     return float(phase / (2.0 * np.pi * float(separation_hz))), coherence
 
 
+def early_look_coherence(master: np.ndarray, slave: np.ndarray) -> np.ndarray:
+    """5×5 coherence of one overlap look, the window SNAP's ESD weight uses.
+
+    The sum is the early-burst interferogram ``master · conj(slave)``. A pixel
+    whose box meets the edge uses the smaller box. A zero-power box stays 0.
+    """
+    master_c = np.asarray(master)
+    slave_c = np.asarray(slave)
+    if master_c.shape != slave_c.shape or master_c.ndim != 2:
+        raise ValueError("coherence looks must be the same 2-D shape")
+    height, width = master_c.shape
+    real = master_c.real * slave_c.real + master_c.imag * slave_c.imag
+    imag = master_c.imag * slave_c.real - master_c.real * slave_c.imag
+    master_power = master_c.real.astype(np.float64) ** 2 + master_c.imag.astype(np.float64) ** 2
+    slave_power = slave_c.real.astype(np.float64) ** 2 + slave_c.imag.astype(np.float64) ** 2
+
+    def _cumsum(values: np.ndarray) -> np.ndarray:
+        padded = np.zeros((height + 1, width + 1), dtype=np.float64)
+        padded[1:, 1:] = np.asarray(values, dtype=np.float64)
+        return padded.cumsum(0).cumsum(1)
+
+    real_sum, imag_sum, master_sum, slave_sum = (
+        _cumsum(real),
+        _cumsum(imag),
+        _cumsum(master_power),
+        _cumsum(slave_power),
+    )
+    coherence = np.zeros((height, width), dtype=np.float64)
+    half = 2
+    rows = np.arange(height)
+    row0 = np.maximum(rows - half, 0)
+    row1 = np.minimum(rows + half, height - 1) + 1
+    cols = np.arange(width)
+    col0 = np.maximum(cols - half, 0)
+    col1 = np.minimum(cols + half, width - 1) + 1
+    for row in rows:
+        real_box = real_sum[row1[row], col1] - real_sum[row0[row], col1] - real_sum[row1[row], col0] + real_sum[row0[row], col0]
+        imag_box = imag_sum[row1[row], col1] - imag_sum[row0[row], col1] - imag_sum[row1[row], col0] + imag_sum[row0[row], col0]
+        master_box = (
+            master_sum[row1[row], col1] - master_sum[row0[row], col1] - master_sum[row1[row], col0] + master_sum[row0[row], col0]
+        )
+        slave_box = slave_sum[row1[row], col1] - slave_sum[row0[row], col1] - slave_sum[row1[row], col0] + slave_sum[row0[row], col0]
+        good = (master_box != 0.0) & (slave_box != 0.0)
+        coherence[row, good] = np.sqrt((real_box[good] ** 2 + imag_box[good] ** 2) / (master_box[good] * slave_box[good]))
+    return coherence
+
+
+def esd_periodogram_shift_px(
+    phase_rad: np.ndarray,
+    weight: np.ndarray,
+    separation_hz: np.ndarray,
+    azimuth_time_interval_s: float,
+    *,
+    search_peak_hz: float | None = None,
+) -> float:
+    """SNAP periodogram: maximise the real part of the weighted double difference.
+
+    The model phase is ``2π · separation · shift_px · Δt``. Nine candidates are
+    refined until the step and the objective change are both below 1e-4, which
+    is the operator's stopping rule. The return is in pixels.
+    """
+    phase = np.asarray(phase_rad, dtype=np.float64).ravel()
+    weights = np.asarray(weight, dtype=np.float64).ravel()
+    separation = np.asarray(separation_hz, dtype=np.float64).ravel()
+    if phase.shape != weights.shape or phase.shape != separation.shape:
+        raise ValueError("ESD phase, weight, and spectral separation must share one length")
+    interval = float(azimuth_time_interval_s)
+    if interval <= 0.0:
+        raise ValueError("azimuth interval must be positive")
+    peak = float(np.max(np.abs(separation))) if search_peak_hz is None else float(search_peak_hz)
+    if peak <= 0.0 or float(np.sum(weights)) <= 0.0:
+        return 0.0
+    lower = -0.5 / (interval * peak)
+    step = (0.5 / (interval * peak)) * 2.0 / 8.0
+    previous = float(np.finfo(float).tiny)
+    best_index = 0
+    for _ in range(40):
+        best = float(np.finfo(float).tiny)
+        best_index = -1
+        for index in range(9):
+            shift = lower + step * index
+            real = float(np.sum(np.cos(phase - 2.0 * np.pi * separation * shift * interval) * weights))
+            if real > best:
+                best = real
+                best_index = index
+        if abs(previous - best) < 1e-4 and step < 1e-4:
+            return float(lower + step * best_index)
+        previous = best
+        center = lower + step * max(best_index, 0)
+        span = step * 2.0
+        lower = center - step
+        step = span / 8.0
+    return float(lower + step * max(best_index, 0))
+
+
 def overlap_block_shifts(
     master_early: np.ndarray,
     master_late: np.ndarray,
     slave_early: np.ndarray,
     slave_late: np.ndarray,
     *,
-    separation_hz: float,
+    separation_hz: float | np.ndarray,
     azimuth_time_interval_s: float,
     n_blocks: int = 10,
     coherence_threshold: float = 0.3,
 ) -> list[dict[str, float | int | bool]]:
-    """Periodogram double-difference on equal range blocks of one overlap.
+    """SNAP's per-block ESD periodogram, in pixels, for one overlap.
 
-    SNAP splits the valid-sample overlap into ``n_blocks`` along range.
-    Each block is the same unweighted single-tone estimator as
-    :func:`enhanced_spectral_diversity`. Coherence below
-    ``coherence_threshold`` is reported and is not a measurement. The shift
-    is in seconds. Nothing is added back onto the slave.
+    The phase is ``arg((m_early · conj(s_early)) · conj(m_late · conj(s_late)))``.
+    The weight is ``sqrt(coherence)`` of the early look's 5×5 interferogram when
+    that coherence is above ``coherence_threshold``, and 0 otherwise. This is
+    the Inv Quadratic weight. It is not the amplitude of the double difference.
+    A block whose weight is all zero is not a measurement. The stored shift is
+    the periodogram in pixels. ``shift_s`` is that shift times the azimuth
+    interval. Nothing is added back onto the slave.
+
+    ``separation_hz`` is either one value or one value per full-swath sample.
+    SNAP looks the per-sample array up at ``block · block_width + column``,
+    counting columns from sample 0 of the swath rather than from the first
+    valid sample of the overlap.
     """
     looks = (master_early, master_late, slave_early, slave_late)
     shape = np.asarray(master_early).shape
@@ -906,36 +1053,76 @@ def overlap_block_shifts(
         raise ValueError("ESD overlap looks must share one shape")
     if int(n_blocks) < 1:
         raise ValueError("ESD needs at least one range block")
-    if float(separation_hz) <= 0.0 or float(azimuth_time_interval_s) <= 0.0:
-        raise ValueError("spectral separation and azimuth interval must be positive")
+    interval = float(azimuth_time_interval_s)
+    if interval <= 0.0:
+        raise ValueError("azimuth interval must be positive")
     width = int(shape[1])
     block_width = width // int(n_blocks)
     if block_width < 1:
         raise ValueError(f"overlap width {width} cannot be split into {n_blocks} blocks")
+    separation = np.asarray(separation_hz, dtype=np.float64).reshape(-1)
+    if separation.size != 1 and separation.size < int(n_blocks) * block_width:
+        raise ValueError("spectral separation must be a scalar or one value per swath sample")
+    # The search window is half an ambiguity of the largest separation in the
+    # swath, which is what the operator computes once per overlap.
+    search_peak = float(np.max(np.abs(separation)))
     reports: list[dict[str, float | int | bool]] = []
+    master_e = np.asarray(master_early)
+    master_l = np.asarray(master_late)
+    slave_e = np.asarray(slave_early)
+    slave_l = np.asarray(slave_late)
     for index in range(int(n_blocks)):
         col0 = index * block_width
-        col1 = width if index == int(n_blocks) - 1 else (index + 1) * block_width
-        early_i = np.asarray(slave_early[:, col0:col1], dtype=np.complex64) * np.conj(
-            np.asarray(master_early[:, col0:col1], dtype=np.complex64)
-        )
-        late_i = np.asarray(slave_late[:, col0:col1], dtype=np.complex64) * np.conj(
-            np.asarray(master_late[:, col0:col1], dtype=np.complex64)
-        )
-        cross = early_i * np.conj(late_i)
+        col1 = (index + 1) * block_width
+        early = master_e[:, col0:col1] * np.conj(slave_e[:, col0:col1])
+        late = master_l[:, col0:col1] * np.conj(slave_l[:, col0:col1])
+        cross = early * np.conj(late)
         coherence = float(np.abs(np.sum(cross)) / (np.sum(np.abs(cross)) + 1e-12))
-        phase = float(np.angle(np.sum(cross)))
+        look = early_look_coherence(master_e[:, col0:col1], slave_e[:, col0:col1])
+        weight = np.where(look > float(coherence_threshold), np.sqrt(look), 0.0)
+        if separation.size == 1:
+            block_separation = np.full(weight.size, float(separation[0]), dtype=np.float64)
+        else:
+            # SNAP chopSpectralSeparation: column block*width, not the valid-sample origin.
+            sample = index * block_width + np.arange(block_width)
+            block_separation = np.broadcast_to(separation[sample], weight.shape).ravel().copy()
+        shift_px = esd_periodogram_shift_px(
+            np.angle(cross),
+            weight,
+            block_separation,
+            interval,
+            search_peak_hz=search_peak,
+        )
+        mean_weight = float(np.mean(weight))
         reports.append(
             {
                 "block": index,
                 "col0": col0,
                 "col1": col1,
                 "coherence": coherence,
-                "shift_s": phase / (2.0 * np.pi * float(separation_hz)),
-                "accepted": coherence >= float(coherence_threshold),
+                "weight": mean_weight,
+                "shift_px": shift_px,
+                "shift_s": shift_px * interval,
+                "accepted": mean_weight > 0.0,
             }
         )
     return reports
+
+
+def esd_applied_shift_px(reports: list[dict[str, float | int | bool]]) -> float:
+    """Negated weight-mean of the block periodograms, in pixels.
+
+    SNAP writes this value after the block list as the mean azimuth shift and
+    applies it to the secondary. The weight is the mean per-pixel block weight.
+    """
+    if not reports:
+        return 0.0
+    shifts = np.array([float(item["shift_px"]) for item in reports], dtype=np.float64)
+    weights = np.array([float(item["weight"]) for item in reports], dtype=np.float64)
+    total = float(np.sum(weights))
+    if total == 0.0:
+        return 0.0
+    return float(-np.sum(shifts * weights) / total)
 
 
 def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:

@@ -196,12 +196,14 @@ def test_reramp_uses_the_source_phase_at_the_resampled_coordinate():
     assert float(np.median(wrong)) > 0.2
 
 
-def test_esd_blocks_keep_a_known_shift_and_reject_a_noisy_block():
-    """Ten-block ESD returns the analytic shift and drops a block under 0.3.
+def test_esd_blocks_keep_a_known_shift_and_reject_a_dark_block():
+    """Block ESD is the weighted periodogram SNAP writes, in pixels.
 
-    The shift is phase / (2π f). No coefficient is adjusted to hit the value.
+    The phase is master·conj(slave), early·conj(late). A block whose early
+    look has no power has weight 0 and is not a measurement. The 0.3 gate is
+    that per-pixel weight, not a fit, and it is not lowered.
     """
-    from ai_insar.pipeline.tops_ops import overlap_block_shifts
+    from ai_insar.pipeline.tops_ops import esd_applied_shift_px, overlap_block_shifts
 
     separation = 6400.0
     interval = 0.002
@@ -210,10 +212,9 @@ def test_esd_blocks_keep_a_known_shift_and_reject_a_noisy_block():
     rows, cols = 16, 20
     master = np.ones((rows, cols), dtype=np.complex64)
     slave_early = master.copy()
+    # Zero early-look power in the second block. SNAP then stores weight 0.
+    slave_early[:, cols // 2 :] = 0
     slave_late = np.exp(-1j * phase) * np.ones((rows, cols), dtype=np.complex64)
-    # The second half is noise, so a 2-block split rejects it.
-    rng = np.random.default_rng(0)
-    slave_late[:, cols // 2 :] = rng.normal(size=(rows, cols // 2)) + 1j * rng.normal(size=(rows, cols // 2))
     reports = overlap_block_shifts(
         master,
         master,
@@ -224,9 +225,14 @@ def test_esd_blocks_keep_a_known_shift_and_reject_a_noisy_block():
         n_blocks=2,
         coherence_threshold=0.3,
     )
+    # master·conj(slave) on this fixture is the opposite of the injected tone.
     assert reports[0]["accepted"] is True
-    assert abs(float(reports[0]["shift_s"]) / interval - pixels) < 1e-6
+    assert abs(float(reports[0]["shift_px"]) - (-pixels)) < 1.5e-4
+    assert abs(float(reports[0]["shift_s"]) / interval - (-pixels)) < 1.5e-4
     assert reports[1]["accepted"] is False
+    assert float(reports[1]["weight"]) == 0.0
+    applied = esd_applied_shift_px(reports)
+    assert abs(applied - (-float(reports[0]["shift_px"]))) < 1e-9
 
 
 def test_overlap_azimuth_stays_on_the_requested_burst():

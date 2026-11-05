@@ -173,10 +173,10 @@ class OperatorDialog(QtWidgets.QDialog):
         self.tabs.addTab(self._processing, "Processing Parameters")
         root.addWidget(self.tabs, stretch=1)
 
-        note = QtWidgets.QLabel(notes)
-        note.setObjectName("operatorNotes")
-        note.setWordWrap(True)
-        root.addWidget(note)
+        self.notes = QtWidgets.QLabel(notes)
+        self.notes.setObjectName("operatorNotes")
+        self.notes.setWordWrap(True)
+        root.addWidget(self.notes)
 
         self.error = QtWidgets.QLabel("")
         self.error.setObjectName("operatorError")
