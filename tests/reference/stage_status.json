@@ -1,6 +1,8 @@
 {
   "snap_gpt": "12.0.0",
   "snap_gui_audit": "14.0.0",
+  "ai_insar_revision_under_test": "see git HEAD of cursor/snap-stage-parity-9501",
+  "merged_main_wheel": "fb2d5259d5237139a9e5efb149d85fba3f8551df",
   "pair": {
     "reference": "S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B",
     "secondary": "S1A_IW_SLC__1SDV_20210712T052605_20210712T052632_038740_049246_C00B",
@@ -10,57 +12,85 @@
     "snap_burst_indexes_1_based": [5, 6],
     "burst_4_azimuth_time": "2021-06-30T05:26:15.752882",
     "burst_5_azimuth_time": "2021-06-30T05:26:18.509383",
-    "range_samples": [11000, 11520]
+    "range_samples": [11000, 11520],
+    "dem": "/tmp/snap-ref/dem/srtm_39_02.tif",
+    "vertical_datum": "SRTM 3Sec orthometric EGM96 + EGM96 geoid",
+    "resampling": "BILINEAR_INTERPOLATION"
+  },
+  "tolerances_declared_before_backgeo_metrics": {
+    "interior_margin_px": 32,
+    "minimum_amplitude": 1.0,
+    "secondary_amplitude_relative_median": 0.05,
+    "secondary_circular_phase_median_rad": 0.2,
+    "reference_copy_max_abs": 0.0,
+    "esd_coherence_threshold": 0.3,
+    "esd_estimator": "Periodogram"
+  },
+  "commands": {
+    "snap12": "python3 /tmp/run_backgeo_esd.py",
+    "snap12_graph": "tests/snap_graphs/backgeo_esd_roi.xml",
+    "snap12_exit": "0",
+    "snap12_elapsed_s": 72.6,
+    "ai_insar": "PYTHONPATH=src python3 scripts/backgeo_esd_compare.py"
   },
   "stages": [
     {
-      "stage": "TOPS Split and Apply Orbit File pixels",
-      "executed_in_snap12": true,
-      "executed_in_ai_insar": true,
-      "max_abs_difference": 0.0,
-      "shape": [3016, 520],
-      "matched": true,
-      "note": "Apply Orbit File does not change SLC samples."
+      "order": 1,
+      "stage": "TOPS Split",
+      "snap12": "IW1 VV bursts 5-6, then subset samples 11000:11520",
+      "comparison": "reference master after back-geocoding equals the SLC read, max abs 0 on 3016x520",
+      "matched": true
     },
     {
-      "stage": "Apply Orbit File state vectors",
-      "executed_in_snap12": true,
-      "executed_in_ai_insar": true,
-      "max_position_difference_m": 0.0008825566446900676,
-      "vectors": 25,
-      "orbit_file": "S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF.zip",
+      "order": 2,
+      "stage": "Apply Orbit File",
+      "snap12_orbit": "S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF.zip",
+      "state_vector_max_position_difference_m": 0.0008825566446900676,
+      "vector_count": 25,
       "matched": true,
-      "note": "Same POEORB, polynomial degree 3. Pixel equality is not this check."
+      "note": "SLC pixels are unchanged by this operator. The check is the state vectors."
     },
     {
+      "order": 3,
       "stage": "Back Geocoding",
-      "executed_in_snap12": true,
-      "pixel_compared": false,
+      "snap12_product": "/tmp/snap-ref/stage/backgeo_roi.dim",
+      "shape": [3016, 520],
+      "reference_vs_snap_master_max_abs": 0.0,
+      "secondary_amplitude_correlation_at_zero_shift": 0.6899067759513855,
+      "secondary_amplitude_relative_median": 0.2689873278141022,
+      "secondary_circular_median_abs_rad": 1.559207797050476,
+      "secondary_circular_p95_abs_rad": 2.9829564094543457,
+      "first_interior_pixel_over_0.20_rad": [32, 32],
+      "local_8x8_complex_coherence_median": 0.8936826586723328,
+      "azimuth_phase_step_mean_rad_per_line": 0.054168183356523514,
+      "map_residual_px_internal": 0.0005309064577545541,
       "matched": false,
-      "note": "The full-swath graph set coregistered_stack=1. A same-window pixel comparison is not done."
+      "note": "Raw tolerances fail. Local 8x8 coherence is a separate diagnostic and is not a pass. SNAP deramp uses per-sample referenceTime and Doppler-centroid demodulation; this build's deramp is the FM-rate chirp about the burst centre. That difference is not removed by a fitted ramp."
     },
     {
+      "order": 4,
       "stage": "ESD",
-      "executed_in_snap12_acceptance_graph": false,
+      "snap12_exit": 0,
+      "snap12_estimator": "Periodogram",
+      "snap12_coh_threshold": 0.3,
+      "snap12_num_blocks": 10,
+      "snap12_block_shifts_s": [0.000106, 0.001666, -0.000727, -0.000194, 0.001665, 0.002792, 0.005282, 0.000513, 0.003295, 0.000969],
+      "snap12_applied_azimuth_shift_s": -0.0015113164869487252,
+      "snap12_applied_range_shift_pixels": -0.06640625,
+      "snap12_slave_changed_fraction_vs_backgeo": 0.9979825545806978,
+      "snap12_master_changed_max_abs": 0.0,
+      "ai_insar_deramped_masked_coherence": 0.016,
+      "ai_insar_reramped_unmasked_coherence": 0.015,
+      "ai_insar_shift_applied": false,
       "matched": false,
-      "note": "tests/snap_graphs/iw1_vv_bursts_5_6.xml goes from Back-Geocoding to Interferogram. The multilook DIMAP has no ESD metadata. An overlap estimate on this branch was about 0.015 and was not applied. That is not a successful ESD."
+      "displacement_chain": "not valid",
+      "note": "SNAP applied the network shift. This build's whole-overlap Periodogram coherence is 0.016, below 0.3, so no shift was applied. The block-list mean is +0.001537 s and is not the applied -0.001511 s. No coherent block above 0.3 was demonstrated here. No displacement product is claimed."
     },
     {
-      "stage": "TOPSAR Deburst",
-      "executed_in_snap12": true,
-      "executed_in_ai_insar": true,
-      "snap_lines": 2847,
-      "ai_insar_lines": 2847,
-      "max_abs_difference": 0.0,
-      "nodata_lines": 36,
-      "matched": true,
-      "note": "Height is the truncated SNAP UTC span. Lines outside the truncated valid-azimuth window are zero. This is the reference SLC deburst, samples 11000:11520."
-    },
-    {
-      "stage": "Interferogram, multilook, Goldstein, SNAPHU, displacement, terrain, KMZ",
-      "pixel_compared": false,
+      "order": "5-15",
+      "stage": "Interferogram through KMZ",
       "matched": false,
-      "note": "Not claimed equal. SNAP 12 did write a full-swath multilook (1142x474, azimuth looks 6) and a terrain product. They are not a pixel match to this branch."
+      "note": "Not run as a matched pair. The earlier reference-SLC deburst (2847 lines, max abs 0) is a side test of the deburst operator, not step 6 after the interferogram."
     }
   ]
 }
