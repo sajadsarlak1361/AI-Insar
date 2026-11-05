@@ -235,6 +235,51 @@ def test_esd_blocks_keep_a_known_shift_and_reject_a_dark_block():
     assert abs(applied - (-float(reports[0]["shift_px"]))) < 1e-9
 
 
+def test_snap_overlap_pixels_reproduce_the_azimuth_shift_file():
+    """The Inv Quadratic periodogram on SNAP's own overlap matches azimuth_shift.txt.
+
+    This locks the block-file construction. It does not use this build's
+    coregistration. The coherence gate stays 0.3.
+    """
+    from ai_insar.pipeline.s1_annotation import read_swath_from_product
+    from ai_insar.pipeline.tops_ops import esd_applied_shift_px, overlap_block_shifts, spectral_separation_hz
+    from ai_insar.safe import resolve_safe, select_measurement
+
+    folder = Path("/tmp/snap-ref/stage/backgeo_overlap.data")
+    if not (folder / "i_IW1_VV_mst_30Jun2021.img").is_file():
+        pytest.skip("SNAP overlap back-geocoding is not on disk")
+    june = Path(
+        "/tmp/safe-full/S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B.SAFE"
+    )
+    if not june.is_dir():
+        pytest.skip("June SAFE is not on disk")
+    product = resolve_safe(june / "manifest.safe")
+    model = read_swath_from_product(product, select_measurement(product, "IW1", "VV"))
+    shape = (293, 20312)
+
+    def band(name: str, dtype: str) -> np.ndarray:
+        return np.fromfile(folder / f"{name}.img", dtype=dtype).reshape(shape)
+
+    master = band("i_IW1_VV_mst_30Jun2021", ">i2") + 1j * band("q_IW1_VV_mst_30Jun2021", ">i2")
+    slave = band("i_IW1_VV_slv1_12Jul2021", ">f4") + 1j * band("q_IW1_VV_slv1_12Jul2021", ">f4")
+    height = 127
+    overlap_lines = burst_overlap_rows(model, 4)[0][1] - burst_overlap_rows(model, 4)[0][0]
+    reports = overlap_block_shifts(
+        master[:height],
+        master[166 : 166 + height],
+        slave[:height],
+        slave[166 : 166 + height],
+        separation_hz=spectral_separation_hz(model, 0, overlap_lines),
+        azimuth_time_interval_s=float(model.azimuth_time_interval_s),
+    )
+    file_px = np.array(
+        [0.000106, 0.001666, -0.000727, -0.000194, 0.001665, 0.002792, 0.005282, 0.000513, 0.003295, 0.000969]
+    )
+    got = np.array([float(item["shift_px"]) for item in reports])
+    assert float(np.max(np.abs(got - file_px))) < 1e-6
+    assert abs(esd_applied_shift_px(reports) - (-0.0015113164869487252)) < 1e-6
+
+
 def test_overlap_azimuth_stays_on_the_requested_burst():
     """The same zero-Doppler instant in the overlap is two raster lines.
 
