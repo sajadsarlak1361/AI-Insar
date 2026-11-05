@@ -56,7 +56,7 @@
       "state_vector_max_position_difference_m": 0.0008825566446900676,
       "vector_count": 25,
       "matched": true,
-      "note": "SLC pixels are unchanged by this operator. The check is the state vectors."
+      "note": "SLC pixels are unchanged by this operator. The check is the state vectors. The desktop Apply Orbit File run is still the coordinator's. This revision applies a local EOF to the Source DIMAP or SAFE, leaves the other date in place, and writes a BEAM-DIMAP whose orbit state vectors come from that file."
     },
     {
       "order": 3,

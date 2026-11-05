@@ -809,9 +809,9 @@ class ApplyOrbitDialog(OperatorDialog):
             object_name="applyOrbitDialog",
             notes=(
                 "SNAP 14 batch 3 recorded these eight orbit types. "
-                "No orbit-file download is installed. A local EOF in 'Local orbit file' replaces state vectors. "
-                "With that path empty, Run fails unless 'Do not fail if new orbit file is not found' is checked, "
-                "and then the vectors stay as they are."
+                "A local EOF in 'Local orbit file' is applied to the Source product. "
+                "The other date stays as it is. With that path empty, Run fails unless "
+                "'Do not fail if new orbit file is not found' is checked."
             ),
             source_label="source:",
             target_text="",
@@ -841,11 +841,28 @@ class ApplyOrbitDialog(OperatorDialog):
         form.addRow("Orbit State Vectors", self.orbit_type)
         form.addRow("Polynomial Degree", self.degree)
         form.addRow(self.do_not_fail)
+        file_row = QtWidgets.QHBoxLayout()
         self.orbit_file = QtWidgets.QLineEdit("")
         self.orbit_file.setObjectName("orbitLocalFile")
-        self.orbit_file.setPlaceholderText("Local .EOF or .EOF.zip (auto-download is not installed)")
-        form.addRow("Local orbit file:", self.orbit_file)
+        self.orbit_file.setPlaceholderText("Local Sentinel Precise .EOF or .EOF.zip")
+        browse = QtWidgets.QPushButton("…")
+        browse.setObjectName("orbitLocalBrowse")
+        browse.setToolTip("Choose a precise or restituted orbit file. Nothing is downloaded.")
+        browse.clicked.connect(self._browse_orbit_file)
+        file_row.addWidget(self.orbit_file, stretch=1)
+        file_row.addWidget(browse)
+        form.addRow("Local orbit file:", file_row)
         self.add_processing(form)
+
+    def _browse_orbit_file(self) -> None:
+        path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Orbit file",
+            "",
+            "Sentinel orbit (*.EOF *.eof *.zip);;All files (*)",
+        )
+        if path:
+            self.orbit_file.setText(path)
 
     def validate(self) -> str:
         message = self.validate_io()

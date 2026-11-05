@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
-from datetime import datetime, timedelta
-from xml.sax.saxutils import escape
 
 _MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 _SPEED_OF_LIGHT_M_S = 299_792_458.0
@@ -125,7 +126,70 @@ class SlcDimapSource:
   </Dataset_Sources>"""
 
 
-def slc_split_source(product, measurement, *, row: int, height: int, width: int, col: int = 0) -> SlcDimapSource:
+def orbit_records_around(orbit, start, stop, *, margin_s: float = 120.0) -> tuple[tuple[str, str, str, str, str, str, str], ...]:
+    """Precise-orbit state vectors that cover one acquisition, in SNAP metadata order.
+
+    ``start`` and ``stop`` are zero-Doppler times. Vectors outside
+    ``margin_s`` of that window are left out. Positions are metres and
+    velocities are metres per second, which is what abstracted metadata stores.
+    """
+    begin = np.datetime64(start) - np.timedelta64(int(margin_s * 1e9), "ns")
+    end = np.datetime64(stop) + np.timedelta64(int(margin_s * 1e9), "ns")
+    records = []
+    for index, when in enumerate(orbit.time):
+        if when < begin or when > end:
+            continue
+        position = orbit.position_m[index]
+        velocity = orbit.velocity_m_s[index]
+        records.append(
+            (
+                snap_utc(_iso_from_datetime64(when)),
+                f"{float(position[0]):.6f}",
+                f"{float(position[1]):.6f}",
+                f"{float(position[2]):.6f}",
+                f"{float(velocity[0]):.8f}",
+                f"{float(velocity[1]):.8f}",
+                f"{float(velocity[2]):.8f}",
+            )
+        )
+    if len(records) < 4:
+        raise ValueError("the precise orbit does not contain enough state vectors for this acquisition")
+    return tuple(records)
+
+
+def parse_snap_utc(text: str):
+    """``30-JUN-2021 05:26:15.752882`` to a numpy datetime64 in microseconds."""
+    date, clock = text.strip().split()
+    day, month, year = date.split("-")
+    hour, minute, second = clock.split(":")
+    whole, _, fraction = second.partition(".")
+    micros = int((fraction + "000000")[:6]) if fraction else 0
+    stamp = datetime(int(year), _MONTHS.index(month.upper()) + 1, int(day), int(hour), int(minute), int(whole), micros)
+    return np.datetime64(stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{micros:06d}")
+
+
+def dimap_abstracted_time(path, name: str) -> str:
+    """Return one abstracted-metadata UTC string from a BEAM-DIMAP header."""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    marker = f'name="{name}"'
+    start = text.find(marker)
+    if start < 0:
+        raise ValueError(f"{path} has no {name}")
+    open_end = text.find(">", start)
+    close = text.find("</MDATTR>", open_end)
+    return text[open_end + 1 : close].strip()
+
+
+def slc_split_source(
+    product,
+    measurement,
+    *,
+    row: int,
+    height: int,
+    width: int,
+    col: int = 0,
+    precise_orbit=None,
+) -> SlcDimapSource:
     """Metadata for the burst window ``split_swath`` just wrote.
 
     ``row`` is the absolute annotation line of raster line 0. ``height`` and
@@ -166,6 +230,8 @@ def slc_split_source(product, measurement, *, row: int, height: int, width: int,
     _set_text(image, "numberOfLines", str(int(height)))
     if int(width) != scene_samples:
         _set_text(image, "numberOfSamples", str(int(width)))
+    if precise_orbit is not None:
+        _replace_annotation_orbits(root, precise_orbit, first_iso, last_iso)
     vectors = tuple(_orbit_record(element) for element in root.iter() if _local(element.tag) == "orbit")
     if not vectors:
         raise ValueError(f"{product.product_id} annotation has no orbit state vectors")
@@ -255,6 +321,54 @@ def _tie_grids(root: ET.Element, *, row: int, height: int, col: int, scene_sampl
                 values[i, j] = float(_text(element, tag)) * scale
         grids.append((name, unit, values, offset_x, offset_y, step_x, step_y, cyclic))
     return tuple(grids)
+
+
+def _iso_from_datetime64(when) -> str:
+    text = str(np.datetime_as_string(np.datetime64(when, "us")))
+    if text.endswith("Z"):
+        text = text[:-1]
+    if "." not in text:
+        text += ".000000"
+    return text
+
+
+def _replace_annotation_orbits(root: ET.Element, orbit, first_iso: str, last_iso: str) -> None:
+    """Replace annotation ``<orbit>`` records with the precise-orbit file."""
+    parent = None
+    for element in root.iter():
+        if any(_local(child.tag) == "orbit" for child in list(element)):
+            parent = element
+            break
+    if parent is None:
+        raise ValueError("annotation has no orbit list to replace")
+    for child in list(parent):
+        if _local(child.tag) == "orbit":
+            parent.remove(child)
+    start = _parse_iso(first_iso)
+    stop = _parse_iso(last_iso)
+    begin = np.datetime64(start.strftime("%Y-%m-%dT%H:%M:%S.") + f"{start.microsecond:06d}") - np.timedelta64(120, "s")
+    end = np.datetime64(stop.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stop.microsecond:06d}") + np.timedelta64(120, "s")
+    written = 0
+    for index, when in enumerate(orbit.time):
+        if when < begin or when > end:
+            continue
+        position = orbit.position_m[index]
+        velocity = orbit.velocity_m_s[index]
+        node = ET.Element("orbit")
+        ET.SubElement(node, "time").text = _iso_from_datetime64(when)
+        ET.SubElement(node, "frame").text = "EARTH_FIXED"
+        pos = ET.SubElement(node, "position")
+        vel = ET.SubElement(node, "velocity")
+        for axis, value in zip(("x", "y", "z"), position):
+            ET.SubElement(pos, axis).text = f"{float(value):.6f}"
+        for axis, value in zip(("x", "y", "z"), velocity):
+            ET.SubElement(vel, axis).text = f"{float(value):.8f}"
+        parent.append(node)
+        written += 1
+    if "count" in parent.attrib:
+        parent.attrib["count"] = str(written)
+    if written < 4:
+        raise ValueError("the precise orbit does not cover this burst window")
 
 
 def snap_utc(iso_time: str) -> str:

@@ -200,6 +200,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.safe_products = []
         self._split_product_ids: set[str] = set()
         self._split_io: dict | None = None
+        self._split_bindings: dict[str, dict] = {}
         self._product_status: str | None = None
         self.stage_buttons: list[QtWidgets.QPushButton] = []
         self._build()
@@ -1268,6 +1269,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"The scene start {source.scene_first_snap} is the source swath clock, not line 0. "
                     "Source files were not modified."
                 )
+                if product.product_id in self._split_bindings:
+                    self._split_bindings[product.product_id]["dimap"] = path
         self._log(description)
         self._log(
             f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
@@ -1291,7 +1294,16 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         # Replace only this date's window. The other date, the SAFE list, and the
         # imported pair stay where they are.
-        if selected or self.workspace.reference_grid is None:
+        role = "reference" if selected or self.workspace.reference_grid is None else "secondary"
+        self._split_bindings[product.product_id] = {
+            "product": product,
+            "measurement": measurement,
+            "role": role,
+            "row": int(row),
+            "first_line": model.line_time(int(row)),
+            "dimap": self._split_bindings.get(product.product_id, {}).get("dimap"),
+        }
+        if role == "reference":
             self.workspace.reference_grid = grid
             self.workspace.swath_model = model
             self._log(
@@ -1370,10 +1382,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_goldstein_params(dialog.parameters())
 
     def open_orbit_dialog(self) -> None:
-        dialog = ApplyOrbitDialog(self, sources=self._source_names())
+        dialog = ApplyOrbitDialog(self, sources=self._orbit_sources())
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_orbit_params(dialog.parameters())
+
+    def _orbit_sources(self) -> list[str]:
+        """SAFE folders and saved split DIMAPs. The workspace reference is not the only row."""
+        sources: list[str] = []
+        for product in self.safe_products:
+            text = str(product.root)
+            if text not in sources:
+                sources.append(text)
+        for binding in self._split_bindings.values():
+            dimap = binding.get("dimap")
+            if dimap and str(dimap) not in sources:
+                sources.append(str(dimap))
+        return sources or self._source_names()
 
     def apply_interferogram_params(self, params: dict) -> None:
         request = params["request"]
@@ -1630,50 +1655,178 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.is_file():
             raise RuntimeError(f"Orbit file {path} was not found. State vectors were not changed.")
         precise = read_eof_orbit(path)
-        request = params["request"]
-        model = getattr(self.workspace, "swath_model", None)
-        shift = None
-        when = None
-        if model is not None and model.bursts:
-            when = model.bursts[len(model.bursts) // 2].azimuth_time
-            if model.orbit.time[0] <= when <= model.orbit.time[-1] and precise.time[0] <= when <= precise.time[-1]:
-                before, _velocity = model.orbit.interpolate(when, degree)
-                after, velocity = precise.interpolate(when, degree)
-                shift = float(np.linalg.norm(after - before))
-                updated = _with_orbit(model, precise)
-                self.workspace.swath_model = updated
-                grid = self.workspace.reference_grid
-                if grid is not None:
-                    self.workspace.reference_grid = RadarGrid(grid.row, grid.col, grid.data, updated)
-                self.workspace.precise_orbit = precise
-                self._log(
-                    f"Apply Orbit File replaced state vectors from {path.name}. "
-                    f"Shift {shift:.3f} m at {when}. Speed {float(np.linalg.norm(velocity)):.1f} m/s."
-                )
-            elif precise.time[0] <= when <= precise.time[-1]:
-                self.workspace.secondary_orbit = precise
-                self._log(f"Apply Orbit File stored {path.name} as the secondary orbit. It covers {when}.")
-            else:
-                raise RuntimeError(
-                    f"{path.name} does not cover {when}. State vectors were not changed."
-                )
-        else:
-            self.workspace.precise_orbit = precise
-            self._log(
-                f"Apply Orbit File stored {path.name}. "
-                "No swath annotation was loaded, so the metre shift was not measured."
+        subject = self._orbit_subject(str(params.get("source") or ""))
+        when = subject["when"]
+        label = subject["label"]
+        if when is None or not (precise.time[0] <= when <= precise.time[-1]):
+            covered = "no acquisition time" if when is None else str(when)
+            raise RuntimeError(
+                f"{path.name} does not cover {covered} ({label}). State vectors were not changed."
             )
+        request = params["request"]
+        model = subject.get("model")
+        shift = None
+        velocity = None
+        if model is not None and model.orbit.time[0] <= when <= model.orbit.time[-1]:
+            before, _old_velocity = model.orbit.interpolate(when, degree)
+            after, velocity = precise.interpolate(when, degree)
+            shift = float(np.linalg.norm(after - before))
+            updated = _with_orbit(model, precise)
+            grid = subject.get("grid")
+            if grid is not None:
+                replaced = RadarGrid(grid.row, grid.col, grid.data, updated)
+                if subject["role"] == "reference":
+                    self.workspace.reference_grid = replaced
+                    self.workspace.swath_model = updated
+                elif subject["role"] == "secondary":
+                    self.workspace.secondary_grid = replaced
+            elif subject["role"] == "reference":
+                self.workspace.swath_model = updated
+        if subject["role"] == "secondary":
+            self.workspace.secondary_orbit = precise
+        elif subject["role"] == "reference":
+            self.workspace.precise_orbit = precise
+        speed = ""
+        if velocity is not None:
+            speed = f" Speed {float(np.linalg.norm(velocity)):.1f} m/s."
+        shift_text = "not measured" if shift is None else f"{shift:.3f} m"
+        self._log(
+            f"Apply Orbit File on {label} replaced state vectors from {path.name}. "
+            f"Shift {shift_text} at {when}.{speed}"
+        )
         if not request.save:
             return
+        written_dim = None
+        if request.format_name == "BEAM-DIMAP":
+            written_dim = self._write_orbit_dimap(request.directory, request.target, subject, precise)
+            self._log(f"Saved {written_dim.name}. SLC samples are unchanged. Orbit state vectors are the precise file.")
         payload = {
             "applied": True,
             "orbit_file": str(path),
             "polynomial_degree": degree,
             "shift_m": shift,
-            "time": None if when is None else str(when),
+            "time": str(when),
+            "source": label,
+            "role": subject["role"],
+            "dimap": None if written_dim is None else str(written_dim),
         }
         written = write_orbit_stub(request.directory, request.target, payload)
         self._log(f"Saved {written.name} ({PRODUCT_SUFFIX['apply_orbit']}).")
+
+    def _orbit_subject(self, source: str) -> dict:
+        """The Source product. A loaded reference date is not a substitute."""
+        from pathlib import Path
+
+        text = source.strip()
+        path = Path(text) if text else None
+        binding = self._binding_for_source(text)
+        when = None
+        if path is not None and path.suffix.lower() == ".dim" and path.is_file():
+            from ai_insar.pipeline.dimap_s1 import parse_snap_utc
+
+            when = parse_snap_utc(self._dimap_time(path, "first_line_time"))
+        if binding is None and when is not None:
+            binding = self._binding_for_time(when)
+        if binding is not None:
+            role = binding["role"]
+            grid = self.workspace.reference_grid if role == "reference" else self.workspace.secondary_grid
+            model = None if grid is None else grid.model
+            if when is None:
+                when = binding["first_line"]
+            return {
+                "role": role,
+                "when": when,
+                "label": binding["product"].product_id,
+                "product": binding["product"],
+                "measurement": binding["measurement"],
+                "row": binding["row"],
+                "grid": grid,
+                "model": model,
+                "dimap": path if path is not None and path.suffix.lower() == ".dim" and path.is_file() else binding.get("dimap"),
+            }
+        if when is not None and path is not None and path.is_file():
+            return {
+                "role": "file",
+                "when": when,
+                "label": path.name,
+                "product": None,
+                "measurement": None,
+                "row": None,
+                "grid": None,
+                "model": None,
+                "dimap": path,
+            }
+        raise RuntimeError(
+            f"Apply Orbit File source {text or '(empty)'} is not a split DIMAP or an open SAFE. "
+            "The loaded reference was not used."
+        )
+
+    def _binding_for_source(self, text: str) -> dict | None:
+        if not text:
+            return None
+        for binding in self._split_bindings.values():
+            product = binding["product"]
+            dimap = binding.get("dimap")
+            if text == str(product.root) or text == product.product_id:
+                return binding
+            if dimap is not None and text == str(dimap):
+                return binding
+            if product.product_id in text:
+                return binding
+        return None
+
+    def _binding_for_time(self, when) -> dict | None:
+        best = None
+        best_gap = None
+        for binding in self._split_bindings.values():
+            gap = abs(int((np.datetime64(when) - np.datetime64(binding["first_line"])).astype(np.int64)))
+            if gap <= 1_000_000 and (best_gap is None or gap < best_gap):
+                best = binding
+                best_gap = gap
+        return best
+
+    def _dimap_time(self, path, name: str) -> str:
+        from ai_insar.pipeline.dimap_s1 import dimap_abstracted_time
+
+        return dimap_abstracted_time(path, name)
+
+    def _write_orbit_dimap(self, directory, target: str, subject: dict, precise) -> Path:
+        from pathlib import Path
+
+        from ai_insar.pipeline.dimap import read_beam_dimap_band, write_beam_dimap
+        from ai_insar.pipeline.dimap_s1 import slc_split_source
+
+        product = subject.get("product")
+        measurement = subject.get("measurement")
+        grid = subject.get("grid")
+        if product is None or measurement is None or grid is None:
+            raise RuntimeError(
+                f"{subject['label']} has no split annotation in this workspace, so a BEAM-DIMAP orbit product was not written."
+            )
+        data = np.asarray(grid.data)
+        source_dim = subject.get("dimap")
+        if source_dim is not None and Path(source_dim).is_file():
+            real = read_beam_dimap_band(source_dim, 0)
+            if real.shape != data.shape:
+                imag = read_beam_dimap_band(source_dim, 1)
+                data = real.astype(np.float32) + 1j * imag.astype(np.float32)
+        source = slc_split_source(
+            product,
+            measurement,
+            row=int(grid.row),
+            height=int(data.shape[0]),
+            width=int(data.shape[1]),
+            col=int(grid.col),
+            precise_orbit=precise,
+        )
+        return write_beam_dimap(
+            directory,
+            target,
+            data,
+            None,
+            band_name=f"{measurement.swath}_{measurement.polarisation}",
+            source=source,
+        )
 
     def apply_deburst(self, params: dict) -> None:
         from ai_insar.pipeline.tops_ops import deburst_window
