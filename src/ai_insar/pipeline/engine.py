@@ -17,6 +17,7 @@ from ai_insar.pipeline.detect import detect_displacement
 from ai_insar.pipeline.filtering import filter_stack, goldstein_filter
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
 from ai_insar.pipeline.synthetic import SLCStack
+from ai_insar.safe_stack import SafeInput
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
 from ai_insar.pipeline.unwrap import (
     UNWRAP_LABELS,
@@ -42,7 +43,9 @@ class PipelineConfig:
     goldstein_alpha: float = 0.5
     goldstein_window: int = 32
     goldstein_overlap: float = 0.5
+    goldstein_spectrum_smooth: int = 3
     coherence_window: int = 5
+    coherence_azimuth_window: int | None = None
     unwrap_min_coherence: float = 0.2
     ramp_border_px: int = 4
     detection_sigma: float = 3.5
@@ -65,8 +68,12 @@ class PipelineConfig:
             raise ValueError("goldstein_window must be >= 8")
         if not 0.0 <= self.goldstein_overlap < 1.0:
             raise ValueError("goldstein_overlap must be in [0, 1)")
+        if self.goldstein_spectrum_smooth < 1:
+            raise ValueError("goldstein_spectrum_smooth must be >= 1")
         if self.coherence_window < 1:
             raise ValueError("coherence_window must be >= 1")
+        if self.coherence_azimuth_window is not None and self.coherence_azimuth_window < 1:
+            raise ValueError("coherence_azimuth_window must be >= 1")
         if not 0.0 <= self.unwrap_min_coherence <= 1.0:
             raise ValueError("unwrap_min_coherence must be between 0 and 1")
         if self.detection_sigma <= 0:
@@ -107,6 +114,17 @@ class Workspace:
     topo_baseline_perp_m: float = 0.0
     topo_slant_range_m: float = 800_000.0
     topo_incidence_deg: float = 35.0
+    safe_inputs: list[SafeInput] = field(default_factory=list)
+    reference_index: int | None = None
+    swath_model: object | None = None
+    precise_orbit: object | None = None
+    secondary_orbit: object | None = None
+    reference_grid: object | None = None
+    secondary_grid: object | None = None
+    geocoded: np.ndarray | None = None
+    geocode_bounds: tuple | None = None
+    elevation: object | None = None
+    esd_azimuth_shift_s: float | None = None
 
     def clear_products(self) -> None:
         self.pairs = None
@@ -136,8 +154,36 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
     stack = _require_stack(workspace)
     if stack.n_dates < 2:
         raise PipelineError("Need at least two SLC dates to form an interferogram.")
-    workspace.pairs = date_pairs(stack.n_dates, workspace.config.max_date_span)
-    workspace.interferograms = form_interferograms(stack.data, workspace.pairs)
+    reference = getattr(workspace, "reference_index", None)
+    if reference is None:
+        workspace.pairs = date_pairs(stack.n_dates, workspace.config.max_date_span)
+        workspace.interferograms = form_interferograms(stack.data, workspace.pairs)
+        relation = "Each is later × conjugate(earlier)."
+    else:
+        reference = int(reference)
+        if reference < 0 or reference >= stack.n_dates:
+            raise PipelineError(f"reference index {reference} is outside the stack.")
+        pairs: list[tuple[int, int]] = []
+        planes = []
+        for secondary in range(stack.n_dates):
+            if secondary == reference:
+                continue
+            earlier, later = sorted((secondary, reference))
+            pairs.append((earlier, later))
+            planes.append(stack.data[reference] * np.conj(stack.data[secondary]))
+        workspace.pairs = pairs
+        workspace.interferograms = np.stack(planes).astype(np.complex64)
+        chronological = all(
+            np.allclose(plane, stack.data[later] * np.conj(stack.data[earlier]))
+            for plane, (earlier, later) in zip(workspace.interferograms, pairs)
+        )
+        if chronological:
+            relation = "Each is later × conjugate(earlier)."
+        else:
+            relation = (
+                f"Each is reference date index {reference} × conjugate(secondary). "
+                "The selected reference is not the later date, so this is not later × conjugate(earlier)."
+            )
     backend = getattr(form_interferograms, "last_backend", "numpy")
     backend_label = {"insardev": "InSARdev", "numba": "Numba", "numpy": "NumPy"}.get(backend, backend)
     workspace.filtered = None
@@ -148,13 +194,13 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
     workspace.velocity_m_yr = None
     workspace.mask = None
     times = stack.times_year()
-    spans = [times[later] - times[earlier] for earlier, later in workspace.pairs]
+    spans = [abs(times[later] - times[earlier]) for earlier, later in workspace.pairs]
     _log(
         log,
         f"Interferograms: {len(workspace.pairs)} pairs "
         f"(max date span {workspace.config.max_date_span}, "
         f"temporal baselines {min(spans) * 365.25:.0f}–{max(spans) * 365.25:.0f} days). "
-        "Each is later × conjugate(earlier). "
+        f"{relation} "
         f"Backend: {backend_label}.",
     )
     _log_truth_phase(stack, workspace.pairs, workspace.interferograms, log)
@@ -170,6 +216,7 @@ def compute_filter(workspace: Workspace, log: LogFn | None = None) -> None:
         alpha=cfg.goldstein_alpha,
         window=cfg.goldstein_window,
         overlap=cfg.goldstein_overlap,
+        spectrum_smooth=cfg.goldstein_spectrum_smooth,
     )
     workspace.unwrapped = None
     workspace.los_m = None
@@ -194,8 +241,13 @@ def compute_coherence(workspace: Workspace, log: LogFn | None = None) -> None:
     stack = _require_stack(workspace)
     if workspace.pairs is None:
         raise PipelineError("Form interferograms before estimating coherence.")
+    cfg = workspace.config
+    azimuth = cfg.coherence_azimuth_window
     workspace.coherence = coherence_stack(
-        stack.data, workspace.pairs, workspace.config.coherence_window
+        stack.data,
+        workspace.pairs,
+        cfg.coherence_window,
+        azimuth_window=azimuth,
     )
     workspace.mean_coherence = np.mean(workspace.coherence, axis=0).astype(np.float32)
     workspace.unwrapped = None
@@ -203,9 +255,10 @@ def compute_coherence(workspace: Workspace, log: LogFn | None = None) -> None:
     workspace.velocity_m_yr = None
     workspace.mask = None
     finite = workspace.coherence[np.isfinite(workspace.coherence)]
+    azimuth_size = cfg.coherence_window if azimuth is None else int(azimuth)
     _log(
         log,
-        f"Coherence: {workspace.config.coherence_window}×{workspace.config.coherence_window} "
+        f"Coherence: {cfg.coherence_window}×{azimuth_size} "
         f"window on each SLC pair. Median {float(np.median(finite)):.3f}, "
         f"5th percentile {float(np.percentile(finite, 5)):.3f}.",
     )

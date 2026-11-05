@@ -118,7 +118,7 @@ that technique and computes the stage.
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
-| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or Open SAFE stack for many zips; ASF search; one crop and swath into the stack |
+| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or Open SAFE stack for many folders and zips (File Name, Type, Acquisition, Track, Orbit, N Products); ASF search; one crop and swath into the stack |
 
 Pipeline → Settings edits the date span, Goldstein α and window, coherence
 window, unwrap coherence floor, and two detection thresholds. The sample
@@ -211,26 +211,49 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
-**File → Open SAFE stack…** multi-selects many Sentinel-1 `.zip` products.
-They are not unzipped. A progress dialog counts the files. Every zip is
-read with the same swath, polarisation, and crop (default IW1 VV, 256×256),
-sorted by the manifest start time, and stored as one `complex64` stack
+**File → Open SAFE stack…**, **Open SAFE folder…**, and **Open Sentinel-1
+SAFE Product…** use one chooser. Ctrl or Shift selects several SAFE folders
+and `.zip` files together. It is not a single-folder dialog and it is not
+zip-only. A folder that contains several SAFE products adds every product.
+The table columns are File Name, Type, Acquisition, Track, and Orbit, with
+an **N Products** counter. Type, acquisition, track (relative orbit), and
+absolute orbit are read from the manifest when they are present, and left
+blank otherwise. The reference row is chosen in the dialog. Closing the
+list loads nothing. Run reads every listed product into the SLC cube.
+Zips are not unzipped. Create Stack parameters on that dialog keep
+Resampling **NONE**, Initial Offset **Orbit** (not applied), and Output
+Extents **Master**. A progress dialog then reads every product with the
+same swath, polarisation, and crop (default IW1 VV, 256×256), sorts dates
+by the manifest start time, and stores one `complex64` stack
 `(n_dates, height, width)`. With two or more dates the dialog can run the
-interferogram stage immediately: each pair is later × conjugate(earlier).
-The window is the same rows and columns in each measurement. That is
-teaching crop-window alignment. There is no coregistration in the crop.
-Pipeline → ALIGN SLC can estimate one constant shift afterwards. It does
-not run as part of the crop or of **Run all stages**.
+interferogram stage: each pair is later × conjugate(earlier). The window
+is the same rows and columns in each measurement. That is teaching
+crop-window alignment. The crop is not Back Geocoding.
+Radar → S-1 Back Geocoding resamples a secondary split window onto the
+reference by range-Doppler when both windows and both orbits are loaded.
+Pipeline → ALIGN SLC can estimate one constant amplitude shift afterwards.
+It does not run as part of the crop or of **Run all stages**.
 
-**File → Open Sentinel-1 SAFE zip…** opens one Sentinel-1 `.zip` without
-extracting it. **Open SAFE folder…** and `manifest.safe` are optional.
+**Interferogram**, **Coherence**, **Goldstein**, **Topographic Phase
+Removal**, and **Apply Orbit File** open a parameter dialog and wait.
+Each dialog has an I/O tab, a Processing Parameters tab, a one-line
+formula, and Run / Close. Run uses the in-tree pipeline when the required rasters and orbits are
+loaded. Optional saves use the SNAP product suffixes `_Ifg`, `_Coh`,
+`_Flt`, `_DInSAR`, `_Stack`, and `_Orb` on NumPy files. BEAM-DIMAP is not
+written. Apply Orbit File does not download orbits; a local EOF replaces
+the annotation state vectors and reports the metre shift. Line-of-sight
+displacement follows `d = −(λ/4π) Δφ` (suffix `_Disp`).
+
+`manifest.safe` inside a selected folder is accepted. Zips stay zipped.
+The Product Explorer is separate from this list: the stack keeps every
+selected product. See [15-step coverage](docs/snap-chain.md).
 The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 `Intensity_`), and the quick-look. Double-click a band for a decimated
 amplitude preview. **Add to SLC stack (crop…)** reads one window (default
 IW1 VV) into the `complex64` stack. The date comes from the manifest start
 time, and the wavelength from the annotation radar frequency when it is
-present. This is open and crop only: no deburst, calibration, or
-interferogram.
+present. Opening a product does not deburst or coregister it. Radar →
+S-1 TOPS Deburst does that overlap cut when a split window is stored.
 
 **File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
 catalog. Search does not need a login. Import a crop from a local SAFE

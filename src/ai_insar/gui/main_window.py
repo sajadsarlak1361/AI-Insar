@@ -7,11 +7,39 @@ from datetime import datetime
 import numpy as np
 
 from ai_insar import __version__
-from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
+from ai_insar.conventions import C_BAND_WAVELENGTH_M, CONVENTIONS_TEXT, LIMITATIONS_TEXT, los_from_phase
 from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.batch4_dialogs import (
+    BatchSnaphuUnwrapDialog,
+    MultilookDialog,
+    SnaphuExportDialog,
+    SnaphuImportDialog,
+)
+from ai_insar.gui.chain_dialogs import (
+    BackGeocodingDialog,
+    EsdDialog,
+    TopsDeburstDialog,
+    TopsSplitDialog,
+    _BACKGEO_BLOCK,
+    _DEBURST_BLOCK,
+    _ESD_BLOCK,
+)
+from ai_insar.gui.late_dialogs import (
+    PhaseToDisplacementDialog,
+    SaveProductDialog,
+    SubsetDialog,
+    TerrainCorrectionDialog,
+)
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
+from ai_insar.gui.operator_dialog import (
+    ApplyOrbitDialog,
+    CoherenceDialog,
+    GoldsteinDialog,
+    InterferogramDialog,
+    TopoPhaseDialog,
+)
 from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
 from ai_insar.gui.safe_stack_dialog import SafeStackDialog
 from ai_insar.gui.settings import SettingsDialog
@@ -21,6 +49,7 @@ from ai_insar.io_stack import load_slc, save_products
 from ai_insar.pipeline.align import align_slc_stack
 from ai_insar.pipeline.coherence import COHERENCE_LABEL, COHERENCE_PRESETS, COHERENCE_SUMMARY
 from ai_insar.pipeline.topo import apply_topographic_phase, topographic_phase_rad
+from ai_insar.pipeline.interferogram import form_interferograms
 from ai_insar.pipeline.engine import (
     Workspace,
     compute_coherence,
@@ -31,9 +60,11 @@ from ai_insar.pipeline.engine import (
     compute_unwrap,
     run_all,
 )
-from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
-from ai_insar.pipeline.synthetic import generate_demo_stack
+from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY, goldstein_filter
+from ai_insar.pipeline.synthetic import SLCStack, generate_demo_stack
+from ai_insar.pipeline.tops import split_swath
 from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe, select_measurement
+from ai_insar.snap_products import PRODUCT_SUFFIX, write_npy_product, write_orbit_stub
 
 # Zip is the primary File → Open choice. A manifest is an optional extra.
 SAFE_OPEN_FILTER = "Sentinel-1 SAFE zip (*.zip);;Sentinel-1 manifest (manifest.safe)"
@@ -114,12 +145,16 @@ QPushButton#runAll {
     text-align: center;
 }
 QPushButton#runAll:hover { background: #3d7cf0; }
-QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTableWidget {
     background: #12171f;
     border: 1px solid #3c4a63;
     border-radius: 4px;
     padding: 4px;
+    color: #e7edf5;
 }
+QHeaderView::section { background: #1b212c; color: #e7edf5; padding: 4px; }
+QTabBar::tab { background: #2a3344; color: #e7edf5; padding: 6px 10px; }
+QTabBar::tab:selected { background: #2d6cdf; }
 QPlainTextEdit { font-family: monospace; color: #d5deea; }
 QMenuBar { background: #151a23; }
 QMenuBar::item:selected { background: #2d6cdf; }
@@ -132,6 +167,23 @@ QDockWidget::title { background: #151a23; padding: 6px; }
 QTreeWidget { background: #12171f; color: #e7edf5; border: 1px solid #3c4a63; }
 QTreeWidget::item:selected { background: #2d6cdf; }
 """
+
+
+def _crop(array, row0: int, row1: int, col0: int, col1: int):
+    if array is None:
+        return None
+    if array.shape[-2] < row1 or array.shape[-1] < col1:
+        return array
+    return np.array(array[..., row0:row1, col0:col1], copy=True)
+
+
+def _covers(grid, start: int, stop: int) -> bool:
+    return grid.row <= start and grid.row + grid.shape[0] >= stop
+
+
+def _slice(grid, start: int, stop: int):
+    local = start - grid.row
+    return grid.data[local : local + (stop - start)]
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -301,7 +353,8 @@ class MainWindow(QtWidgets.QMainWindow):
         open_stack = QtGui.QAction("Open SAFE stack…", self)
         open_stack.setObjectName("openSafeStackAction")
         open_stack.setToolTip(
-            "Multi-select Sentinel-1 SAFE zips. They are not unzipped. "
+            "Add several Sentinel-1 SAFE folders or .zip files. "
+            "The list shows file name, type, acquisition, track, and orbit. "
             "One crop, swath, and polarisation become a time-sorted complex64 stack."
         )
         open_stack.triggered.connect(self._click(self.open_safe_stack, None))
@@ -313,6 +366,12 @@ class MainWindow(QtWidgets.QMainWindow):
         save = file_menu.addAction("Save products…")
         save.setShortcut(QtGui.QKeySequence("Ctrl+S"))
         save.triggered.connect(self._click(self.save_outputs, None))
+        save_as = file_menu.addAction("Save Product As…")
+        save_as.setObjectName("fileSaveProductAs")
+        save_as.triggered.connect(self._click(self.open_save_product_dialog, None))
+        view_kmz = file_menu.addAction("View as Google Earth KMZ…")
+        view_kmz.setObjectName("fileViewKmz")
+        view_kmz.triggered.connect(self._click(self.export_kmz, None))
         self._export_velocity_action = QtGui.QAction("Export velocity map…", self)
         self._export_velocity_action.setObjectName("exportVelocityAction")
         self._export_velocity_action.triggered.connect(self._click(self.export_velocity_map, None))
@@ -339,7 +398,7 @@ class MainWindow(QtWidgets.QMainWindow):
         gmtsar_steps = (
             ("PREPROCESS", self.run_preprocess, 0, "pipelinePreprocess"),
             ("ALIGN SLC", self.run_align, 0, "pipelineAlign"),
-            ("MAKE TOPO_RA", self.run_topo, 1, "pipelineTopo"),
+            ("MAKE TOPO_RA", self.open_topo_dialog, 1, "pipelineTopo"),
             ("MAKE INTERFEROGRAMS", self.run_make_interferograms, 1, "pipelineInterferograms"),
             ("UNWRAP PHASE", self.run_unwrap, 4, "pipelineUnwrap"),
             ("GEOCODE", self.run_geocode, None, "pipelineGeocode"),
@@ -348,9 +407,12 @@ class MainWindow(QtWidgets.QMainWindow):
             item = pipeline.addAction(label)
             item.setObjectName(object_name)
             item.triggered.connect(self._click(action, index))
+        apply_orbit = pipeline.addAction("Apply Orbit File…")
+        apply_orbit.setObjectName("applyOrbitAction")
+        apply_orbit.triggered.connect(self._click(self.open_orbit_dialog, None))
         pipeline.addSeparator()
         steps = (
-            ("Interferogram", self.run_interferograms, 1),
+            ("Interferogram", self.open_interferogram_dialog, 1),
             ("Goldstein filter", self.run_filter, 2),
             ("Coherence", self.run_coherence, 3),
             ("Unwrap", self.run_unwrap, 4),
@@ -359,6 +421,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         for label, action, index in steps:
             item = pipeline.addAction(label)
+            if label == "Interferogram":
+                item.setObjectName("interferogramFormationAction")
             item.triggered.connect(self._click(action, index))
         pipeline.addSeparator()
         run_all = pipeline.addAction("Run all stages")
@@ -370,6 +434,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_filter_menus()
         self._build_unwrap_menus()
         self._build_method_menus()
+        self._build_radar_menu()
 
         view = self.menuBar().addMenu("View")
         for name in _LAYERS:
@@ -425,6 +490,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def generate_sample(self) -> None:
         self.workspace.stack = generate_demo_stack()
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = []
         self.workspace.clear_products()
         stack = self.workspace.stack
         self._log(f"Generated sample SLC {stack.data.shape} {stack.data.dtype}. {stack.description}")
@@ -442,40 +508,63 @@ class MainWindow(QtWidgets.QMainWindow):
         stack = load_slc(path)
         self.workspace.stack = stack
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = []
         self.workspace.clear_products()
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
 
+    def _opened_safe_paths(self) -> list:
+        if self.safe_product is None:
+            return []
+        return [self.safe_product.root]
+
+    def _source_names(self) -> list[str]:
+        names: list[str] = []
+        if self.workspace.stack is not None:
+            names.append(f"Workspace SLC stack {self.workspace.stack.data.shape}")
+        if self.safe_product is not None:
+            names.append(self.safe_product.product_id)
+        return names
+
     def open_safe_product(self) -> None:
-        path, _selected = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Open Sentinel-1 SAFE zip",
-            "",
-            SAFE_OPEN_FILTER,
-        )
-        if not path:
-            return
-        self.open_safe_path(path)
+        """Choose one or more SAFE zips or folders, then list every one before loading."""
+        self._open_product_set_from_chooser()
 
     def open_safe_folder(self) -> None:
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Open SAFE folder")
-        if not directory:
-            return
-        self.open_safe_path(directory)
+        """Choose several SAFE folders (and zips) in one dialog. None are dropped."""
+        self._open_product_set_from_chooser()
 
     def open_safe_stack(self) -> None:
-        """Multi-select SAFE zips and build one time-sorted complex64 stack."""
-        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "Open SAFE stack",
-            "",
-            "Sentinel-1 SAFE zip (*.zip)",
-        )
+        """List SAFE folders and zips, then build one time-sorted complex64 stack."""
+        self._open_product_set_from_chooser()
+
+    def _open_product_set_from_chooser(self) -> None:
+        from ai_insar.gui.product_set import choose_safe_products
+
+        paths = choose_safe_products(self)
         if not paths:
             return
-        dialog = SafeStackDialog(self, n_files=len(paths))
+        dialog = SafeStackDialog(
+            self,
+            n_files=len(paths),
+            initial_paths=paths,
+            opened_paths=self._opened_safe_paths,
+        )
+        self._log(dialog.product_set.summary())
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self._log(f"SAFE list closed. {len(paths)} product(s) were not loaded.")
             return
+        self.load_from_product_set(dialog)
+
+    def load_from_product_set(self, dialog: SafeStackDialog) -> None:
+        """Load every listed product and write the count, names, and metadata to the log."""
+        paths = dialog.paths()
+        if not paths:
+            raise RuntimeError("ProductSet-Reader: please add a source product.")
+        if dialog.resampling.currentText() != "NONE":
+            raise RuntimeError("InSAR requires Resampling Type NONE.")
+        self._log(dialog.product_set.summary())
+        self._product_status = f"{len(paths)} Products"
         self.load_safe_stack(
             paths,
             swath=dialog.swath(),
@@ -485,6 +574,9 @@ class MainWindow(QtWidgets.QMainWindow):
             height=int(dialog.height.value()),
             width=int(dialog.width.value()),
             form_interferograms=dialog.form_ifg.isChecked(),
+            reference=dialog.reference_path(),
+            burst_first=dialog.burst_first_value(),
+            burst_last=dialog.burst_last_value(),
         )
 
     def load_safe_stack(
@@ -498,15 +590,26 @@ class MainWindow(QtWidgets.QMainWindow):
         height: int,
         width: int,
         form_interferograms: bool = True,
+        reference=None,
+        burst_first: int = 0,
+        burst_last: int = 0,
     ) -> None:
-        """Read ``paths`` with a progress dialog, then optionally form interferograms."""
+        """Read every path, then optionally form interferograms. All products stay in the cube."""
         from pathlib import Path
 
-        from ai_insar.safe_stack import SafeStackCancelled, stack_safe_zips
+        from ai_insar.safe_stack import SafeStackCancelled, inspect_safe_products, stack_safe_zips
 
         files = [Path(path) for path in paths]
+        records = inspect_safe_products(
+            files,
+            swath=swath,
+            pol=pol,
+            reference=reference,
+            burst_first=burst_first,
+            burst_last=burst_last,
+        )
         dialog = QtWidgets.QProgressDialog(
-            "Reading SAFE zips…",
+            "Reading SAFE products…",
             "Cancel",
             0,
             max(len(files) * 2, 1),
@@ -549,11 +652,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.workspace.stack = stack
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = list(records)
+        reference = next(item for item in records if item.is_reference)
+        day = (reference.acquisition or "")[:10]
+        matched = np.where(stack.dates.astype(str) == day)[0] if day else np.array([])
+        self.workspace.reference_index = int(matched[0]) if matched.size == 1 else None
         self.workspace.clear_products()
+        reference_name = next(item.file_name for item in records if item.is_reference)
+        names = ", ".join(item.file_name for item in records)
+        tracks = {item.track for item in records if item.track}
         self._log(
-            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} zip(s). "
+            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(records)} product(s): {names}. "
+            f"Reference: {reference_name}. "
             f"{stack.description}"
         )
+        if len(tracks) > 1:
+            self._log(
+                "These products do not share one relative orbit (track): "
+                + ", ".join(f"{item.file_name} track {item.track}" for item in records)
+                + ". All of them stay in the stack."
+            )
+        if records[0].burst_first is not None:
+            self._log(
+                f"Burst range {records[0].burst_first}–{records[0].burst_last} is stored for each product. "
+                "The array is the shared row/column crop, not a burst stitch."
+            )
         self._preferred_layer = "SLC amplitude"
         if form_interferograms and stack.n_dates >= 2:
             self.run_interferograms()
@@ -695,53 +818,1066 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_coherence()
 
     def run_topo(self) -> None:
-        """GMTSAR MAKE TOPO_RA: optional DEM phase, unchanged when inputs are missing."""
-        if self.workspace.stack is None or self.workspace.interferograms is None:
-            raise RuntimeError("Form interferograms before MAKE TOPO_RA.")
-        if self.workspace.dem_m is None:
-            path, _selected = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                "MAKE TOPO_RA — DEM heights (.npy)",
-                "",
-                "NumPy DEM (*.npy)",
-            )
-            if not path:
-                self._log(
-                    "MAKE TOPO_RA: no DEM loaded. Topographic phase was not removed. "
-                    "Interferograms are unchanged."
-                )
-                return
-            dem = np.load(path)
-            expected = self.workspace.stack.data.shape[1:]
-            if dem.shape != expected:
-                raise ValueError(f"DEM shape {dem.shape} must match the SLC grid {expected}")
-            self.workspace.dem_m = np.asarray(dem, dtype=np.float64)
-            self._log(f"MAKE TOPO_RA: loaded DEM {self.workspace.dem_m.shape} from {path}.")
-        baseline, accepted = QtWidgets.QInputDialog.getDouble(
-            self,
-            "MAKE TOPO_RA",
-            "Perpendicular baseline (meters). 0 leaves the interferogram unchanged.",
-            float(self.workspace.topo_baseline_perp_m),
-            -5000.0,
-            5000.0,
-            1,
+        """Open Topographic Phase Removal and wait for the DEM and baseline."""
+        self.open_topo_dialog()
+
+    def _build_radar_menu(self) -> None:
+        """The six SNAP 14 dialogs observed for handwritten steps 1–6."""
+        menu = self.menuBar().addMenu("Radar")
+        menu.setObjectName("radarMenu")
+        actions = (
+            ("S-1 TOPS Split", self.open_split_dialog, "radarTopsSplit"),
+            ("Apply Orbit File", self.open_orbit_dialog, "radarApplyOrbit"),
+            ("S-1 Back Geocoding", self.open_backgeocoding_dialog, "radarBackGeocoding"),
+            ("S-1 Enhanced Spectral Diversity", self.open_esd_dialog, "radarEsd"),
+            ("Interferogram Formation", self.open_interferogram_dialog, "radarInterferogram"),
+            ("S-1 TOPS Deburst", self.open_deburst_dialog, "radarTopsDeburst"),
+            ("Multilooking", self.open_multilook_dialog, "radarMultilook"),
+            ("Goldstein Phase Filtering", self.open_goldstein_dialog, "radarGoldstein"),
+            ("Snaphu Export", self.open_snaphu_export_dialog, "radarSnaphuExport"),
+            ("Batch Snaphu Unwrap", self.open_batch_snaphu_dialog, "radarBatchSnaphu"),
+            ("Snaphu Import", self.open_snaphu_import_dialog, "radarSnaphuImport"),
+            ("Phase to Displacement", self.open_phase_dialog, "radarPhaseToDisplacement"),
+            ("Range-Doppler Terrain Correction", self.open_terrain_dialog, "radarTerrainCorrection"),
         )
-        if not accepted:
-            self._log("MAKE TOPO_RA: cancelled. Interferograms are unchanged.")
+        for label, callback, object_name in actions:
+            item = menu.addAction(label)
+            item.setObjectName(object_name)
+            item.triggered.connect(self._click(callback, None))
+        subset = menu.addAction("Subset…")
+        subset.setObjectName("radarSubset")
+        subset.triggered.connect(self._click(self.open_subset_dialog, None))
+        save_as = menu.addAction("Save Product As…")
+        save_as.setObjectName("radarSaveProductAs")
+        save_as.triggered.connect(self._click(self.open_save_product_dialog, None))
+
+    def open_split_dialog(self) -> None:
+        dialog = TopsSplitDialog(self)
+        if self.safe_product is not None:
+            dialog.bind_product(self.safe_product)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        self.workspace.topo_baseline_perp_m = float(baseline)
-        if abs(float(baseline)) < 1e-9:
+        self.apply_split(dialog.parameters())
+
+    def open_deburst_dialog(self) -> None:
+        dialog = TopsDeburstDialog(self, can_run=self.workspace.reference_grid is not None)
+        if self.safe_product is not None:
+            dialog.bind_product(self.safe_product)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_deburst(dialog.parameters())
+
+    def open_esd_dialog(self) -> None:
+        ready = self.workspace.reference_grid is not None and self.workspace.secondary_grid is not None
+        dialog = EsdDialog(self, sources=self._source_names(), can_run=ready)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_esd(dialog.parameters())
+
+    def open_backgeocoding_dialog(self) -> None:
+        dialog = BackGeocodingDialog(self, runner=self.apply_backgeocoding)
+        dialog.exec()
+
+    def open_phase_dialog(self) -> None:
+        dialog = PhaseToDisplacementDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_phase_to_displacement(dialog.parameters())
+
+    def open_terrain_dialog(self) -> None:
+        dialog = TerrainCorrectionDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_terrain_correction(dialog.parameters())
+
+    def open_subset_dialog(self) -> None:
+        height, width = self._spatial_shape()
+        if height < 1 or width < 1:
+            raise RuntimeError("Subset needs a loaded raster. Nothing is loaded.")
+        dialog = SubsetDialog(self, height=height, width=width)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_subset(dialog.parameters())
+
+    def open_save_product_dialog(self) -> None:
+        dialog = SaveProductDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_save_product(dialog.parameters())
+
+    def open_multilook_dialog(self) -> None:
+        bands: list[str] = []
+        if self.workspace.interferograms is not None:
+            bands.append("Interferogram")
+        if self.workspace.coherence is not None:
+            bands.append("Coherence")
+        dialog = MultilookDialog(self, bands=bands)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_multilook(dialog.parameters())
+
+    def open_snaphu_export_dialog(self) -> None:
+        dialog = SnaphuExportDialog(self, has_interferogram=self.workspace.interferograms is not None)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_snaphu_export(dialog.parameters())
+
+    def open_batch_snaphu_dialog(self) -> None:
+        dialog = BatchSnaphuUnwrapDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_batch_snaphu(dialog.parameters())
+
+    def open_snaphu_import_dialog(self) -> None:
+        dialog = SnaphuImportDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_snaphu_import(dialog.parameters())
+
+    def apply_multilook(self, params: dict) -> None:
+        from ai_insar.pipeline.multilook import multilook_array
+
+        if params["gr_square"]:
+            model = getattr(self.workspace, "swath_model", None)
+            if model is None:
+                raise RuntimeError(
+                    "GR Square Pixel needs the Sentinel-1 swath geometry "
+                    "(azimuth time interval, incidence, and orbit). It is not on this stack."
+                )
+            from ai_insar.pipeline.tops_ops import square_pixel_azimuth_looks
+
+            params = dict(params)
+            params["azimuth_looks"] = square_pixel_azimuth_looks(
+                model, int(params["range_looks"]), getattr(self.workspace, "precise_orbit", None)
+            )
+            params["gr_square"] = False
             self._log(
-                "MAKE TOPO_RA: perpendicular baseline is 0, so topographic phase is 0. "
-                "Interferograms are unchanged."
+                f"GR Square Pixel: {params['range_looks']} range looks -> "
+                f"{params['azimuth_looks']} azimuth looks from the ground spacings."
+            )
+        bands = list(params["bands"])
+        if not bands:
+            raise RuntimeError("Source Bands is empty.")
+        range_looks = int(params["range_looks"])
+        azimuth_looks = int(params["azimuth_looks"])
+        intensity = bool(params["output_intensity"])
+        if "Interferogram" in bands:
+            if self.workspace.interferograms is None:
+                raise RuntimeError("No interferogram is loaded.")
+            self.workspace.interferograms = multilook_array(
+                self.workspace.interferograms,
+                range_looks,
+                azimuth_looks,
+                output_intensity=intensity,
+            )
+            self.workspace.filtered = None
+            self.workspace.unwrapped = None
+            self.workspace.los_m = None
+            self.workspace.velocity_m_yr = None
+            self.workspace.mask = None
+            if "Coherence" not in bands:
+                self.workspace.coherence = None
+                self.workspace.mean_coherence = None
+        if "Coherence" in bands:
+            if self.workspace.coherence is None:
+                raise RuntimeError("No coherence is loaded.")
+            self.workspace.coherence = multilook_array(
+                self.workspace.coherence,
+                range_looks,
+                azimuth_looks,
+                output_intensity=False,
+            )
+            self.workspace.mean_coherence = np.mean(self.workspace.coherence, axis=0).astype(np.float32)
+        shape = self.workspace.interferograms.shape if self.workspace.interferograms is not None else self.workspace.coherence.shape
+        self._log(
+            f"Multilook independent looks: {azimuth_looks} azimuth × {range_looks} range. "
+            f"Output shape {shape}. "
+            + (
+                "Output is intensity."
+                if intensity
+                else "Complex samples were averaged. This is not a resample."
+            )
+        )
+
+    def apply_snaphu_export(self, params: dict) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.snaphu_io import export_snaphu
+
+        if self.workspace.interferograms is None or self.workspace.coherence is None:
+            raise RuntimeError("Snaphu export needs an interferogram and a coherence image. Zeros were not written.")
+        if self.workspace.interferograms.shape != self.workspace.coherence.shape:
+            raise RuntimeError("Interferogram and coherence shapes differ.")
+        pair_count = int(self.workspace.interferograms.shape[0])
+        phase = np.angle(self.workspace.interferograms[0]).astype(np.float64)
+        coherence = np.asarray(self.workspace.coherence[0], dtype=np.float64)
+        wavelength = None if self.workspace.stack is None else float(self.workspace.stack.wavelength_m)
+        conf = export_snaphu(
+            params["folder"],
+            phase,
+            coherence,
+            stat_mode=params["stat_mode"],
+            init_method=params["init_method"],
+            tile_rows=int(params["tile_rows"]),
+            tile_columns=int(params["tile_columns"]),
+            processors=int(params["processors"]),
+            row_overlap=int(params["row_overlap"]),
+            column_overlap=int(params["column_overlap"]),
+            tile_cost_threshold=int(params["tile_cost_threshold"]),
+            wavelength_m=wavelength,
+            pair_index=0,
+            pair_count=pair_count,
+        )
+        extra = ""
+        if pair_count > 1:
+            extra = f" Pairs 1..{pair_count - 1} were not exported."
+        self._log(
+            f"Snaphu export wrote {conf.name} in {Path(params['folder'])} "
+            f"for pair 0 of {pair_count}, shape {phase.shape}. Not unwrapped.{extra}"
+        )
+
+    def apply_batch_snaphu(self, params: dict) -> None:
+        from ai_insar.pipeline.snaphu_io import run_snaphu
+
+        completed = run_snaphu(params["export_folder"], params["install_location"])
+        self._log(
+            "External snaphu finished with exit 0. "
+            f"stdout: {(completed.stdout or '').strip() or '(empty)'}. "
+            "Fast unwrap was not used."
+        )
+
+    def apply_snaphu_import(self, params: dict) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.snaphu_io import import_unwrapped
+
+        phase_folder = Path(params["phase_folder"])
+        unwrap_folder = Path(params["unwrapped_folder"])
+        if phase_folder.resolve() != unwrap_folder.resolve():
+            raise RuntimeError("The phase folder and the unwrapped folder must be the same export.")
+        unwrapped = import_unwrapped(unwrap_folder)
+        self.workspace.unwrapped = unwrapped[None, ...]
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
+        if params["skip_wrapped"]:
+            self._log(
+                "Do NOT save Wrapped interferogram is checked. "
+                "BEAM-DIMAP was not written. The wrapped interferogram remains in the workspace."
+            )
+        self._log(
+            f"Imported unwrapped phase {unwrapped.shape} from {unwrap_folder / 'unwrap.img'}. "
+            "The values were read from the file. They were not unwrapped again."
+        )
+
+    def apply_split(self, params: dict) -> None:
+        """Read one subswath's burst lines. This does not deburst or coregister."""
+        from pathlib import Path
+
+        from ai_insar.conventions import C_BAND_WAVELENGTH_M, SPEED_OF_LIGHT_M_S
+        from ai_insar.safe import resolve_safe
+        from ai_insar.sentinel import date_from_text
+
+        product = resolve_safe(params["source"])
+        data, measurement, (row, height, width) = split_swath(
+            product,
+            swath=params["swath"],
+            pol=params["polarisation"],
+            burst_first=int(params["burst_first"]),
+            burst_last=int(params["burst_last"]),
+        )
+        if data.ndim != 2:
+            raise RuntimeError(f"TOPS Split returned {data.shape}, expected a 2-D window.")
+        day = date_from_text(product.start_utc) or date_from_text(product.product_id)
+        if day is None:
+            raise RuntimeError(f"{product.product_id} has no acquisition date.")
+        wavelength = C_BAND_WAVELENGTH_M
+        if measurement.radar_frequency:
+            wavelength = SPEED_OF_LIGHT_M_S / float(measurement.radar_frequency)
+        description = (
+            f"TOPS Split {measurement.swath} {measurement.polarisation} "
+            f"bursts {int(params['burst_first'])}–{int(params['burst_last'])}, "
+            f"rows {row}:{row + height}, samples {width}, from {Path(params['source']).name}. "
+            "Burst overlap is still in the lines. This is not a deburst."
+        )
+        self.workspace.stack = SLCStack(
+            data=np.asarray(data, dtype=np.complex64)[None, ...],
+            dates=np.array([day], dtype="datetime64[D]"),
+            wavelength_m=float(wavelength),
+            sensor="Sentinel-1 SLC",
+            description=description,
+        )
+        self.workspace.clear_products()
+        self._store_split_grid(product, measurement, data, row)
+        self._log(description)
+        self._preferred_layer = "SLC amplitude"
+
+    def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
+        """Keep the split window as a radar grid. Zip annotations are read in place."""
+        from ai_insar.pipeline.s1_annotation import read_swath_from_product
+        from ai_insar.pipeline.tops_ops import RadarGrid
+
+        if not measurement.annotation_href:
+            self._log("TOPS Split kept the burst lines. The measurement has no annotation.")
+            return
+        model = read_swath_from_product(product, measurement)
+        grid = RadarGrid(int(row), 0, np.asarray(data, dtype=np.complex64), model)
+        selected = any(
+            item.is_reference and item.product_id == product.product_id for item in self.workspace.safe_inputs
+        )
+        if selected or self.workspace.reference_grid is None:
+            if selected and self.workspace.reference_grid is not None:
+                self.workspace.secondary_grid = self.workspace.reference_grid
+                self.workspace.secondary_orbit = self.workspace.precise_orbit
+            self.workspace.reference_grid = grid
+            self.workspace.swath_model = model
+            if self.workspace.precise_orbit is None:
+                self.workspace.precise_orbit = model.orbit
+            self._log(f"Stored the reference radar window {data.shape} from the SAFE annotation.")
+            return
+        self.workspace.secondary_grid = grid
+        self.workspace.secondary_orbit = model.orbit
+        self._log(f"Stored the secondary radar window {data.shape} from the SAFE annotation.")
+
+    def open_interferogram_dialog(self) -> None:
+        dialog = InterferogramDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_interferogram_params(dialog.parameters())
+
+    def open_coherence_dialog(self) -> None:
+        dialog = CoherenceDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_coherence_params(dialog.parameters())
+
+    def open_topo_dialog(self) -> None:
+        dialog = TopoPhaseDialog(
+            self,
+            sources=self._source_names(),
+            baseline_m=float(self.workspace.topo_baseline_perp_m),
+            slant_range_m=float(self.workspace.topo_slant_range_m),
+            incidence_deg=float(self.workspace.topo_incidence_deg),
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_topo_params(dialog.parameters())
+
+    def open_goldstein_dialog(self) -> None:
+        dialog = GoldsteinDialog(self, sources=self._source_names(), config=self.workspace.config)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_goldstein_params(dialog.parameters())
+
+    def open_orbit_dialog(self) -> None:
+        dialog = ApplyOrbitDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_orbit_params(dialog.parameters())
+
+    def apply_interferogram_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        if params.get("subtract_ramp"):
+            raise RuntimeError("Subtract Residual Ramp (GSLC) is not implemented.")
+        self.run_interferograms()
+        if params.get("subtract_flat") or params.get("subtract_topo"):
+            self._remove_geometric_phase(params)
+        if params.get("output_coherence"):
+            self._set_coherence_windows(
+                int(params["coherence_range"]),
+                None if params["square_pixel"] else int(params["coherence_azimuth"]),
+                square=bool(params["square_pixel"]),
+            )
+            self.run_coherence()
+        if request.open_in_app:
+            self._preferred_layer = "Coherence" if params.get("output_coherence") else "Interferogram phase"
+        self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["interferogram"])
+        if params.get("output_coherence") and request.save and self.workspace.coherence is not None:
+            self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
+
+    def _remove_geometric_phase(self, params: dict) -> None:
+        """Subtract ellipsoid flat-earth and, when asked, a constant-height topographic term."""
+        from ai_insar.pipeline.tops_ops import RadarGrid, flat_earth_phase, subtract_phase
+
+        early = getattr(self.workspace, "reference_grid", None)
+        later = getattr(self.workspace, "secondary_grid", None)
+        early_orbit = getattr(self.workspace, "precise_orbit", None)
+        later_orbit = getattr(self.workspace, "secondary_orbit", None)
+        if early is None or later is None or early_orbit is None or later_orbit is None:
+            raise RuntimeError(
+                "Flat-earth or topographic subtraction needs both radar windows and both precise orbits. "
+                "They are not on this stack."
+            )
+        dem = None
+        if params.get("subtract_topo"):
+            dem = getattr(self.workspace, "elevation", None)
+            if dem is None:
+                raise RuntimeError(
+                    "Topographic subtraction needs an elevation model sampled at each pixel. "
+                    "A single DEM mean is not used."
+                )
+        phase = flat_earth_phase(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            degree=int(self._combo_int(params, "orbit_degree", 3)),
+            height_m=0.0,
+            dem=dem,
+        )
+        ifg = self.workspace.interferograms
+        if ifg is None or ifg.shape[0] < 1 or ifg.shape[1:] != phase.shape:
+            raise RuntimeError("The interferogram grid does not match the radar windows.")
+        ifg = np.array(ifg, copy=True)
+        ifg[0] = subtract_phase(ifg[0], phase)
+        self.workspace.interferograms = ifg
+        self._log(
+            f"Removed geometric phase (height {height:.1f} m) from pair 0. "
+            f"RMS {float(np.sqrt(np.mean(phase**2))):.3f} rad."
+        )
+
+    def _combo_int(self, params: dict, key: str, default: int) -> int:
+        try:
+            return int(params.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def apply_coherence_params(self, params: dict) -> None:
+        if self.workspace.stack is None or self.workspace.pairs is None:
+            raise RuntimeError("Form interferograms before estimating coherence.")
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        self._set_coherence_windows(
+            int(params["coherence_range"]),
+            None if params["square_pixel"] else int(params["coherence_azimuth"]),
+            square=bool(params["square_pixel"]),
+        )
+        if params["single_reference"]:
+            pairs = [(0, later) for later in range(1, self.workspace.stack.n_dates)]
+            if pairs != list(self.workspace.pairs):
+                self.workspace.pairs = pairs
+                self.workspace.interferograms = form_interferograms(self.workspace.stack.data, pairs)
+                self.workspace.filtered = None
+                self.workspace.unwrapped = None
+                self.workspace.los_m = None
+                self.workspace.velocity_m_yr = None
+                self.workspace.mask = None
+                self._log(
+                    "Single reference: pairs are date 0 with each later date. "
+                    "Interferograms were recomputed."
+                )
+        self.run_coherence()
+        if request.open_in_app:
+            self._preferred_layer = "Coherence"
+        self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
+
+    def apply_goldstein_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        written = {"NumPy (.npy)", "BEAM-DIMAP", "GeoTIFF", "Google Earth KMZ"}
+        if request.save and request.format_name not in written:
+            raise RuntimeError(f"{request.format_name} is not written by this build.")
+        alpha = float(params["alpha"])
+        fft_size = int(params["fft_size"])
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("alpha must be between 0 and 1")
+        if fft_size < 8:
+            raise ValueError("FFT size must be at least 8")
+        if float(params.get("block_extent_m", 0.0)) != 0.0:
+            raise RuntimeError(
+                "FFT Block Extent (m) is not zero. Pixel spacing is not available, "
+                "so the FFT size in pixels was not replaced."
+            )
+        self.workspace.config.goldstein_alpha = alpha
+        self.workspace.config.goldstein_window = fft_size
+        self.workspace.config.goldstein_spectrum_smooth = int(params["window_size"])
+        if params.get("adaptive") or params.get("coherence_mask"):
+            self._goldstein_with_coherence(params)
+        else:
+            self._log(
+                f"Goldstein constant alpha={alpha:.2f}, FFT size={fft_size}, "
+                f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
+            )
+            self.run_filter()
+        if request.open_in_app:
+            self._preferred_layer = "Filtered phase"
+        if request.save:
+            self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+
+    def _goldstein_with_coherence(self, params: dict) -> None:
+        if self.workspace.interferograms is None or self.workspace.coherence is None:
+            raise RuntimeError(
+                "Use adaptive alpha or the coherence mask needs a coherence image "
+                "of the same shape as the interferogram. Constant alpha was not substituted."
+            )
+        if self.workspace.coherence.shape != self.workspace.interferograms.shape:
+            raise RuntimeError("Coherence and interferogram shapes differ.")
+        filtered = np.empty_like(self.workspace.interferograms, dtype=np.complex64)
+        threshold = float(params.get("coherence_threshold", 0.2))
+        use_mask = bool(params.get("coherence_mask"))
+        adaptive = bool(params.get("adaptive"))
+        for index in range(self.workspace.interferograms.shape[0]):
+            plane = np.array(self.workspace.interferograms[index], dtype=np.complex64, copy=True)
+            coherence = self.workspace.coherence[index]
+            if use_mask:
+                plane[coherence < threshold] = 0
+            filtered[index] = goldstein_filter(
+                plane,
+                alpha=float(params["alpha"]),
+                window=int(params["fft_size"]),
+                spectrum_smooth=int(params["window_size"]),
+                coherence=coherence if adaptive else None,
+                alpha_min=float(params.get("alpha_min", 0.2)),
+                alpha_max=float(params.get("alpha_max", 1.0)),
+            )
+        self.workspace.filtered = filtered
+        self.workspace.unwrapped = None
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
+        mode = "adaptive block coherence" if adaptive else "constant alpha"
+        if use_mask:
+            mode += f", coherence mask < {threshold:.2f}"
+        self._log(f"Goldstein {mode}. FFT size={int(params['fft_size'])}. Fast unwrap was not used.")
+
+    def apply_topo_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        self._apply_topo_choice(
+            params["dem_choice"],
+            params["dem_path"],
+            baseline_m=float(params["baseline_m"]),
+            slant_range_m=float(params["slant_range_m"]),
+            incidence_deg=float(params["incidence_deg"]),
+        )
+        if request.open_in_app:
+            self._preferred_layer = "Interferogram phase"
+        self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["topo"])
+
+    def apply_orbit_params(self, params: dict) -> None:
+        request = params["request"]
+        degree = int(params["polynomial_degree"])
+        if degree < 1:
+            raise ValueError("Polynomial degree must be at least 1.")
+        orbit_file = str(params.get("orbit_file") or "").strip()
+        if orbit_file:
+            self._install_precise_orbit(orbit_file, degree, params)
+            return
+        orbit_type = str(params.get("orbit_type") or "")
+        if orbit_type.startswith("Sentinel Precise") or orbit_type.startswith("Sentinel Restituted"):
+            fetched = self._download_sentinel_orbit(params, degree)
+            if fetched:
+                return
+        if not params["do_not_fail"]:
+            raise RuntimeError(
+                "Apply Orbit File: no orbit-file download is installed. "
+                f"Requested {params['orbit_type']}, polynomial degree {degree}. "
+                "State vectors were not changed."
+            )
+        self._log(
+            "Apply Orbit File: 'Do not fail if new orbit file is not found' is checked. "
+            "No orbit file was fetched. State vectors were not changed. "
+            f"Requested {params['orbit_type']}, polynomial degree {degree}."
+        )
+        if not request.save:
+            return
+        path = write_orbit_stub(
+            request.directory,
+            request.target,
+            {
+                "applied": False,
+                "reason": "Orbit files are not downloaded in this build.",
+                "orbit_type": params["orbit_type"],
+                "polynomial_degree": degree,
+                "do_not_fail": bool(params["do_not_fail"]),
+                "source": params.get("source", ""),
+            },
+        )
+        self._log(f"Saved {path.name} ({PRODUCT_SUFFIX['apply_orbit']}).")
+
+    def _install_precise_orbit(self, orbit_file: str, degree: int, params: dict) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.s1_annotation import read_eof_orbit
+        from ai_insar.pipeline.tops_ops import RadarGrid, _with_orbit
+
+        path = Path(orbit_file)
+        if not path.is_file():
+            raise RuntimeError(f"Orbit file {path} was not found. State vectors were not changed.")
+        precise = read_eof_orbit(path)
+        request = params["request"]
+        model = getattr(self.workspace, "swath_model", None)
+        shift = None
+        when = None
+        if model is not None and model.bursts:
+            when = model.bursts[len(model.bursts) // 2].azimuth_time
+            if model.orbit.time[0] <= when <= model.orbit.time[-1] and precise.time[0] <= when <= precise.time[-1]:
+                before, _velocity = model.orbit.interpolate(when, degree)
+                after, velocity = precise.interpolate(when, degree)
+                shift = float(np.linalg.norm(after - before))
+                updated = _with_orbit(model, precise)
+                self.workspace.swath_model = updated
+                grid = self.workspace.reference_grid
+                if grid is not None:
+                    self.workspace.reference_grid = RadarGrid(grid.row, grid.col, grid.data, updated)
+                self.workspace.precise_orbit = precise
+                self._log(
+                    f"Apply Orbit File replaced state vectors from {path.name}. "
+                    f"Shift {shift:.3f} m at {when}. Speed {float(np.linalg.norm(velocity)):.1f} m/s."
+                )
+            elif precise.time[0] <= when <= precise.time[-1]:
+                self.workspace.secondary_orbit = precise
+                self._log(f"Apply Orbit File stored {path.name} as the secondary orbit. It covers {when}.")
+            else:
+                raise RuntimeError(
+                    f"{path.name} does not cover {when}. State vectors were not changed."
+                )
+        else:
+            self.workspace.precise_orbit = precise
+            self._log(
+                f"Apply Orbit File stored {path.name}. "
+                "No swath annotation was loaded, so the metre shift was not measured."
+            )
+        if not request.save:
+            return
+        payload = {
+            "applied": True,
+            "orbit_file": str(path),
+            "polynomial_degree": degree,
+            "shift_m": shift,
+            "time": None if when is None else str(when),
+        }
+        written = write_orbit_stub(request.directory, request.target, payload)
+        self._log(f"Saved {written.name} ({PRODUCT_SUFFIX['apply_orbit']}).")
+
+    def apply_deburst(self, params: dict) -> None:
+        from ai_insar.pipeline.tops_ops import deburst_window
+
+        grid = self.workspace.reference_grid
+        if grid is None:
+            raise RuntimeError(_DEBURST_BLOCK)
+        result = deburst_window(grid.data, grid.model, grid.row, grid.col)
+        self.workspace.reference_grid = result
+        if self.workspace.stack is not None and self.workspace.stack.data.shape[0] == 1:
+            self.workspace.stack.data = result.data[None, ...]
+        self.workspace.clear_products()
+        self._log(
+            f"TOPS Deburst kept {result.data.shape[0]} lines starting at row {result.row}. "
+            "The overlap was cut at the mid azimuth time."
+        )
+        del params
+
+    def apply_backgeocoding(self, params: dict) -> None:
+        from ai_insar.pipeline.tops_ops import RadarGrid, backgeocode
+
+        early = self.workspace.reference_grid
+        late = self.workspace.secondary_grid
+        early_orbit = self.workspace.precise_orbit
+        late_orbit = self.workspace.secondary_orbit
+        if early is None or late is None or early_orbit is None or late_orbit is None:
+            raise RuntimeError(_BACKGEO_BLOCK)
+        dem = self._elevation_model(str(params.get("dem") or ""), str(params.get("dem_path") or ""), early, early_orbit)
+        resampled = backgeocode(
+            early,
+            late,
+            reference_orbit=early_orbit,
+            secondary_orbit=late_orbit,
+            dem=dem,
+            reramp=not bool(params.get("disable_reramp")),
+            resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
+            max_solves=4096,
+            max_residual_px=0.05,
+        )
+        self._log(
+            f"Back-geocoding map stride {backgeocode.last_stride}, "
+            f"check residual {backgeocode.last_residual_px:.4f} pixels."
+        )
+        self.workspace.secondary_grid = RadarGrid(early.row, early.col, resampled, early.model)
+        self._log(
+            f"Back Geocoding resampled the secondary onto the reference grid {resampled.shape}. "
+            "Deramp, range-Doppler, bilinear"
+            + (" , reramp." if not params.get("disable_reramp") else ". Reramp disabled.")
+        )
+
+    def apply_esd(self, params: dict) -> None:
+        from ai_insar.pipeline.tops_ops import (
+            burst_overlap_rows,
+            enhanced_spectral_diversity,
+            overlap_doppler_separation_hz,
+        )
+
+        early = self.workspace.reference_grid
+        late = self.workspace.secondary_grid
+        if early is None or late is None or early.shape != late.shape or early.row != late.row:
+            raise RuntimeError(_ESD_BLOCK)
+        estimator = str(params.get("estimator") or "Periodogram")
+        if params.get("user_azimuth"):
+            from ai_insar.pipeline.tops_ops import RadarGrid, apply_azimuth_pixel_shift
+
+            pixels = float(params["azimuth_shift"])
+            shifted = apply_azimuth_pixel_shift(late.data, pixels, early.model.azimuth_time_interval_s)
+            self.workspace.secondary_grid = RadarGrid(late.row, late.col, shifted, late.model)
+            self.workspace.esd_azimuth_shift_s = pixels * early.model.azimuth_time_interval_s
+            self._log(
+                f"ESD applied the supplied azimuth shift {pixels:.4f} lines "
+                f"({self.workspace.esd_azimuth_shift_s:.6e} s) to the secondary."
+            )
+            return
+        model = early.model
+        for index in range(len(model.bursts) - 1):
+            (start_a, stop_a), (start_b, stop_b) = burst_overlap_rows(model, index)
+            if not _covers(early, start_a, stop_a) or not _covers(early, start_b, stop_b):
+                continue
+            separation = overlap_doppler_separation_hz(model, index)
+            shift, coherence = enhanced_spectral_diversity(
+                _slice(early, start_a, stop_a),
+                _slice(early, start_b, stop_b),
+                _slice(late, start_a, stop_a),
+                _slice(late, start_b, stop_b),
+                separation_hz=separation,
+                estimator=estimator,
+            )
+            self.workspace.esd_azimuth_shift_s = shift
+            lines = shift / model.azimuth_time_interval_s
+            self._log(
+                f"ESD {estimator} burst {index + 1}/{index + 2}: azimuth shift {shift:.6e} s "
+                f"({lines:.4f} lines), coherence {coherence:.3f}, spectral separation {separation:.1f} Hz."
+            )
+            return
+        raise RuntimeError(
+            "The loaded windows do not cover a burst overlap, so ESD was not run."
+        )
+
+    def apply_phase_to_displacement(self, params: dict) -> None:
+        if self.workspace.unwrapped is None:
+            raise RuntimeError(
+                "Phase to Displacement needs unwrapped phase in radians. "
+                "A raw SAFE or a wrapped interferogram is not that input."
+            )
+        wavelength = C_BAND_WAVELENGTH_M
+        if self.workspace.stack is not None:
+            wavelength = float(self.workspace.stack.wavelength_m)
+        displacement = los_from_phase(self.workspace.unwrapped, wavelength)
+        self.workspace.los_m = displacement
+        self._preferred_layer = "LOS displacement"
+        self._log(
+            f"Phase to Displacement: d = -(λ/4π) Δφ, λ={wavelength:.6f} m, "
+            f"shape {displacement.shape}, metres. Positive is toward the radar."
+        )
+        request = params["request"]
+        self._save_request(request, displacement, PRODUCT_SUFFIX["displacement"])
+
+    def apply_terrain_correction(self, params: dict) -> None:
+        from ai_insar.pipeline.tops_ops import ellipsoid_geocode, terrain_correct
+
+        grid = self.workspace.reference_grid
+        orbit = self.workspace.precise_orbit
+        if grid is None or orbit is None:
+            raise RuntimeError("Range-Doppler geocoding needs a split swath and an orbit.")
+        projection = str(params.get("projection") or "WGS84(DD)")
+        mode = "utm" if "utm" in projection.lower() else "geographic"
+        if mode == "geographic" and projection not in {"", "WGS84(DD)", "Geographic Lat/Lon (WGS 84)"}:
+            if "geographic" not in projection.lower() and "wgs84" not in projection.lower():
+                raise RuntimeError(
+                    f"Map projection {projection} is not implemented. "
+                    "Geographic WGS84 and automatic UTM are written."
+                )
+        resampling = str(params.get("image_resampling") or "BILINEAR_INTERPOLATION")
+        dem_name = str(params.get("dem") or "")
+        out_rows = max(8, min(48, max(grid.shape[0] // 4, 8)))
+        out_cols = max(8, min(48, max(grid.shape[1] // 4, 8)))
+        if "ellipsoid" in dem_name.lower():
+            image, bounds = ellipsoid_geocode(
+                grid,
+                orbit,
+                height_m=0.0,
+                out_rows=out_rows,
+                out_cols=out_cols,
+                resampling=resampling,
+            )
+            self._log(
+                f"Ellipsoid geocoding at height 0, not terrain correction. "
+                f"Shape {image.shape}. Bounds {bounds}."
+            )
+            heights = None
+        else:
+            dem = self._elevation_model(dem_name, str(params.get("dem_path") or ""), grid, orbit)
+            self.workspace.elevation = dem
+            image, bounds, heights = terrain_correct(
+                grid,
+                orbit,
+                dem,
+                out_rows=out_rows,
+                out_cols=out_cols,
+                resampling=resampling,
+                projection=mode,
+            )
+            finite = heights[np.isfinite(heights)]
+            missing = int(heights.size - finite.size)
+            spread = float(np.std(finite)) if finite.size else float("nan")
+            self._log(
+                f"Range-Doppler terrain correction sampled {dem.provenance}. "
+                f"Ellipsoidal height std {spread:.2f} m, no-data pixels {missing}. "
+                f"Orthometric datum {dem.orthometric_datum}."
+            )
+        stored = image if params.get("output_complex") else np.abs(image).astype(np.float32)
+        self.workspace.geocoded = stored
+        self.workspace.geocode_bounds = bounds
+        west, south, east, north = bounds
+        self._log(f"Geocoded {stored.shape}. West {west:.5f}, south {south:.5f}, east {east:.5f}, north {north:.5f}.")
+        request = params.get("request")
+        if request is not None and getattr(request, "save", False):
+            self._write_product(request.directory, request.target or "terrain", request.format_name, stored, bounds)
+
+    def _elevation_model(self, dem_name: str, dem_path: str, grid, orbit):
+        from pathlib import Path
+
+        from ai_insar.pipeline.dem import (
+            ensure_copernicus,
+            ensure_geoid,
+            ensure_srtm,
+            read_copernicus_tif,
+            read_srtm_hgt,
+        )
+        from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_point_at_height
+
+        cache = Path("/tmp/safe-real/dem")
+        if not cache.is_dir():
+            cache = Path.home() / ".cache" / "ai-insar" / "dem"
+        if dem_name == "External DEM":
+            if not dem_path:
+                raise RuntimeError("External DEM is selected and no file was given.")
+            path = Path(dem_path)
+            if path.suffix.lower() in {".tif", ".tiff"}:
+                return read_copernicus_tif(path, ensure_geoid(cache, "EGM2008"))
+            if "hgt" in path.name.lower():
+                return read_srtm_hgt(path, ensure_geoid(cache, "EGM96"))
+            raise RuntimeError("External DEM must be a GeoTIFF or an SRTM .hgt file. A mean height is not sampled.")
+        azimuth = grid.model.line_time(grid.row + grid.shape[0] // 2)
+        slant = grid.model.slant_range_m(grid.col + grid.shape[1] // 2)
+        ground = ground_point_at_height(orbit, azimuth, slant, 0.0)
+        lat, lon, _height = ecef_to_geodetic(ground)
+        lat_deg = float(np.rad2deg(lat))
+        lon_deg = float(np.rad2deg(lon))
+        if "SRTM" in dem_name:
+            return ensure_srtm(lat_deg, lon_deg, cache, ensure_geoid(cache, "EGM96"))
+        if "Copernicus" in dem_name:
+            return ensure_copernicus(lat_deg, lon_deg, cache)
+        raise RuntimeError(
+            f"{dem_name} is not fetched. Choose Copernicus 30 m, SRTM 1Sec HGT, "
+            "an external GeoTIFF or HGT, or WGS84 ellipsoid (not terrain correction)."
+        )
+
+    def _download_sentinel_orbit(self, params: dict, degree: int) -> bool:
+        from pathlib import Path
+
+        from ai_insar.pipeline.orbit_download import download_orbit
+        from ai_insar.safe import resolve_safe
+
+        source = str(params.get("source") or "")
+        path = Path(source)
+        if not path.exists():
+            return False
+        try:
+            product = resolve_safe(path)
+        except Exception:
+            return False
+        if not product.start_utc:
+            raise RuntimeError(f"{product.product_id} has no start time, so an orbit file cannot be chosen.")
+        when = np.datetime64(product.start_utc.replace("Z", ""))
+        platform = product.product_id[:3].upper()
+        kind = "RESORB" if "Restituted" in str(params.get("orbit_type") or "") else "POEORB"
+        cache = Path("/tmp/safe-real/orbits")
+        cache.mkdir(parents=True, exist_ok=True)
+        orbit_path_pair = download_orbit(when, platform, cache, kind=kind)
+        _orbit, orbit_path = orbit_path_pair
+        copied = dict(params)
+        copied["orbit_file"] = str(orbit_path)
+        self._install_precise_orbit(str(orbit_path), degree, copied)
+        return True
+
+    def apply_subset(self, params: dict) -> None:
+        from ai_insar.pipeline.tops_ops import RadarGrid
+
+        row0 = int(params["row_start"])
+        row1 = int(params["row_end"])
+        col0 = int(params["col_start"])
+        col1 = int(params["col_end"])
+        if row0 >= row1 or col0 >= col1:
+            raise RuntimeError("The subset is empty.")
+        changed = False
+        if self.workspace.stack is not None:
+            self.workspace.stack.data = _crop(self.workspace.stack.data, row0, row1, col0, col1)
+            changed = True
+        for name in ("interferograms", "filtered", "coherence", "unwrapped", "los_m", "geocoded"):
+            value = getattr(self.workspace, name)
+            cropped = _crop(value, row0, row1, col0, col1)
+            if cropped is not value:
+                setattr(self.workspace, name, cropped)
+                changed = True
+        for name in ("reference_grid", "secondary_grid"):
+            grid = getattr(self.workspace, name)
+            if grid is None or grid.data.shape[0] < row1 or grid.data.shape[1] < col1:
+                continue
+            setattr(
+                self.workspace,
+                name,
+                RadarGrid(
+                    grid.row + row0,
+                    grid.col + col0,
+                    np.array(grid.data[row0:row1, col0:col1], copy=True),
+                    grid.model,
+                ),
+            )
+            changed = True
+        if not changed:
+            raise RuntimeError("Subset found no raster of that size.")
+        self._log(
+            f"Subset rows {row0}:{row1}, samples {col0}:{col1}. "
+            "The copy is in memory. Source files were not modified."
+        )
+        self._preferred_layer = "SLC amplitude"
+
+    def apply_save_product(self, params: dict) -> None:
+        array, bounds = self._band_for_save(params["band"])
+        self._write_product(params["directory"], params["target"], params["format_name"], array, bounds)
+
+    def export_kmz(self) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.tops_ops import write_kmz
+
+        image = self.workspace.geocoded
+        bounds = self.workspace.geocode_bounds
+        if image is None or bounds is None:
+            if self.workspace.reference_grid is None or self.workspace.precise_orbit is None:
+                raise RuntimeError(
+                    "View as Google Earth KMZ needs a georeferenced grid. "
+                    "Run Range-Doppler Terrain Correction first. Coordinates were not invented."
+                )
+            self.apply_terrain_correction(
+                {
+                    "request": None,
+                    "dem": "WGS84 ellipsoid",
+                    "dem_path": "",
+                    "image_resampling": "BILINEAR_INTERPOLATION",
+                    "mask_elevation": False,
+                    "output_complex": False,
+                    "projection": "WGS84(DD)",
+                }
+            )
+            image = self.workspace.geocoded
+            bounds = self.workspace.geocode_bounds
+        directory = Path.cwd() / "products"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "view.kmz"
+        write_kmz(path, image, bounds)
+        self._log(f"Wrote {path} with a GroundOverlay. The source product was not modified.")
+
+    def _band_for_save(self, band: str):
+        if band == "SLC":
+            if self.workspace.stack is None:
+                raise RuntimeError("No SLC is loaded.")
+            return self.workspace.stack.data, None
+        if band == "Interferogram":
+            if self.workspace.interferograms is None:
+                raise RuntimeError("No interferogram is loaded.")
+            return self.workspace.interferograms, None
+        if band == "Unwrapped phase":
+            if self.workspace.unwrapped is None:
+                raise RuntimeError("No unwrapped phase is loaded.")
+            return self.workspace.unwrapped, None
+        if band == "Displacement":
+            if self.workspace.los_m is None:
+                raise RuntimeError("No displacement is loaded.")
+            return self.workspace.los_m, self.workspace.geocode_bounds
+        if band == "Geocoded":
+            if self.workspace.geocoded is None:
+                raise RuntimeError("No geocoded raster is loaded.")
+            return self.workspace.geocoded, self.workspace.geocode_bounds
+        raise RuntimeError(f"Unknown band {band}.")
+
+    def _write_product(self, directory: str, target: str, format_name: str, array, bounds) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.tops_ops import write_geotiff, write_kmz
+
+        if not str(directory).strip():
+            raise RuntimeError("Choose a directory.")
+        folder = Path(directory)
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = target.strip() or "product"
+        if format_name == "NumPy (.npy)":
+            path = folder / f"{stem}.npy"
+            np.save(path, np.asarray(array))
+        elif format_name == "GeoTIFF":
+            path = folder / f"{stem}.tif"
+            write_geotiff(path, np.asarray(array), bounds)
+        elif format_name == "Google Earth KMZ":
+            if bounds is None:
+                raise RuntimeError("KMZ needs latitude/longitude bounds from terrain correction.")
+            path = folder / f"{stem}.kmz"
+            write_kmz(path, np.asarray(array), bounds)
+        elif format_name == "BEAM-DIMAP":
+            from ai_insar.pipeline.dimap import write_beam_dimap
+
+            path = write_beam_dimap(folder, stem, np.asarray(array), bounds)
+        else:
+            raise RuntimeError(f"{format_name} is not written by this build.")
+        self._log(f"Saved {path.name}. Source files were not modified.")
+
+    def _spatial_shape(self) -> tuple[int, int]:
+        if self.workspace.stack is not None:
+            return int(self.workspace.stack.data.shape[-2]), int(self.workspace.stack.data.shape[-1])
+        grid = self.workspace.reference_grid
+        if grid is not None:
+            return grid.shape
+        return 0, 0
+
+    def _set_coherence_windows(self, range_window: int, azimuth_window: int | None, *, square: bool) -> None:
+        if range_window < 1:
+            raise ValueError("coherence window must be at least 1")
+        self.workspace.config.coherence_window = int(range_window)
+        self.workspace.config.coherence_azimuth_window = None if square else azimuth_window
+        if square:
+            self._log(
+                f"Square Pixel: coherence window {range_window}×{range_window} pixels "
+                "(ground spacing is not applied)."
+            )
+
+    def _apply_topo_choice(
+        self,
+        choice: str,
+        dem_path: str,
+        *,
+        baseline_m: float,
+        slant_range_m: float,
+        incidence_deg: float,
+    ) -> None:
+        if self.workspace.stack is None or self.workspace.interferograms is None:
+            raise RuntimeError("Form interferograms before topographic phase removal.")
+        dem = self._load_dem(choice, dem_path)
+        self.workspace.dem_m = dem
+        self.workspace.topo_baseline_perp_m = float(baseline_m)
+        self.workspace.topo_slant_range_m = float(slant_range_m)
+        self.workspace.topo_incidence_deg = float(incidence_deg)
+        if abs(float(baseline_m)) < 1e-9:
+            self._log(
+                "Topographic phase is 0 because the perpendicular baseline is 0. "
+                "Interferograms are unchanged. Suffix _DInSAR."
             )
             return
         phase = topographic_phase_rad(
-            self.workspace.dem_m,
+            dem,
             wavelength_m=self.workspace.stack.wavelength_m,
-            baseline_perp_m=float(baseline),
-            slant_range_m=float(self.workspace.topo_slant_range_m),
-            incidence_rad=float(np.deg2rad(self.workspace.topo_incidence_deg)),
+            baseline_perp_m=float(baseline_m),
+            slant_range_m=float(slant_range_m),
+            incidence_rad=float(np.deg2rad(incidence_deg)),
         )
         self.workspace.interferograms = apply_topographic_phase(self.workspace.interferograms, phase)
         self.workspace.filtered = None
@@ -750,18 +1886,62 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.velocity_m_yr = None
         self.workspace.mask = None
         self._log(
-            "MAKE TOPO_RA: removed topographic phase "
-            f"(B_perp={baseline:.1f} m, slant range {self.workspace.topo_slant_range_m:.0f} m, "
-            f"incidence {self.workspace.topo_incidence_deg:.1f}°). "
+            "Topographic phase removed "
+            f"(B_perp={baseline_m:.1f} m, slant range {slant_range_m:.0f} m, "
+            f"incidence {incidence_deg:.1f}°). Suffix _DInSAR. "
             "Run Goldstein again before unwrapping."
         )
-        self._preferred_layer = "Interferogram phase"
+
+    def _load_dem(self, choice: str, dem_path: str) -> np.ndarray:
+        if self.workspace.stack is None:
+            raise RuntimeError("Load or generate an SLC stack first.")
+        expected = self.workspace.stack.data.shape[1:]
+        if choice.startswith("Workspace"):
+            if self.workspace.dem_m is None:
+                raise RuntimeError("No DEM is loaded. Choose an external DEM .npy.")
+            dem = np.asarray(self.workspace.dem_m, dtype=np.float64)
+        elif choice.startswith("External"):
+            if not dem_path:
+                raise RuntimeError("Choose an external DEM .npy file.")
+            dem = np.load(dem_path)
+            self._log(f"Loaded DEM from {dem_path}.")
+        else:
+            raise RuntimeError(
+                f"{choice} is not available. Copernicus DEM auto-download is not in this build."
+            )
+        dem = np.asarray(dem, dtype=np.float64)
+        if dem.shape != expected:
+            raise ValueError(f"DEM shape {dem.shape} must match the SLC grid {expected}")
+        return dem
+
+    def _save_request(self, request, array, suffix: str) -> None:
+        if not request.save or array is None:
+            return
+        if getattr(request, "format_name", "NumPy (.npy)") != "NumPy (.npy)":
+            raise RuntimeError(f"{request.format_name} is not written by this build.")
+        path = write_npy_product(request.directory, request.target, suffix, array)
+        self._log(f"Saved {path.name} ({suffix}).")
 
     def run_geocode(self) -> None:
-        """GMTSAR GEOCODE: state that products remain in radar coordinates."""
-        self._log(
-            "GEOCODE: products stay on the radar grid. "
-            "No range-Doppler lookup or lat/lon grid is stored, so export has no map CRS."
+        """Range-Doppler terrain correction when a split window and orbit are loaded."""
+        if self.workspace.reference_grid is None or self.workspace.precise_orbit is None:
+            self._log(
+                "GEOCODE: products stay on the radar grid. "
+                "No split window and orbit are loaded, so no latitude/longitude grid was written."
+            )
+            return
+        self.apply_terrain_correction(
+            {
+                "request": type("R", (), {"save": False, "open_in_app": True, "format_name": "NumPy (.npy)"})(),
+                "dem": "WGS84 ellipsoid",
+                "dem_path": "",
+                "image_resampling": "BILINEAR_INTERPOLATION",
+                "spacing_m": None,
+                "spacing_deg": None,
+                "mask_elevation": False,
+                "output_complex": False,
+                "projection": "WGS84(DD)",
+            }
         )
 
     def run_interferograms(self) -> None:
@@ -831,7 +2011,7 @@ class MainWindow(QtWidgets.QMainWindow):
         goldstein.setObjectName("goldsteinMenu")
         run = goldstein.addAction(f"Run {GOLDSTEIN_LABEL}")
         run.setObjectName("runGoldstein")
-        run.triggered.connect(self._click(self.run_filter, 2))
+        run.triggered.connect(self._click(self.open_goldstein_dialog, 2))
         goldstein.addSeparator()
         for key, label, alpha in GOLDSTEIN_PRESETS:
             item = goldstein.addAction(label)
@@ -845,7 +2025,7 @@ class MainWindow(QtWidgets.QMainWindow):
         coherence.setObjectName("coherenceMenu")
         run_coh = coherence.addAction(f"Run {COHERENCE_LABEL}")
         run_coh.setObjectName("runCoherence")
-        run_coh.triggered.connect(self._click(self.run_coherence, 3))
+        run_coh.triggered.connect(self._click(self.open_coherence_dialog, 3))
         coherence.addSeparator()
         for key, label, window in COHERENCE_PRESETS:
             item = coherence.addAction(label)

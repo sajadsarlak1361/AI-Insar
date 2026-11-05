@@ -25,11 +25,18 @@ COHERENCE_PRESETS: tuple[tuple[str, str, int], ...] = (
 )
 
 
-def coherence_map(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarray:
+def coherence_map(
+    early: np.ndarray,
+    late: np.ndarray,
+    window: int,
+    *,
+    azimuth_window: int | None = None,
+) -> np.ndarray:
     """Coherence of one pair.
 
     ``gamma = |mean(late * conj(early))| / sqrt(mean(|early|^2) * mean(|late|^2))``
-    with a ``window`` by ``window`` boxcar. This uses the SLCs, not the
+    with a boxcar. ``window`` is the range size. ``azimuth_window`` defaults
+    to the same size (square in pixels). This uses the SLCs, not the
     Goldstein-filtered interferogram, so filtering cannot inflate coherence.
     The same product and boxcar are the multilook coherence in the MIT
     InSARdev/edu examples (``NISAR/nisar_numpy.py``, ``Sentinel-1/s1.py``).
@@ -40,15 +47,16 @@ def coherence_map(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarra
         raise ValueError("early and late SLCs must be 2-D and the same shape")
     if not np.iscomplexobj(s1) or not np.iscomplexobj(s2):
         raise ValueError("coherence requires complex SLCs")
-    if int(window) < 1:
-        raise ValueError("window must be at least 1")
-    return _coherence_plane(s1, s2, int(window))
+    size = _window_size(window, azimuth_window)
+    return _coherence_plane(s1, s2, size)
 
 
 def coherence_stack(
     slc: np.ndarray,
     pairs: Sequence[tuple[int, int]],
     window: int,
+    *,
+    azimuth_window: int | None = None,
 ) -> np.ndarray:
     """Coherence for every ``(earlier, later)`` pair. Shape ``(n_pairs, height, width)``."""
     data = np.asarray(slc)
@@ -56,14 +64,23 @@ def coherence_stack(
         raise ValueError("SLC stack must be complex with shape (dates, height, width)")
     if len(pairs) == 0:
         raise ValueError("pairs is empty")
+    size = _window_size(window, azimuth_window)
     out = np.empty((len(pairs), data.shape[1], data.shape[2]), dtype=np.float32)
-    size = int(window)
     for index, (earlier, later) in enumerate(pairs):
         out[index] = _coherence_plane(data[int(earlier)], data[int(later)], size)
     return out
 
 
-def _coherence_plane(early: np.ndarray, late: np.ndarray, window: int) -> np.ndarray:
+def _window_size(window: int, azimuth_window: int | None) -> tuple[int, int]:
+    """Return ``(azimuth, range)`` pixel sizes. Rows are azimuth, columns range."""
+    range_window = int(window)
+    azimuth = range_window if azimuth_window is None else int(azimuth_window)
+    if range_window < 1 or azimuth < 1:
+        raise ValueError("coherence windows must be at least 1")
+    return azimuth, range_window
+
+
+def _coherence_plane(early: np.ndarray, late: np.ndarray, window: int | tuple[int, int]) -> np.ndarray:
     """Boxcar coherence of one SLC pair. Same result as a multilook ratio on a single look grid."""
     product = late * np.conj(early)
     real = uniform_filter(product.real.astype(np.float64), size=window, mode="reflect")
