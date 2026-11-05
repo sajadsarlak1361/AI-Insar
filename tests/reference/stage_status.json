@@ -99,7 +99,14 @@
       "matched": false,
       "displacement_chain": "not valid",
       "unit_correction": "An earlier status stored snap12_block_shifts_s and snap12_applied_azimuth_shift_s and described -0.001511 as seconds (about 0.735 lines). That unit was wrong. The SNAP block file and the applied value are pixels. -0.001511 px is about 3.1 microseconds. The keys are now snap12_block_shifts_px and snap12_applied_azimuth_shift_px.",
-      "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. That window is not one SNAP block. On the full valid-sample overlap, split into the same 10 range blocks, 7 blocks are at or above 0.3. Their unweighted mean is -0.001514 px. SNAP's applied shift is -0.001511 px. The per-block list does not match; block 1 is the first reject here (coherence 0.007) while SNAP records +0.001666 px for that block. A matching mean is not block agreement. Threshold stays 0.3. No displacement product is claimed."
+      "hypotheses_tested_not_accepted": [
+        "Closed-form angle(sum) versus a constant-separation periodogram (max real part, +/-0.02 px): maximum difference 5e-5 px. Not the block mismatch.",
+        "Deramp both master and slave of each look with that look's burst phase: double difference changed by <1e-9 px. A common deramp cancels.",
+        "Replace |ka| by kt≈1733 Hz/s in the spectral separation: SNAP/vector ratios span about -5.4 to 0.46, so one scale cannot match the list.",
+        "Drop the invalid-line margins (20 lines at the start, 19 at the end; overlap 7394:7521 and 7560:7687): block 2 stays -0.00159 px."
+      ],
+      "first_block_divergence": "Block 2, samples 5109:7140, coherence 0.996, vector shift -0.00159 px, periodogram -0.00160 px, SNAP -0.000727 px. The cross phase is stable and is not SNAP's recorded shift. Block 1, samples 3078:5109, coherence 0.007, is rejected at 0.3; SNAP records +0.001666 px.",
+      "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. On the full valid-sample overlap the same 10 range blocks give a mean near SNAP's applied -0.001511 px, and that mean is not acceptance. The threshold stays 0.3. Stages 5-15 are not run. No displacement product is claimed."
     },
     {
       "order": "5-15",
