@@ -118,20 +118,31 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     help_line = ifg.findChild(QLabel, "operatorHelp")
     assert help_line is not None and "conj" in help_line.text() and "_Ifg" in help_line.text()
     assert ifg.findChild(type(ifg.subtract_flat), "ifgSubtractFlatEarth") is not None
-    assert ifg.subtract_flat.isChecked() and not ifg.subtract_flat.isEnabled()
+    assert ifg.subtract_flat.isChecked() and ifg.subtract_flat.isEnabled()
     assert ifg.flat_degree.currentText() == "5"
+    assert ifg.flat_degree.count() == 8
     assert ifg.flat_points.currentText() == "501"
+    assert ifg.flat_points.findText("1001") >= 0
     assert ifg.orbit_degree.currentText() == "3"
+    assert ifg.orbit_degree.count() == 5
     assert not ifg.subtract_topo.isChecked()
+    assert ifg.dem.text() == "Copernicus 30m Global DEM (Auto Download)"
+    assert not ifg.dem.isEnabled()
     assert ifg.output_coherence.isChecked()
     assert ifg.square_pixel.isChecked()
     assert not ifg.coherence_azimuth.isEnabled()
-    assert ifg.coherence_range.value() == 10
-    assert ifg.coherence_azimuth.value() == 2
+    assert ifg.coherence_range.text() == "10"
+    assert ifg.coherence_azimuth.text() == "2"
+    assert "Flat-Earth" in ifg.validate()
+    ifg.subtract_flat.setChecked(False)
     assert ifg.findChild(type(ifg.output_latlon), "ifgOutputLatLon") is not None
     assert "not implemented" in ifg.subtract_flat.toolTip().lower() or "not applied" in ifg.subtract_flat.toolTip().lower()
     assert ifg.validate() == ""
     ifg.save_box.setChecked(True)
+    ifg.target.setText("scene")
+    assert "BEAM-DIMAP" in ifg.validate()
+    ifg.format_box.setCurrentText("NumPy (.npy)")
+    ifg.directory.clear()
     assert "directory" in ifg.validate().lower()
     ifg.close()
 
@@ -180,6 +191,9 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     _prepare(orbit)
     assert "_Orb" in orbit.findChild(QLabel, "operatorHelp").text()
     assert orbit.orbit_type.currentText() == "Sentinel Precise (Auto Download)"
+    assert orbit.orbit_type.count() == 8
+    assert orbit.orbit_type.itemText(2) == "DORIS Preliminary POR (ENVISAT)"
+    assert orbit.orbit_type.findText("DORIS_VOR") < 0
     assert orbit.degree.text() == "3"
     assert not orbit.do_not_fail.isChecked()
     assert orbit.validate() == ""
@@ -227,11 +241,11 @@ def test_dialogs_run_existing_pipeline_stages(qapp, tmp_path: Path):
     _prepare(ifg)
     ifg.output_coherence.setChecked(False)
     ifg.subtract_topo.setChecked(False)
+    ifg.subtract_flat.setChecked(False)
     window.apply_interferogram_params(ifg.parameters())
     assert window.workspace.interferograms is not None
     assert window.workspace.interferograms.shape[0] >= 1
     assert "later × conjugate(earlier)" in window.log.toPlainText()
-    assert "not applied" in window.log.toPlainText().lower()
 
     coh = CoherenceDialog(window, sources=window._source_names())
     _prepare(coh)
@@ -275,6 +289,9 @@ def test_dialogs_run_existing_pipeline_stages(qapp, tmp_path: Path):
     orbit.save_box.setChecked(True)
     orbit.directory.setText(str(tmp_path))
     orbit.target.setText("scene")
+    with pytest.raises(RuntimeError, match="not changed"):
+        window.apply_orbit_params(orbit.parameters())
+    orbit.do_not_fail.setChecked(True)
     window.apply_orbit_params(orbit.parameters())
     stub = tmp_path / "scene_Orb.json"
     assert stub.is_file()

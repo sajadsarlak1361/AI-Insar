@@ -11,6 +11,7 @@ from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
 from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.chain_dialogs import BackGeocodingDialog, EsdDialog, TopsDeburstDialog, TopsSplitDialog
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.operator_dialog import (
     ApplyOrbitDialog,
@@ -40,7 +41,8 @@ from ai_insar.pipeline.engine import (
     run_all,
 )
 from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
-from ai_insar.pipeline.synthetic import generate_demo_stack
+from ai_insar.pipeline.synthetic import SLCStack, generate_demo_stack
+from ai_insar.pipeline.tops import split_swath
 from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe, select_measurement
 from ai_insar.snap_products import PRODUCT_SUFFIX, write_npy_product, write_orbit_stub
 
@@ -389,6 +391,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_filter_menus()
         self._build_unwrap_menus()
         self._build_method_menus()
+        self._build_radar_menu()
 
         view = self.menuBar().addMenu("View")
         for name in _LAYERS:
@@ -771,6 +774,86 @@ class MainWindow(QtWidgets.QMainWindow):
         """Open Topographic Phase Removal and wait for the DEM and baseline."""
         self.open_topo_dialog()
 
+    def _build_radar_menu(self) -> None:
+        """The six SNAP 14 dialogs observed for handwritten steps 1–6."""
+        menu = self.menuBar().addMenu("Radar")
+        menu.setObjectName("radarMenu")
+        actions = (
+            ("S-1 TOPS Split", self.open_split_dialog, "radarTopsSplit"),
+            ("Apply Orbit File", self.open_orbit_dialog, "radarApplyOrbit"),
+            ("S-1 Back Geocoding", self.open_backgeocoding_dialog, "radarBackGeocoding"),
+            ("S-1 Enhanced Spectral Diversity", self.open_esd_dialog, "radarEsd"),
+            ("Interferogram Formation", self.open_interferogram_dialog, "radarInterferogram"),
+            ("S-1 TOPS Deburst", self.open_deburst_dialog, "radarTopsDeburst"),
+        )
+        for label, callback, object_name in actions:
+            item = menu.addAction(label)
+            item.setObjectName(object_name)
+            item.triggered.connect(self._click(callback, None))
+
+    def open_split_dialog(self) -> None:
+        dialog = TopsSplitDialog(self)
+        if self.safe_product is not None:
+            dialog.bind_product(self.safe_product)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_split(dialog.parameters())
+
+    def open_deburst_dialog(self) -> None:
+        dialog = TopsDeburstDialog(self)
+        if self.safe_product is not None:
+            dialog.bind_product(self.safe_product)
+        dialog.exec()
+
+    def open_esd_dialog(self) -> None:
+        dialog = EsdDialog(self, sources=self._source_names())
+        dialog.exec()
+
+    def open_backgeocoding_dialog(self) -> None:
+        dialog = BackGeocodingDialog(self)
+        dialog.exec()
+
+    def apply_split(self, params: dict) -> None:
+        """Read one subswath's burst lines. This does not deburst or coregister."""
+        from pathlib import Path
+
+        from ai_insar.conventions import C_BAND_WAVELENGTH_M, SPEED_OF_LIGHT_M_S
+        from ai_insar.safe import resolve_safe
+        from ai_insar.sentinel import date_from_text
+
+        product = resolve_safe(params["source"])
+        data, measurement, (row, height, width) = split_swath(
+            product,
+            swath=params["swath"],
+            pol=params["polarisation"],
+            burst_first=int(params["burst_first"]),
+            burst_last=int(params["burst_last"]),
+        )
+        if data.ndim != 2:
+            raise RuntimeError(f"TOPS Split returned {data.shape}, expected a 2-D window.")
+        day = date_from_text(product.start_utc) or date_from_text(product.product_id)
+        if day is None:
+            raise RuntimeError(f"{product.product_id} has no acquisition date.")
+        wavelength = C_BAND_WAVELENGTH_M
+        if measurement.radar_frequency:
+            wavelength = SPEED_OF_LIGHT_M_S / float(measurement.radar_frequency)
+        description = (
+            f"TOPS Split {measurement.swath} {measurement.polarisation} "
+            f"bursts {int(params['burst_first'])}–{int(params['burst_last'])}, "
+            f"rows {row}:{row + height}, samples {width}, from {Path(params['source']).name}. "
+            "Burst overlap is still in the lines. This is not a deburst."
+        )
+        self.workspace.stack = SLCStack(
+            data=np.asarray(data, dtype=np.complex64)[None, ...],
+            dates=np.array([day], dtype="datetime64[D]"),
+            wavelength_m=float(wavelength),
+            sensor="Sentinel-1 SLC",
+            description=description,
+        )
+        self.workspace.clear_products()
+        self._log(description)
+        self._preferred_layer = "SLC amplitude"
+
     def open_interferogram_dialog(self) -> None:
         dialog = InterferogramDialog(self, sources=self._source_names())
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -811,6 +894,20 @@ class MainWindow(QtWidgets.QMainWindow):
         request = params["request"]
         for line in request.skipped:
             self._log(line)
+        if params.get("subtract_flat"):
+            raise RuntimeError(
+                "Subtract Flat-Earth Phase is checked. This build does not estimate that polynomial. "
+                "Uncheck it to form later × conjugate(earlier) only."
+            )
+        if params.get("output_flat"):
+            raise RuntimeError("Output Flat Earth Phase is not written by this build.")
+        if params.get("subtract_ramp"):
+            raise RuntimeError("Subtract Residual Ramp (GSLC) is not implemented.")
+        if params.get("subtract_topo"):
+            raise RuntimeError(
+                "Subtract Topographic Phase is checked. The DEM list was not recorded, "
+                "and Copernicus auto-download is not available."
+            )
         self.run_interferograms()
         if params["subtract_topo"]:
             self._apply_topo_choice(
@@ -905,10 +1002,16 @@ class MainWindow(QtWidgets.QMainWindow):
         degree = int(params["polynomial_degree"])
         if degree < 1:
             raise ValueError("Polynomial degree must be at least 1.")
+        if not params["do_not_fail"]:
+            raise RuntimeError(
+                "Apply Orbit File: no orbit-file download is installed. "
+                f"Requested {params['orbit_type']}, polynomial degree {degree}. "
+                "State vectors were not changed."
+            )
         self._log(
-            "Apply Orbit File: orbit files are not downloaded. State vectors were not changed. "
-            f"Requested {params['orbit_type']}, polynomial degree {degree}. "
-            f"Suffix {PRODUCT_SUFFIX['apply_orbit']}."
+            "Apply Orbit File: 'Do not fail if new orbit file is not found' is checked. "
+            "No orbit file was fetched. State vectors were not changed. "
+            f"Requested {params['orbit_type']}, polynomial degree {degree}."
         )
         if not request.save:
             return

@@ -21,6 +21,42 @@ _ORBIT_POLY_NOTE = "Orbit interpolation is not applied. This build uses one perp
 _TILE_NOTE = "DEM tile extension is not implemented."
 _EXTRA_BANDS = "This optional band is not written."
 
+# Rows actually read from the Interferogram Formation Save-as list in the
+# SNAP 14 batch-3 audit. Uncertain spellings and the unscrolled gap are omitted.
+# "NumPy (.npy)" is this application's writer; it was not in that SNAP list.
+OBSERVED_SAVE_FORMATS = (
+    "BEAM-DIMAP",
+    "BMP",
+    "CSV",
+    "ENVI",
+    "GDAL-BMP-WRITER",
+    "GDAL-BT-WRITER",
+    "GDAL-COG-WRITER",
+    "GDAL-GTIFF-WRITER",
+    "GDAL-HFA-WRITER",
+    "GDAL-ILWIS-WRITER",
+    "GDAL-KRO-WRITER",
+    "GDAL-MFF-WRITER",
+    "GDAL-NITF-WRITER",
+    "GDAL-RMF-WRITER",
+    "GDAL-RST-WRITER",
+    "GDAL-SAGA-WRITER",
+    "GDAL-SGI-WRITER",
+    "GIF",
+    "Gamma",
+    "Generic Binary BSQ",
+    "GeoTIFF",
+    "GeoTIFF-BigTIFF",
+    "HDF5",
+    "JP2",
+    "JPEG2000",
+    "JPG",
+    "NetCDF4-BEAM",
+    "NetCDF4-CF",
+    "PNG",
+    "NumPy (.npy)",
+)
+
 
 @dataclass
 class OperatorRequest:
@@ -97,6 +133,12 @@ class OperatorDialog(QtWidgets.QDialog):
         notes: str,
         parent: QtWidgets.QWidget | None = None,
         sources: list[str] | None = None,
+        source_label: str = "Source product:",
+        target_text: str | None = None,
+        directory_text: str = "",
+        formats: tuple[str, ...] | None = None,
+        format_default: str | None = None,
+        seed_workspace_source: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -112,7 +154,19 @@ class OperatorDialog(QtWidgets.QDialog):
 
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setObjectName("operatorTabs")
-        self.tabs.addTab(self._build_io(sources or [], suffix), "I/O Parameters")
+        self.tabs.addTab(
+            self._build_io(
+                sources or [],
+                suffix,
+                source_label=source_label,
+                target_text=target_text,
+                directory_text=directory_text,
+                formats=formats,
+                format_default=format_default,
+                seed_workspace_source=seed_workspace_source,
+            ),
+            "I/O Parameters",
+        )
         self._processing = QtWidgets.QWidget()
         self._processing_layout = QtWidgets.QVBoxLayout(self._processing)
         self.tabs.addTab(self._processing, "Processing Parameters")
@@ -140,7 +194,18 @@ class OperatorDialog(QtWidgets.QDialog):
         buttons.addWidget(close)
         root.addLayout(buttons)
 
-    def _build_io(self, sources: list[str], suffix: str) -> QtWidgets.QWidget:
+    def _build_io(
+        self,
+        sources: list[str],
+        suffix: str,
+        *,
+        source_label: str,
+        target_text: str | None,
+        directory_text: str,
+        formats: tuple[str, ...] | None,
+        format_default: str | None,
+        seed_workspace_source: bool,
+    ) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(page)
         source_row = QtWidgets.QHBoxLayout()
@@ -149,7 +214,7 @@ class OperatorDialog(QtWidgets.QDialog):
         self.source.setEditable(True)
         for name in sources:
             self.source.addItem(name)
-        if self.source.count() == 0:
+        if self.source.count() == 0 and seed_workspace_source:
             self.source.addItem("Workspace SLC stack")
         browse = QtWidgets.QPushButton("…")
         browse.setObjectName("ioSourceBrowse")
@@ -157,29 +222,34 @@ class OperatorDialog(QtWidgets.QDialog):
         browse.clicked.connect(self._browse_source)
         source_row.addWidget(self.source, stretch=1)
         source_row.addWidget(browse)
-        form.addRow("Source product:", source_row)
+        self._source_label = source_label
+        form.addRow(source_label, source_row)
 
-        self.target = QtWidgets.QLineEdit(f"target{suffix}")
+        self.target = QtWidgets.QLineEdit(f"target{suffix}" if target_text is None else target_text)
         self.target.setObjectName("ioTarget")
-        form.addRow("Target product name:", self.target)
+        form.addRow("Name:", self.target)
 
         save_row = QtWidgets.QHBoxLayout()
         self.save_box = QtWidgets.QCheckBox("Save as")
         self.save_box.setObjectName("ioSave")
         self.save_box.setChecked(True)
-        self.format_box = _combo(
-            ("NumPy (.npy)", "BEAM-DIMAP"),
-            "NumPy (.npy)",
-            "ioFormat",
-            {"BEAM-DIMAP": _DIMAP_NOTE},
-        )
-        self.format_box.setToolTip("SNAP's default format is BEAM-DIMAP. This build writes NumPy.")
+        names = formats if formats is not None else ("NumPy (.npy)", "BEAM-DIMAP")
+        current = format_default if format_default is not None else names[0]
+        disabled = {} if formats is not None else {"BEAM-DIMAP": _DIMAP_NOTE}
+        self.format_box = _combo(names, current, "ioFormat", disabled)
+        if formats is not None:
+            self.format_box.setToolTip(
+                "Partial Save-as list read from SNAP 14 Interferogram Formation. "
+                "Uncertain rows were omitted. NumPy (.npy) is this build's writer and was not in that list."
+            )
+        else:
+            self.format_box.setToolTip("SNAP's default format is BEAM-DIMAP. This build writes NumPy.")
         save_row.addWidget(self.save_box)
         save_row.addWidget(self.format_box, stretch=1)
         form.addRow(save_row)
 
         directory_row = QtWidgets.QHBoxLayout()
-        self.directory = QtWidgets.QLineEdit("")
+        self.directory = QtWidgets.QLineEdit(directory_text)
         self.directory.setObjectName("ioDirectory")
         directory_button = QtWidgets.QPushButton("…")
         directory_button.setObjectName("ioDirectoryBrowse")
@@ -188,9 +258,10 @@ class OperatorDialog(QtWidgets.QDialog):
         directory_row.addWidget(directory_button)
         form.addRow("Directory:", directory_row)
 
-        self.open_box = QtWidgets.QCheckBox("Open in AI Insar")
+        self.open_box = QtWidgets.QCheckBox("Open in SNAP 14")
         self.open_box.setObjectName("ioOpen")
         self.open_box.setChecked(True)
+        self.open_box.setToolTip("Keeps the result in this workspace. The label matches the SNAP 14 dialog.")
         form.addRow(self.open_box)
         return page
 
@@ -216,11 +287,14 @@ class OperatorDialog(QtWidgets.QDialog):
     def validate_io(self) -> str:
         if not self.source.currentText().strip():
             return "Select a source product."
-        if not self.target.text().strip():
-            return "Enter a target product name."
         if self.save_box.isChecked():
+            if not self.target.text().strip():
+                return "Enter a target product name."
             if self.format_box.currentText() != "NumPy (.npy)":
-                return _DIMAP_NOTE
+                return (
+                    f"{self.format_box.currentText()} is not written by this build. "
+                    "Choose NumPy (.npy), or uncheck Save as."
+                )
             if not self.directory.text().strip():
                 return "Choose a directory, or uncheck Save as."
         return ""
@@ -247,7 +321,7 @@ class OperatorDialog(QtWidgets.QDialog):
 
 
 class InterferogramDialog(OperatorDialog):
-    """Interferogram Formation. Flat-earth controls are shown and disabled."""
+    """Interferogram Formation, using the controls recorded in the SNAP 14 batch-3 audit."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None, *, sources: list[str] | None = None) -> None:
         super().__init__(
@@ -258,53 +332,47 @@ class InterferogramDialog(OperatorDialog):
             suffix=PRODUCT_SUFFIX["interferogram"],
             object_name="interferogramDialog",
             notes=(
-                "Flat-earth subtraction, the residual ramp, Copernicus DEM download, "
-                "tile extension, and the optional flat-earth, elevation, and lat/lon bands "
-                "are disabled. Interferograms are later × conjugate(earlier)."
+                "SNAP 14 batch 3: Subtract Flat-Earth Phase is checked. "
+                "This build does not estimate that polynomial, so Run is refused while it stays checked. "
+                "Uncheck it to form later × conjugate(earlier) only. "
+                "The DEM list was not opened while Subtract Topographic Phase was unchecked."
             ),
+            source_label="Source product:",
+            target_text="",
+            directory_text="/home/box",
+            formats=OBSERVED_SAVE_FORMATS,
+            format_default="BEAM-DIMAP",
         )
         form = QtWidgets.QFormLayout()
-        self.subtract_flat = QtWidgets.QCheckBox('Subtract Flat-Earth Phase')
+        self.subtract_flat = QtWidgets.QCheckBox("Subtract Flat-Earth Phase")
         self.subtract_flat.setObjectName("ifgSubtractFlatEarth")
         self.subtract_flat.setChecked(True)
-        _disable(self.subtract_flat, _FLAT_NOTE)
-        self.flat_degree = _editable(("3", "4", "5", "6", "7"), "5", "ifgFlatDegree")
-        _disable(self.flat_degree, _FLAT_NOTE)
-        self.flat_points = _editable(("301", "401", "501", "601", "701"), "501", "ifgFlatPoints")
-        _disable(self.flat_points, _FLAT_NOTE)
-        self.orbit_degree = _editable(("2", "3", "4", "5"), "3", "ifgOrbitDegree")
-        _disable(self.orbit_degree, _ORBIT_POLY_NOTE)
+        self.subtract_flat.setToolTip(_FLAT_NOTE)
+        self.flat_degree = _combo(tuple(str(value) for value in range(1, 9)), "5", "ifgFlatDegree")
+        self.flat_points = _combo(
+            ("301", "401", "501", "601", "701", "801", "901", "1001"),
+            "501",
+            "ifgFlatPoints",
+        )
+        self.orbit_degree = _combo(tuple(str(value) for value in range(1, 6)), "3", "ifgOrbitDegree")
         self.output_flat = QtWidgets.QCheckBox("Output Flat Earth Phase")
         self.output_flat.setObjectName("ifgOutputFlatEarth")
-        _disable(self.output_flat, _EXTRA_BANDS)
         self.subtract_topo = QtWidgets.QCheckBox("Subtract Topographic Phase")
         self.subtract_topo.setObjectName("ifgSubtractTopo")
-        self.subtract_topo.setToolTip("Uses the DEM and the workspace perpendicular baseline.")
         self.subtract_ramp = QtWidgets.QCheckBox("Subtract Residual Ramp (GSLC)")
         self.subtract_ramp.setObjectName("ifgSubtractRamp")
-        _disable(self.subtract_ramp, "Residual GSLC ramp removal is not implemented.")
-        self.dem = _combo(
-            (
-                "Workspace DEM (.npy)",
-                "External DEM (.npy)",
-                "Copernicus 30m Global DEM (Auto Download)",
-            ),
-            "Workspace DEM (.npy)",
-            "ifgDem",
-            {"Copernicus 30m Global DEM (Auto Download)": _COPERNICUS_NOTE},
+        self.dem = QtWidgets.QLineEdit("Copernicus 30m Global DEM (Auto Download)")
+        self.dem.setObjectName("ifgDem")
+        self.dem.setReadOnly(True)
+        _disable(
+            self.dem,
+            "Shown while Subtract Topographic Phase is unchecked. "
+            "The SNAP 14 audit did not open this list, so options are not recorded.",
         )
-        self.dem_path = QtWidgets.QLineEdit("")
-        self.dem_path.setObjectName("ifgDemPath")
-        self.dem_path.setPlaceholderText("External DEM .npy, same shape as the SLC grid")
-        dem_row = QtWidgets.QHBoxLayout()
-        dem_row.addWidget(self.dem, stretch=1)
-        browse = QtWidgets.QPushButton("…")
-        browse.setObjectName("ifgDemBrowse")
-        browse.clicked.connect(self._browse_dem)
-        dem_row.addWidget(self.dem_path, stretch=1)
-        dem_row.addWidget(browse)
-        self.tile = _editable(("50", "100", "150"), "100", "ifgTile")
-        _disable(self.tile, _TILE_NOTE)
+        self.tile = QtWidgets.QLineEdit("100")
+        self.tile.setObjectName("ifgTile")
+        self.tile.setReadOnly(True)
+        _disable(self.tile, "Shown as 100 and not interactive while Subtract Topographic Phase is unchecked.")
         self.output_topo = QtWidgets.QCheckBox("Output Topographic Phase")
         self.output_topo.setObjectName("ifgOutputTopo")
         _disable(self.output_topo, _EXTRA_BANDS)
@@ -325,12 +393,13 @@ class InterferogramDialog(OperatorDialog):
         )
         self.independent = QtWidgets.QCheckBox("Independent Window Sizes")
         self.independent.setObjectName("ifgIndependentWindows")
-        self.coherence_range = _spin(10, 1, 99, "ifgCohRange")
-        self.coherence_azimuth = _spin(2, 1, 99, "ifgCohAzimuth")
+        self.coherence_range = QtWidgets.QLineEdit("10")
+        self.coherence_range.setObjectName("ifgCohRange")
+        self.coherence_azimuth = QtWidgets.QLineEdit("2")
+        self.coherence_azimuth.setObjectName("ifgCohAzimuth")
         self.square_pixel.toggled.connect(self._on_square)
         self.independent.toggled.connect(self._on_independent)
         self.subtract_topo.toggled.connect(self._sync_dem)
-        self.dem.currentTextChanged.connect(lambda _text: self._sync_dem(self.subtract_topo.isChecked()))
         self._on_square(True)
         self._sync_dem(False)
 
@@ -341,7 +410,7 @@ class InterferogramDialog(OperatorDialog):
         form.addRow(self.output_flat)
         form.addRow(self.subtract_topo)
         form.addRow(self.subtract_ramp)
-        form.addRow("Digital Elevation Model", dem_row)
+        form.addRow("Digital Elevation Model", self.dem)
         form.addRow("Tile Extension [%]", self.tile)
         form.addRow(self.output_topo)
         form.addRow(self.output_elevation)
@@ -353,16 +422,9 @@ class InterferogramDialog(OperatorDialog):
         form.addRow("Coherence Azimuth Window Size", self.coherence_azimuth)
         self.add_processing(form)
 
-    def _browse_dem(self) -> None:
-        path, _selected = QtWidgets.QFileDialog.getOpenFileName(self, "DEM", "", "NumPy DEM (*.npy)")
-        if path:
-            self.dem.setCurrentText("External DEM (.npy)")
-            self.dem_path.setText(path)
-            self.subtract_topo.setChecked(True)
-
     def _sync_dem(self, checked: bool) -> None:
-        self.dem.setEnabled(bool(checked))
-        self.dem_path.setEnabled(bool(checked) and self.dem.currentText().startswith("External"))
+        # The audit did not toggle Subtract Topographic Phase, so the DEM list stays closed.
+        del checked
 
     def _on_square(self, checked: bool) -> None:
         if checked:
@@ -382,30 +444,48 @@ class InterferogramDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        if self.coherence_range.value() < 1:
-            return "Coherence range window must be at least 1."
-        if self.subtract_topo.isChecked() and self.dem.currentText().startswith("Copernicus"):
-            return _COPERNICUS_NOTE
-        if self.subtract_topo.isChecked() and self.dem.currentText().startswith("External") and not self.dem_path.text().strip():
-            return "Choose an external DEM .npy, or pick Workspace DEM."
+        if self.subtract_flat.isChecked():
+            return (
+                "Subtract Flat-Earth Phase is checked. This build does not estimate that polynomial. "
+                "Uncheck it to form later × conjugate(earlier) only."
+            )
+        if self.output_flat.isChecked():
+            return "Output Flat Earth Phase is not written by this build."
+        if self.subtract_ramp.isChecked():
+            return "Subtract Residual Ramp (GSLC) is not implemented."
+        if self.subtract_topo.isChecked():
+            return (
+                "Subtract Topographic Phase is checked. The DEM list was not recorded in the SNAP 14 audit, "
+                "and Copernicus auto-download is not available."
+            )
+        try:
+            if int(self.coherence_range.text().strip()) < 1:
+                return "Coherence range window must be at least 1."
+        except ValueError:
+            return "Coherence range window must be an integer."
+        if not self.square_pixel.isChecked():
+            try:
+                if int(self.coherence_azimuth.text().strip()) < 1:
+                    return "Coherence azimuth window must be at least 1."
+            except ValueError:
+                return "Coherence azimuth window must be an integer."
         return ""
 
     def parameters(self) -> dict:
-        request = self.io_request(
-            skipped=(
-                "Subtract flat-earth phase is not applied.",
-                "Residual ramp removal is not applied.",
-            )
-        )
+        request = self.io_request()
+        azimuth = self.coherence_azimuth.text().strip()
         return {
             "request": request,
+            "subtract_flat": self.subtract_flat.isChecked(),
             "subtract_topo": self.subtract_topo.isChecked(),
-            "dem_choice": self.dem.currentText(),
-            "dem_path": self.dem_path.text().strip(),
+            "subtract_ramp": self.subtract_ramp.isChecked(),
+            "output_flat": self.output_flat.isChecked(),
+            "dem_choice": self.dem.text(),
+            "dem_path": "",
             "output_coherence": self.output_coherence.isChecked(),
             "square_pixel": self.square_pixel.isChecked(),
-            "coherence_range": int(self.coherence_range.value()),
-            "coherence_azimuth": int(self.coherence_azimuth.value()),
+            "coherence_range": int(self.coherence_range.text().strip() or "0"),
+            "coherence_azimuth": int(azimuth or "0"),
         }
 
 
@@ -712,22 +792,27 @@ class ApplyOrbitDialog(OperatorDialog):
             suffix=PRODUCT_SUFFIX["apply_orbit"],
             object_name="applyOrbitDialog",
             notes=(
-                "Orbit files are not downloaded in this build. "
-                "Run checks the orbit type and polynomial degree, then leaves state vectors unchanged."
+                "SNAP 14 batch 3 recorded these eight orbit types. "
+                "No orbit-file download is installed. Run fails unless "
+                "'Do not fail if new orbit file is not found' is checked, and even then state vectors stay as they are."
             ),
+            source_label="source:",
+            target_text="",
+            directory_text="/home/box",
+            formats=OBSERVED_SAVE_FORMATS,
+            format_default="BEAM-DIMAP",
         )
         form = QtWidgets.QFormLayout()
         self.orbit_type = _combo(
             (
                 "Sentinel Precise (Auto Download)",
                 "Sentinel Restituted (Auto Download)",
-                "DORIS_VOR",
-                "DORIS_POR",
-                "DELFT_PRECISE_ENVISAT",
-                "DELFT_PRECISE_ERS_1",
-                "DELFT_PRECISE_ERS_2",
-                "PRARE_PRECISE_ERS_1",
-                "PRARE_PRECISE_ERS_2",
+                "DORIS Preliminary POR (ENVISAT)",
+                "DORIS Precise VOR (ENVISAT) (Auto Download)",
+                "DELFT Precise (ENVISAT, ERS1&2) (Auto Download)",
+                "PRARE Precise (ERS1&2) (Auto Download)",
+                "Kompsat5 Precise",
+                "Biomass Precise (MAAP) (Auto Download)",
             ),
             "Sentinel Precise (Auto Download)",
             "orbitType",
