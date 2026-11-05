@@ -12,6 +12,13 @@ from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
+from ai_insar.gui.operator_dialog import (
+    ApplyOrbitDialog,
+    CoherenceDialog,
+    GoldsteinDialog,
+    InterferogramDialog,
+    TopoPhaseDialog,
+)
 from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
 from ai_insar.gui.safe_stack_dialog import SafeStackDialog
 from ai_insar.gui.settings import SettingsDialog
@@ -21,6 +28,7 @@ from ai_insar.io_stack import load_slc, save_products
 from ai_insar.pipeline.align import align_slc_stack
 from ai_insar.pipeline.coherence import COHERENCE_LABEL, COHERENCE_PRESETS, COHERENCE_SUMMARY
 from ai_insar.pipeline.topo import apply_topographic_phase, topographic_phase_rad
+from ai_insar.pipeline.interferogram import form_interferograms
 from ai_insar.pipeline.engine import (
     Workspace,
     compute_coherence,
@@ -34,6 +42,7 @@ from ai_insar.pipeline.engine import (
 from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
 from ai_insar.pipeline.synthetic import generate_demo_stack
 from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe, select_measurement
+from ai_insar.snap_products import PRODUCT_SUFFIX, write_npy_product, write_orbit_stub
 
 # Zip is the primary File → Open choice. A manifest is an optional extra.
 SAFE_OPEN_FILTER = "Sentinel-1 SAFE zip (*.zip);;Sentinel-1 manifest (manifest.safe)"
@@ -114,12 +123,16 @@ QPushButton#runAll {
     text-align: center;
 }
 QPushButton#runAll:hover { background: #3d7cf0; }
-QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QTableWidget {
     background: #12171f;
     border: 1px solid #3c4a63;
     border-radius: 4px;
     padding: 4px;
+    color: #e7edf5;
 }
+QHeaderView::section { background: #1b212c; color: #e7edf5; padding: 4px; }
+QTabBar::tab { background: #2a3344; color: #e7edf5; padding: 6px 10px; }
+QTabBar::tab:selected { background: #2d6cdf; }
 QPlainTextEdit { font-family: monospace; color: #d5deea; }
 QMenuBar { background: #151a23; }
 QMenuBar::item:selected { background: #2d6cdf; }
@@ -301,7 +314,8 @@ class MainWindow(QtWidgets.QMainWindow):
         open_stack = QtGui.QAction("Open SAFE stack…", self)
         open_stack.setObjectName("openSafeStackAction")
         open_stack.setToolTip(
-            "Multi-select Sentinel-1 SAFE zips. They are not unzipped. "
+            "Add several Sentinel-1 SAFE folders or .zip files. "
+            "The list shows file name, type, acquisition, track, and orbit. "
             "One crop, swath, and polarisation become a time-sorted complex64 stack."
         )
         open_stack.triggered.connect(self._click(self.open_safe_stack, None))
@@ -339,7 +353,7 @@ class MainWindow(QtWidgets.QMainWindow):
         gmtsar_steps = (
             ("PREPROCESS", self.run_preprocess, 0, "pipelinePreprocess"),
             ("ALIGN SLC", self.run_align, 0, "pipelineAlign"),
-            ("MAKE TOPO_RA", self.run_topo, 1, "pipelineTopo"),
+            ("MAKE TOPO_RA", self.open_topo_dialog, 1, "pipelineTopo"),
             ("MAKE INTERFEROGRAMS", self.run_make_interferograms, 1, "pipelineInterferograms"),
             ("UNWRAP PHASE", self.run_unwrap, 4, "pipelineUnwrap"),
             ("GEOCODE", self.run_geocode, None, "pipelineGeocode"),
@@ -348,9 +362,12 @@ class MainWindow(QtWidgets.QMainWindow):
             item = pipeline.addAction(label)
             item.setObjectName(object_name)
             item.triggered.connect(self._click(action, index))
+        apply_orbit = pipeline.addAction("Apply Orbit File…")
+        apply_orbit.setObjectName("applyOrbitAction")
+        apply_orbit.triggered.connect(self._click(self.open_orbit_dialog, None))
         pipeline.addSeparator()
         steps = (
-            ("Interferogram", self.run_interferograms, 1),
+            ("Interferogram", self.open_interferogram_dialog, 1),
             ("Goldstein filter", self.run_filter, 2),
             ("Coherence", self.run_coherence, 3),
             ("Unwrap", self.run_unwrap, 4),
@@ -359,6 +376,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         for label, action, index in steps:
             item = pipeline.addAction(label)
+            if label == "Interferogram":
+                item.setObjectName("interferogramFormationAction")
             item.triggered.connect(self._click(action, index))
         pipeline.addSeparator()
         run_all = pipeline.addAction("Run all stages")
@@ -446,36 +465,75 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
 
+    def _opened_safe_paths(self) -> list:
+        if self.safe_product is None:
+            return []
+        return [self.safe_product.root]
+
+    def _source_names(self) -> list[str]:
+        names: list[str] = []
+        if self.workspace.stack is not None:
+            names.append(f"Workspace SLC stack {self.workspace.stack.data.shape}")
+        if self.safe_product is not None:
+            names.append(self.safe_product.product_id)
+        return names
+
     def open_safe_product(self) -> None:
-        path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Open Sentinel-1 SAFE zip",
             "",
             SAFE_OPEN_FILTER,
         )
-        if not path:
+        if not paths:
             return
-        self.open_safe_path(path)
+        if len(paths) == 1:
+            self.open_safe_path(paths[0])
+            return
+        dialog = SafeStackDialog(
+            self,
+            n_files=len(paths),
+            initial_paths=paths,
+            opened_paths=self._opened_safe_paths,
+        )
+        self._log(dialog.product_set.summary())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self.open_safe_path(paths[0])
+            return
+        self.load_from_product_set(dialog)
 
     def open_safe_folder(self) -> None:
         directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Open SAFE folder")
         if not directory:
             return
-        self.open_safe_path(directory)
+        dialog = SafeStackDialog(
+            self,
+            n_files=1,
+            initial_paths=[directory],
+            opened_paths=self._opened_safe_paths,
+        )
+        dialog.setWindowTitle("Open SAFE folder")
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self.open_safe_path(directory)
+            return
+        self.load_from_product_set(dialog)
 
     def open_safe_stack(self) -> None:
-        """Multi-select SAFE zips and build one time-sorted complex64 stack."""
-        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "Open SAFE stack",
-            "",
-            "Sentinel-1 SAFE zip (*.zip)",
-        )
-        if not paths:
-            return
-        dialog = SafeStackDialog(self, n_files=len(paths))
+        """List SAFE folders and zips, then build one time-sorted complex64 stack."""
+        dialog = SafeStackDialog(self, n_files=0, opened_paths=self._opened_safe_paths)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
+        self.load_from_product_set(dialog)
+
+    def load_from_product_set(self, dialog: SafeStackDialog) -> None:
+        """Load the products listed in the dialog and write that list to the log."""
+        paths = dialog.paths()
+        if not paths:
+            raise RuntimeError("ProductSet-Reader: please add a source product.")
+        if dialog.resampling.currentText() != "NONE":
+            raise RuntimeError("InSAR requires Resampling Type NONE.")
+        self._log(dialog.product_set.summary())
+        self._product_status = f"{len(paths)} Products"
         self.load_safe_stack(
             paths,
             swath=dialog.swath(),
@@ -506,7 +564,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         files = [Path(path) for path in paths]
         dialog = QtWidgets.QProgressDialog(
-            "Reading SAFE zips…",
+            "Reading SAFE products…",
             "Cancel",
             0,
             max(len(files) * 2, 1),
@@ -551,7 +609,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.dem_m = None
         self.workspace.clear_products()
         self._log(
-            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} zip(s). "
+            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} product(s). "
             f"{stack.description}"
         )
         self._preferred_layer = "SLC amplitude"
@@ -695,53 +753,203 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_coherence()
 
     def run_topo(self) -> None:
-        """GMTSAR MAKE TOPO_RA: optional DEM phase, unchanged when inputs are missing."""
-        if self.workspace.stack is None or self.workspace.interferograms is None:
-            raise RuntimeError("Form interferograms before MAKE TOPO_RA.")
-        if self.workspace.dem_m is None:
-            path, _selected = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                "MAKE TOPO_RA — DEM heights (.npy)",
-                "",
-                "NumPy DEM (*.npy)",
-            )
-            if not path:
-                self._log(
-                    "MAKE TOPO_RA: no DEM loaded. Topographic phase was not removed. "
-                    "Interferograms are unchanged."
-                )
-                return
-            dem = np.load(path)
-            expected = self.workspace.stack.data.shape[1:]
-            if dem.shape != expected:
-                raise ValueError(f"DEM shape {dem.shape} must match the SLC grid {expected}")
-            self.workspace.dem_m = np.asarray(dem, dtype=np.float64)
-            self._log(f"MAKE TOPO_RA: loaded DEM {self.workspace.dem_m.shape} from {path}.")
-        baseline, accepted = QtWidgets.QInputDialog.getDouble(
-            self,
-            "MAKE TOPO_RA",
-            "Perpendicular baseline (meters). 0 leaves the interferogram unchanged.",
-            float(self.workspace.topo_baseline_perp_m),
-            -5000.0,
-            5000.0,
-            1,
-        )
-        if not accepted:
-            self._log("MAKE TOPO_RA: cancelled. Interferograms are unchanged.")
+        """Open Topographic Phase Removal and wait for the DEM and baseline."""
+        self.open_topo_dialog()
+
+    def open_interferogram_dialog(self) -> None:
+        dialog = InterferogramDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        self.workspace.topo_baseline_perp_m = float(baseline)
-        if abs(float(baseline)) < 1e-9:
+        self.apply_interferogram_params(dialog.parameters())
+
+    def open_coherence_dialog(self) -> None:
+        dialog = CoherenceDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_coherence_params(dialog.parameters())
+
+    def open_topo_dialog(self) -> None:
+        dialog = TopoPhaseDialog(
+            self,
+            sources=self._source_names(),
+            baseline_m=float(self.workspace.topo_baseline_perp_m),
+            slant_range_m=float(self.workspace.topo_slant_range_m),
+            incidence_deg=float(self.workspace.topo_incidence_deg),
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_topo_params(dialog.parameters())
+
+    def open_goldstein_dialog(self) -> None:
+        dialog = GoldsteinDialog(self, sources=self._source_names(), config=self.workspace.config)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_goldstein_params(dialog.parameters())
+
+    def open_orbit_dialog(self) -> None:
+        dialog = ApplyOrbitDialog(self, sources=self._source_names())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_orbit_params(dialog.parameters())
+
+    def apply_interferogram_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        self.run_interferograms()
+        if params["subtract_topo"]:
+            self._apply_topo_choice(
+                params["dem_choice"],
+                params["dem_path"],
+                baseline_m=float(self.workspace.topo_baseline_perp_m),
+                slant_range_m=float(self.workspace.topo_slant_range_m),
+                incidence_deg=float(self.workspace.topo_incidence_deg),
+            )
+        if params["output_coherence"]:
+            self._set_coherence_windows(
+                int(params["coherence_range"]),
+                None if params["square_pixel"] else int(params["coherence_azimuth"]),
+                square=bool(params["square_pixel"]),
+            )
+            self.run_coherence()
+        if request.open_in_app:
+            self._preferred_layer = "Coherence" if params["output_coherence"] else "Interferogram phase"
+        self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["interferogram"])
+        if params["output_coherence"] and request.save and self.workspace.coherence is not None:
+            self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
+
+    def apply_coherence_params(self, params: dict) -> None:
+        if self.workspace.stack is None or self.workspace.pairs is None:
+            raise RuntimeError("Form interferograms before estimating coherence.")
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        self._set_coherence_windows(
+            int(params["coherence_range"]),
+            None if params["square_pixel"] else int(params["coherence_azimuth"]),
+            square=bool(params["square_pixel"]),
+        )
+        if params["single_reference"]:
+            pairs = [(0, later) for later in range(1, self.workspace.stack.n_dates)]
+            if pairs != list(self.workspace.pairs):
+                self.workspace.pairs = pairs
+                self.workspace.interferograms = form_interferograms(self.workspace.stack.data, pairs)
+                self.workspace.filtered = None
+                self.workspace.unwrapped = None
+                self.workspace.los_m = None
+                self.workspace.velocity_m_yr = None
+                self.workspace.mask = None
+                self._log(
+                    "Single reference: pairs are date 0 with each later date. "
+                    "Interferograms were recomputed."
+                )
+        self.run_coherence()
+        if request.open_in_app:
+            self._preferred_layer = "Coherence"
+        self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
+
+    def apply_goldstein_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        alpha = float(params["alpha"])
+        fft_size = int(params["fft_size"])
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("alpha must be between 0 and 1")
+        if fft_size < 8:
+            raise ValueError("FFT size must be at least 8")
+        self.workspace.config.goldstein_alpha = alpha
+        self.workspace.config.goldstein_window = fft_size
+        self.workspace.config.goldstein_spectrum_smooth = int(params["window_size"])
+        self._log(
+            f"Goldstein parameters: alpha={alpha:.2f}, FFT size={fft_size}, "
+            f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
+        )
+        self.run_filter()
+        if request.open_in_app:
+            self._preferred_layer = "Filtered phase"
+        self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+
+    def apply_topo_params(self, params: dict) -> None:
+        request = params["request"]
+        for line in request.skipped:
+            self._log(line)
+        self._apply_topo_choice(
+            params["dem_choice"],
+            params["dem_path"],
+            baseline_m=float(params["baseline_m"]),
+            slant_range_m=float(params["slant_range_m"]),
+            incidence_deg=float(params["incidence_deg"]),
+        )
+        if request.open_in_app:
+            self._preferred_layer = "Interferogram phase"
+        self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["topo"])
+
+    def apply_orbit_params(self, params: dict) -> None:
+        request = params["request"]
+        degree = int(params["polynomial_degree"])
+        if degree < 1:
+            raise ValueError("Polynomial degree must be at least 1.")
+        self._log(
+            "Apply Orbit File: orbit files are not downloaded. State vectors were not changed. "
+            f"Requested {params['orbit_type']}, polynomial degree {degree}. "
+            f"Suffix {PRODUCT_SUFFIX['apply_orbit']}."
+        )
+        if not request.save:
+            return
+        path = write_orbit_stub(
+            request.directory,
+            request.target,
+            {
+                "applied": False,
+                "reason": "Orbit files are not downloaded in this build.",
+                "orbit_type": params["orbit_type"],
+                "polynomial_degree": degree,
+                "do_not_fail": bool(params["do_not_fail"]),
+                "source": params.get("source", ""),
+            },
+        )
+        self._log(f"Saved {path.name} ({PRODUCT_SUFFIX['apply_orbit']}).")
+
+    def _set_coherence_windows(self, range_window: int, azimuth_window: int | None, *, square: bool) -> None:
+        if range_window < 1:
+            raise ValueError("coherence window must be at least 1")
+        self.workspace.config.coherence_window = int(range_window)
+        self.workspace.config.coherence_azimuth_window = None if square else azimuth_window
+        if square:
             self._log(
-                "MAKE TOPO_RA: perpendicular baseline is 0, so topographic phase is 0. "
-                "Interferograms are unchanged."
+                f"Square Pixel: coherence window {range_window}×{range_window} pixels "
+                "(ground spacing is not applied)."
+            )
+
+    def _apply_topo_choice(
+        self,
+        choice: str,
+        dem_path: str,
+        *,
+        baseline_m: float,
+        slant_range_m: float,
+        incidence_deg: float,
+    ) -> None:
+        if self.workspace.stack is None or self.workspace.interferograms is None:
+            raise RuntimeError("Form interferograms before topographic phase removal.")
+        dem = self._load_dem(choice, dem_path)
+        self.workspace.dem_m = dem
+        self.workspace.topo_baseline_perp_m = float(baseline_m)
+        self.workspace.topo_slant_range_m = float(slant_range_m)
+        self.workspace.topo_incidence_deg = float(incidence_deg)
+        if abs(float(baseline_m)) < 1e-9:
+            self._log(
+                "Topographic phase is 0 because the perpendicular baseline is 0. "
+                "Interferograms are unchanged. Suffix _DInSAR."
             )
             return
         phase = topographic_phase_rad(
-            self.workspace.dem_m,
+            dem,
             wavelength_m=self.workspace.stack.wavelength_m,
-            baseline_perp_m=float(baseline),
-            slant_range_m=float(self.workspace.topo_slant_range_m),
-            incidence_rad=float(np.deg2rad(self.workspace.topo_incidence_deg)),
+            baseline_perp_m=float(baseline_m),
+            slant_range_m=float(slant_range_m),
+            incidence_rad=float(np.deg2rad(incidence_deg)),
         )
         self.workspace.interferograms = apply_topographic_phase(self.workspace.interferograms, phase)
         self.workspace.filtered = None
@@ -750,12 +958,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.velocity_m_yr = None
         self.workspace.mask = None
         self._log(
-            "MAKE TOPO_RA: removed topographic phase "
-            f"(B_perp={baseline:.1f} m, slant range {self.workspace.topo_slant_range_m:.0f} m, "
-            f"incidence {self.workspace.topo_incidence_deg:.1f}°). "
+            "Topographic phase removed "
+            f"(B_perp={baseline_m:.1f} m, slant range {slant_range_m:.0f} m, "
+            f"incidence {incidence_deg:.1f}°). Suffix _DInSAR. "
             "Run Goldstein again before unwrapping."
         )
-        self._preferred_layer = "Interferogram phase"
+
+    def _load_dem(self, choice: str, dem_path: str) -> np.ndarray:
+        if self.workspace.stack is None:
+            raise RuntimeError("Load or generate an SLC stack first.")
+        expected = self.workspace.stack.data.shape[1:]
+        if choice.startswith("Workspace"):
+            if self.workspace.dem_m is None:
+                raise RuntimeError("No DEM is loaded. Choose an external DEM .npy.")
+            dem = np.asarray(self.workspace.dem_m, dtype=np.float64)
+        elif choice.startswith("External"):
+            if not dem_path:
+                raise RuntimeError("Choose an external DEM .npy file.")
+            dem = np.load(dem_path)
+            self._log(f"Loaded DEM from {dem_path}.")
+        else:
+            raise RuntimeError(
+                f"{choice} is not available. Copernicus DEM auto-download is not in this build."
+            )
+        dem = np.asarray(dem, dtype=np.float64)
+        if dem.shape != expected:
+            raise ValueError(f"DEM shape {dem.shape} must match the SLC grid {expected}")
+        return dem
+
+    def _save_request(self, request, array, suffix: str) -> None:
+        if not request.save or array is None:
+            return
+        path = write_npy_product(request.directory, request.target, suffix, array)
+        self._log(f"Saved {path.name} ({suffix}).")
 
     def run_geocode(self) -> None:
         """GMTSAR GEOCODE: state that products remain in radar coordinates."""
@@ -831,7 +1066,7 @@ class MainWindow(QtWidgets.QMainWindow):
         goldstein.setObjectName("goldsteinMenu")
         run = goldstein.addAction(f"Run {GOLDSTEIN_LABEL}")
         run.setObjectName("runGoldstein")
-        run.triggered.connect(self._click(self.run_filter, 2))
+        run.triggered.connect(self._click(self.open_goldstein_dialog, 2))
         goldstein.addSeparator()
         for key, label, alpha in GOLDSTEIN_PRESETS:
             item = goldstein.addAction(label)
@@ -845,7 +1080,7 @@ class MainWindow(QtWidgets.QMainWindow):
         coherence.setObjectName("coherenceMenu")
         run_coh = coherence.addAction(f"Run {COHERENCE_LABEL}")
         run_coh.setObjectName("runCoherence")
-        run_coh.triggered.connect(self._click(self.run_coherence, 3))
+        run_coh.triggered.connect(self._click(self.open_coherence_dialog, 3))
         coherence.addSeparator()
         for key, label, window in COHERENCE_PRESETS:
             item = coherence.addAction(label)

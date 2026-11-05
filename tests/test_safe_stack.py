@@ -64,6 +64,21 @@ def test_many_zips_sort_and_form_later_conj_earlier(tmp_path):
     assert np.allclose(workspace.interferograms[0], formed[0])
 
 
+def test_safe_folder_is_read_with_the_same_crop(tmp_path):
+    import zipfile
+
+    archive = dated_safe_zip(tmp_path, "20210401", 1 + 2j)
+    extracted = tmp_path / "unpacked"
+    extracted.mkdir()
+    with zipfile.ZipFile(archive) as bundle:
+        bundle.extractall(extracted)
+    folder = next(extracted.glob("*.SAFE"))
+    stack = stack_safe_zips([folder], swath="IW1", pol="VV", height=2, width=2)
+    assert stack.data.shape == (1, 2, 2)
+    assert stack.data.dtype == np.complex64
+    assert np.allclose(stack.data[0], 1 + 2j)
+
+
 def test_progress_cancel_and_rejected_inputs(tmp_path):
     early = dated_safe_zip(tmp_path, "20210401", 1 + 0j)
     with pytest.raises(SafeStackCancelled):

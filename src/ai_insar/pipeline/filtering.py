@@ -114,6 +114,7 @@ def filter_stack(
     alpha: float = 0.5,
     window: int = 32,
     overlap: float = 0.5,
+    spectrum_smooth: int = 3,
     backend: str | None = None,
 ) -> np.ndarray:
     """Apply :func:`goldstein_filter` to each interferogram in a stack."""
@@ -127,6 +128,7 @@ def filter_stack(
             alpha=alpha,
             window=window,
             overlap=overlap,
+            spectrum_smooth=spectrum_smooth,
             backend=backend,
         )
     return out

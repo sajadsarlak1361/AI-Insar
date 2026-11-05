@@ -1,23 +1,103 @@
-"""Crop, swath, and polarisation for a multi-zip SAFE stack."""
+"""Open several SAFE folders or zips, then load one crop-window stack.
+
+The product table matches SNAP's ProductSet-Reader. Create Stack parameters
+are on the second tab. Resampling stays NONE: the same crop is read from
+each product, with no complex resampling.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
+
+from ai_insar.gui.product_set import OpenedPaths, ProductSetWidget
 from ai_insar.gui.qt import QtWidgets
 from ai_insar.safe import DEFAULT_POLARISATION, DEFAULT_SWATH
+from ai_insar.safe_stack import is_safe_input
+from ai_insar.snap_products import OPERATOR_HELP
 
 _SWATHS = ("IW1", "IW2", "IW3", "EW1", "EW2", "EW3", "EW4", "EW5", "WV1", "WV2")
 _POLARISATIONS = ("VV", "VH", "HH", "HV")
+_RESAMPLING = (
+    "NONE",
+    "NEAREST_NEIGHBOUR",
+    "BILINEAR_INTERPOLATION",
+    "CUBIC_CONVOLUTION",
+)
+_OFFSETS = ("Orbit", "Product Geolocation", "GCP")
+_EXTENTS = ("Master", "Maximum", "Minimum")
+
+
+def _disable_items(box: QtWidgets.QComboBox, allowed: str, note: str) -> None:
+    model = box.model()
+    for index in range(box.count()):
+        if box.itemText(index) == allowed:
+            continue
+        item = model.item(index) if hasattr(model, "item") else None
+        if item is not None:
+            item.setEnabled(False)
+            item.setToolTip(note)
 
 
 class SafeStackDialog(QtWidgets.QDialog):
-    """One crop window applied to every selected SAFE zip."""
+    """Product list plus the crop applied to every selected SAFE product."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None, *, n_files: int) -> None:
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        *,
+        n_files: int,
+        initial_paths: Sequence[Path | str] | None = None,
+        opened_paths: OpenedPaths | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Open SAFE stack")
         self.setObjectName("safeStackDialog")
-        self.resize(520, 360)
+        self.resize(820, 640)
         layout = QtWidgets.QVBoxLayout(self)
+
+        help_line = QtWidgets.QLabel(OPERATOR_HELP["stack"])
+        help_line.setObjectName("operatorHelp")
+        help_line.setWordWrap(True)
+        layout.addWidget(help_line)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setObjectName("safeStackTabs")
+        self.product_set = ProductSetWidget(self, opened_paths=opened_paths)
+        self.product_set.changed.connect(self._sync_reference)
+        reader = QtWidgets.QWidget()
+        reader_layout = QtWidgets.QVBoxLayout(reader)
+        reader_note = QtWidgets.QLabel(
+            "Add SAFE folders or .zip files. The first row is the reference in this list. "
+            "The SLC cube is still sorted by the manifest start time. "
+            "Zip files stay zipped."
+        )
+        reader_note.setWordWrap(True)
+        reader_layout.addWidget(reader_note)
+        reader_layout.addWidget(self.product_set)
+        self.tabs.addTab(reader, "ProductSet-Reader")
+        self.tabs.addTab(self._create_tab(n_files), "Create Stack")
+        layout.addWidget(self.tabs, stretch=1)
+
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        run = QtWidgets.QPushButton("Run")
+        run.setObjectName("safeStackRun")
+        run.clicked.connect(self._on_run)
+        close = QtWidgets.QPushButton("Close")
+        close.setObjectName("safeStackClose")
+        close.clicked.connect(self.reject)
+        buttons.addWidget(run)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+        if initial_paths:
+            self.product_set.add_paths(initial_paths)
+        self._sync_reference()
+
+    def _create_tab(self, n_files: int) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
         note = QtWidgets.QLabel(
             f"Read {n_files} Sentinel-1 SAFE zip(s) into one complex64 stack. "
             "The zips stay zipped. Every date uses this swath, polarisation, "
@@ -25,13 +105,59 @@ class SafeStackDialog(QtWidgets.QDialog):
             "Teaching crop-window alignment: the same row and column window "
             "is taken from each measurement. There is no coregistration, "
             "deburst, or calibration. With two or more dates, the interferogram "
-            "stage can run as later × conjugate(earlier) on this stack."
+            "stage can run as later × conjugate(earlier) on this stack. "
+            "SAFE folders are accepted as well as .zip files."
         )
         note.setWordWrap(True)
         note.setObjectName("safeStackNote")
         layout.addWidget(note)
 
         form = QtWidgets.QFormLayout()
+        self.reference = QtWidgets.QLabel("(none)")
+        self.reference.setObjectName("createStackReference")
+        self.resampling = QtWidgets.QComboBox()
+        self.resampling.setObjectName("createStackResampling")
+        self.resampling.addItems(_RESAMPLING)
+        self.resampling.setCurrentText("NONE")
+        _disable_items(
+            self.resampling,
+            "NONE",
+            "Not implemented. InSAR keeps Resampling NONE (the same crop window).",
+        )
+        self.initial_offset = QtWidgets.QComboBox()
+        self.initial_offset.setObjectName("createStackOffset")
+        self.initial_offset.addItems(_OFFSETS)
+        self.initial_offset.setCurrentText("Orbit")
+        _disable_items(
+            self.initial_offset,
+            "Orbit",
+            "Only Orbit is listed. The orbit offset is not applied; the crop window is shared.",
+        )
+        self.initial_offset.setEnabled(False)
+        self.initial_offset.setToolTip(
+            "Initial Offset Method Orbit is not applied. Resampling NONE reads the same crop from each product."
+        )
+        self.output_extents = QtWidgets.QComboBox()
+        self.output_extents.setObjectName("createStackExtents")
+        self.output_extents.addItems(_EXTENTS)
+        self.output_extents.setCurrentText("Master")
+        _disable_items(
+            self.output_extents,
+            "Master",
+            "Not implemented. Output Extents stays Master: the crop window below.",
+        )
+        self.find_reference = QtWidgets.QPushButton("Find Optimal Reference")
+        self.find_reference.setObjectName("createStackFindReference")
+        self.find_reference.setToolTip(
+            "Not implemented. The SLC cube is time-sorted by the manifest start time."
+        )
+        self.find_reference.setEnabled(False)
+        form.addRow("Reference:", self.reference)
+        form.addRow("Resampling Type", self.resampling)
+        form.addRow("Initial Offset Method", self.initial_offset)
+        form.addRow("Output Extents", self.output_extents)
+        form.addRow(self.find_reference)
+
         self.swath_box = QtWidgets.QComboBox()
         self.swath_box.setObjectName("safeStackSwath")
         self.swath_box.setEditable(True)
@@ -65,13 +191,14 @@ class SafeStackDialog(QtWidgets.QDialog):
             "Runs stage 2 on this stack: each pair is later × conjugate(earlier)."
         )
         layout.addWidget(self.form_ifg)
+        layout.addStretch(1)
+        return page
 
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+    def _pixel(self, value: int) -> QtWidgets.QSpinBox:
+        box = QtWidgets.QSpinBox()
+        box.setRange(0, 200_000)
+        box.setValue(value)
+        return box
 
     def swath(self) -> str:
         return self.swath_box.currentText().strip().upper()
@@ -79,8 +206,28 @@ class SafeStackDialog(QtWidgets.QDialog):
     def polarisation(self) -> str:
         return self.pol_box.currentText().strip().upper()
 
-    def _pixel(self, value: int) -> QtWidgets.QSpinBox:
-        box = QtWidgets.QSpinBox()
-        box.setRange(0, 200_000)
-        box.setValue(value)
-        return box
+    def paths(self) -> list[Path]:
+        return self.product_set.paths()
+
+    def _sync_reference(self) -> None:
+        rows = self.product_set.rows()
+        self.reference.setText(rows[0].file_name if rows else "(none)")
+
+    def _on_run(self) -> None:
+        paths = self.paths()
+        if not paths:
+            self.product_set.status.setText(
+                "Error: [NodeId: ProductSet-Reader] Please add a source product"
+            )
+            return
+        bad = [path.name for path in paths if not is_safe_input(path)]
+        if bad:
+            self.product_set.status.setText("Not a SAFE zip or SAFE folder: " + ", ".join(bad))
+            return
+        if self.resampling.currentText() != "NONE":
+            self.product_set.status.setText("InSAR requires Resampling Type NONE.")
+            return
+        if int(self.height.value()) < 1 or int(self.width.value()) < 1:
+            self.product_set.status.setText("Crop height and width must be at least 1.")
+            return
+        self.accept()

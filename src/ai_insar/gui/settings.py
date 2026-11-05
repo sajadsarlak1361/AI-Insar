@@ -37,7 +37,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("Goldstein alpha", self._alpha)
 
         self._window = QtWidgets.QSpinBox()
-        self._window.setRange(8, 128)
+        self._window.setRange(8, 256)
         self._window.setSingleStep(2)
         self._window.setValue(config.goldstein_window)
         form.addRow("Goldstein window (px)", self._window)
@@ -100,7 +100,9 @@ class SettingsDialog(QtWidgets.QDialog):
                 goldstein_alpha=self._config.goldstein_alpha,
                 goldstein_window=self._config.goldstein_window,
                 goldstein_overlap=self._config.goldstein_overlap,
+                goldstein_spectrum_smooth=self._config.goldstein_spectrum_smooth,
                 coherence_window=self._config.coherence_window,
+                coherence_azimuth_window=self._config.coherence_azimuth_window,
                 unwrap_min_coherence=self._config.unwrap_min_coherence,
                 ramp_border_px=self._config.ramp_border_px,
                 detection_sigma=self._config.detection_sigma,

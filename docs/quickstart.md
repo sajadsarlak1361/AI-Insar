@@ -97,10 +97,13 @@ SLC stack (crop…)** loads one IW1 VV window, by default, into the cube.
 That crop is the stack the numbered stages run on. It is not a deburst or
 a geocoded product. See [data-format.md](data-format.md#sentinel-1-safe).
 
-File → Open SAFE stack… selects many `.zip` files. A progress line counts
-them. The dialog’s crop is applied to every zip, the dates are sorted, and
-the interferogram checkbox runs stage 2 on that stack. The alignment is the
-shared crop window. It is not coregistration.
+File → Open SAFE stack… lists SAFE folders and `.zip` files (File Name,
+Type, Acquisition, Track, Orbit, and an N Products counter). A progress
+line counts them. The dialog’s crop is applied to every product, the dates
+are sorted, and the interferogram checkbox runs stage 2 on that stack.
+The alignment is the shared crop window. It is not coregistration.
+Interferogram, Coherence, Goldstein, Topographic Phase, and Apply Orbit
+File each open a parameter dialog and wait for Run.
 
 ## What “good” looks like on the demo
 

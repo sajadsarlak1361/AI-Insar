@@ -65,6 +65,19 @@ Leave the console open while the window is running. The first launch is the
 slow one. Later launches reuse `.venv` and only re-run pip if you start the
 batch file again (pip will see that the editable install is already there).
 
+## Parameter dialogs
+
+File → **Open SAFE stack…** waits on a product list. Add several SAFE
+folders and `.zip` files. The table shows File Name, Type, Acquisition,
+Track, and Orbit, and a counter such as `2 Products`. Manifest fields that
+cannot be read stay blank.
+
+The Interferogram, Coherence, Goldstein, Topographic Phase Removal, and
+Apply Orbit File menus open a dialog (I/O and Processing Parameters) and
+wait for Run. They do not start the stage until you confirm. Optional
+NumPy saves use the SNAP suffixes `_Ifg`, `_Coh`, `_Flt`, `_DInSAR`, and
+`_Orb`. Orbit files are not downloaded.
+
 If install or the GUI returns a non-zero status, the batch file `pause`s.
 If the window closes before you can read it, run `run_windows.bat` from
 `cmd` instead of double-clicking.
