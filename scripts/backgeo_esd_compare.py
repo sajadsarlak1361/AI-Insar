@@ -129,12 +129,20 @@ def _circular_stats(reference: np.ndarray, secondary: np.ndarray, valid: np.ndar
     relative = np.abs(amplitude - reference_amplitude) / np.maximum(reference_amplitude, 1e-6)
     if used.size == 0:
         return {"count": 0}
-    order = np.argsort(np.abs(used))
+    azimuth_pair = valid[1:, :] & valid[:-1, :]
+    range_pair = valid[:, 1:] & valid[:, :-1]
+    azimuth_step = np.angle(np.exp(1j * np.diff(residual, axis=0)))[azimuth_pair]
+    range_step = np.angle(np.exp(1j * np.diff(residual, axis=1)))[range_pair]
     return {
         "count": int(used.size),
         "circular_median_abs_rad": float(np.median(np.abs(used))),
+        "circular_mean_rad": float(np.angle(np.mean(np.exp(1j * used)))),
         "circular_p95_abs_rad": float(np.percentile(np.abs(used), 95)),
+        "azimuth_step_median_rad": float(np.median(azimuth_step)),
+        "range_step_median_rad": float(np.median(range_step)),
         "amplitude_relative_median": float(np.median(relative)),
+        "amplitude_passed": bool(float(np.median(relative)) <= TOLERANCES["secondary_amplitude_relative_median"]),
+        "phase_passed": bool(float(np.median(np.abs(used))) <= TOLERANCES["secondary_circular_phase_median_rad"]),
         "first_mismatch_row_col": _first_mismatch(reference, secondary, valid),
     }
 

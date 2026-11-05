@@ -163,6 +163,173 @@ def test_snap_deburst_of_bursts_5_and_6_matches_output_grid():
     assert float(np.max(np.abs(debursted.data - snap))) == 0.0
 
 
+def test_reramp_uses_the_source_phase_at_the_resampled_coordinate():
+    """A half-pixel shift must restore the secondary chirp, not a different one.
+
+    Deramp, bilinear resample, and reramp with the phase sampled by that same
+    kernel returns the baseband times the secondary phase. Adding a different
+    azimuth slope, which is what a reference-grid chirp does, leaves that slope
+    in the residual. No coefficient is fitted.
+    """
+    from ai_insar.pipeline.tops_ops import resample_complex, resample_real
+
+    rows, cols = 40, 6
+    kt = 1733.0
+    interval = 0.0020555563
+    eta = np.arange(rows, dtype=np.float64) * interval
+    phase_1d = -np.pi * kt * (eta - 0.031) ** 2 - 2.0 * np.pi * (-4.0) * eta
+    phase = np.broadcast_to(phase_1d[:, None], (rows, cols)).copy()
+    baseband = np.full((rows, cols), np.exp(1j * 0.35), dtype=np.complex128)
+    slc = (baseband * np.exp(-1j * phase)).astype(np.complex64)
+    deramped = (slc * np.exp(1j * phase)).astype(np.complex64)
+    out_rows = rows - 2
+    line = np.broadcast_to((np.arange(out_rows, dtype=np.float64) + 0.5)[:, None], (out_rows, cols)).copy()
+    sample = np.broadcast_to(np.arange(cols, dtype=np.float64)[None, :], (out_rows, cols)).copy()
+    sampled = resample_complex(deramped, line, sample, "BILINEAR_INTERPOLATION")
+    phase_at = resample_real(phase, line, sample, "BILINEAR_INTERPOLATION")
+    restored = sampled * np.exp(-1j * phase_at)
+    expected = baseband[:out_rows] * np.exp(-1j * phase_at)
+    residual = np.abs(np.angle(restored * np.conj(expected)))
+    assert float(np.median(residual)) < 1e-3
+    other = phase_at + 0.12 * np.arange(out_rows, dtype=np.float64)[:, None]
+    wrong = np.abs(np.angle(sampled * np.exp(-1j * other) * np.conj(expected)))
+    assert float(np.median(wrong)) > 0.2
+
+
+def test_esd_blocks_keep_a_known_shift_and_reject_a_noisy_block():
+    """Ten-block ESD returns the analytic shift and drops a block under 0.3.
+
+    The shift is phase / (2π f). No coefficient is adjusted to hit the value.
+    """
+    from ai_insar.pipeline.tops_ops import overlap_block_shifts
+
+    separation = 6400.0
+    interval = 0.002
+    pixels = -0.0015
+    phase = 2.0 * np.pi * separation * interval * pixels
+    rows, cols = 16, 20
+    master = np.ones((rows, cols), dtype=np.complex64)
+    slave_early = master.copy()
+    slave_late = np.exp(-1j * phase) * np.ones((rows, cols), dtype=np.complex64)
+    # The second half is noise, so a 2-block split rejects it.
+    rng = np.random.default_rng(0)
+    slave_late[:, cols // 2 :] = rng.normal(size=(rows, cols // 2)) + 1j * rng.normal(size=(rows, cols // 2))
+    reports = overlap_block_shifts(
+        master,
+        master,
+        slave_early,
+        slave_late,
+        separation_hz=separation,
+        azimuth_time_interval_s=interval,
+        n_blocks=2,
+        coherence_threshold=0.3,
+    )
+    assert reports[0]["accepted"] is True
+    assert abs(float(reports[0]["shift_s"]) / interval - pixels) < 1e-6
+    assert reports[1]["accepted"] is False
+
+
+def test_overlap_azimuth_stays_on_the_requested_burst():
+    """The same zero-Doppler instant in the overlap is two raster lines.
+
+    The earlier burst is the default. Back-geocoding asks for the reference
+    burst, which is the later copy and a different TOPS phase.
+    """
+    from ai_insar.pipeline.s1_annotation import BurstTiming, SwathModel
+    from ai_insar.pipeline.tops_ops import _absolute_line
+
+    interval = 0.002
+    lines = 10
+    start = np.datetime64("2021-06-30T00:00:00.000000000")
+    later = start + np.timedelta64(int(round(8 * interval * 1e9)), "ns")
+    bursts = (
+        BurstTiming(start, 0, 9, 0, 10),
+        BurstTiming(later, 0, 9, 0, 10),
+    )
+    model = SwathModel(
+        wavelength_m=0.055,
+        azimuth_time_interval_s=interval,
+        range_pixel_spacing_m=2.3,
+        slant_range_time_s=0.005,
+        lines_per_burst=lines,
+        samples_per_burst=20,
+        number_of_lines=20,
+        incidence_rad=0.6,
+        fm_rate=np.array([-2000.0, 0.0, 0.0]),
+        bursts=bursts,
+        orbit=None,
+    )
+    early = _absolute_line(model, later)
+    requested = _absolute_line(model, later, prefer_burst=1)
+    assert early == pytest.approx(8.0)
+    assert requested == pytest.approx(10.0)
+
+
+def test_backgeo_secondary_phase_matches_snap_on_an_interior_patch():
+    """Reramp uses the secondary phase. An interior patch must meet the declared bounds.
+
+    Bounds are the ones fixed for the ROI: amplitude relative median 0.05 and
+    circular phase median 0.20 rad. This patch is the same June/July bursts,
+    SRTM 3Sec, and SNAP 12 slave as the full comparison.
+    """
+    from ai_insar.pipeline.dem import read_raster_dem
+    from ai_insar.pipeline.s1_annotation import read_swath_from_product
+    from ai_insar.pipeline.tops_ops import backgeocode
+    from ai_insar.safe import resolve_safe, select_measurement
+
+    june = Path(
+        "/tmp/safe-full/S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B.SAFE"
+    )
+    july = Path(
+        "/tmp/safe-full/S1A_IW_SLC__1SDV_20210712T052605_20210712T052632_038740_049246_C00B.SAFE"
+    )
+    snap_i = Path("/tmp/snap-ref/stage/backgeo_roi.data/i_IW1_VV_slv1_12Jul2021.img")
+    snap_q = Path("/tmp/snap-ref/stage/backgeo_roi.data/q_IW1_VV_slv1_12Jul2021.img")
+    dem_path = Path("/tmp/snap-ref/dem/srtm_39_02.tif")
+    orbit_june = Path(
+        "/home/ubuntu/.snap/auxdata/Orbits/Sentinel-1/POEORB/S1A/2021/06/"
+        "S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF.zip"
+    )
+    orbit_july = Path(
+        "/home/ubuntu/.snap/auxdata/Orbits/Sentinel-1/POEORB/S1A/2021/07/"
+        "S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF.zip"
+    )
+    if not all(path.is_file() for path in (snap_i, snap_q, dem_path, orbit_june, orbit_july)):
+        pytest.skip("SNAP back-geocoding ROI or DEM/orbit is not on disk")
+    if not (june / "manifest.safe").is_file() or not (july / "manifest.safe").is_file():
+        pytest.skip("complete June/July SAFE is not on disk")
+    june_product = resolve_safe(june / "manifest.safe")
+    july_product = resolve_safe(july / "manifest.safe")
+    june_meas = select_measurement(june_product, "IW1", "VV")
+    july_meas = select_measurement(july_product, "IW1", "VV")
+    june_model = read_swath_from_product(june_product, june_meas)
+    july_model = read_swath_from_product(july_product, july_meas)
+    secondary = read_tiff_window(july / july_meas.href, 5466, 10817, 3816, 840)
+    dem = read_raster_dem(dem_path, ensure_geoid(Path("/tmp/safe-real/dem"), "EGM96"), "EGM96")
+    june_orbit = read_eof_orbit(orbit_june)
+    july_orbit = read_eof_orbit(orbit_july)
+    snap = np.fromfile(snap_i, dtype=">f4").reshape(3016, 520)
+    snap = snap + 1j * np.fromfile(snap_q, dtype=">f4").reshape(3016, 520)
+    # Burst start, mid-burst, and the burst-5 overlap copy. The overlap used
+    # to be read from the previous burst and the phase sat near pi/2.
+    for r0, c0, height, width in ((8, 240, 24, 24), (200, 200, 48, 48), (1560, 240, 24, 24)):
+        reference = read_tiff_window(june / june_meas.href, ROW + r0, COL + c0, height, width)
+        coreg = backgeocode(
+            RadarGrid(ROW + r0, COL + c0, reference, june_model),
+            RadarGrid(5466, 10817, secondary, july_model),
+            reference_orbit=june_orbit,
+            secondary_orbit=july_orbit,
+            dem=dem,
+            max_solves=height * width,
+            max_residual_px=0.05,
+        )
+        slave = snap[r0 : r0 + height, c0 : c0 + width]
+        phase = np.abs(np.angle(slave * np.conj(coreg)))
+        relative = np.abs(np.abs(slave) - np.abs(coreg)) / np.maximum(np.abs(slave), 1e-6)
+        assert float(np.median(phase)) <= 0.20
+        assert float(np.median(relative)) <= 0.05
+
+
 def test_two_burst_deramp_roundtrip_is_exact():
     if not ANN.is_file() or not TIFF.is_file():
         pytest.skip("IW1 annotation or measurement is not on disk")

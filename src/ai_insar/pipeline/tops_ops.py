@@ -388,18 +388,36 @@ def radar_coordinates(
     *,
     guess: np.datetime64,
     degree: int = 3,
+    prefer_burst: int | None = None,
 ) -> tuple[float, float]:
-    """Return ``(absolute_line, sample)`` of a ground point in this swath."""
+    """Return ``(absolute_line, sample)`` of a ground point in this swath.
+
+    ``prefer_burst`` selects that burst's raster copy. An overlap azimuth
+    time sits in two bursts; the earlier copy is a different TOPS phase.
+    Back-geocoding passes the reference burst so the secondary line stays
+    on the same burst index.
+    """
     when = orbit.zero_doppler_time(ground_xyz, guess, degree)
     position, _velocity = orbit.interpolate(when, degree)
     slant = float(np.linalg.norm(ground_xyz - position))
     sample = (slant - model.slant_range_m(0)) / model.range_pixel_spacing_m
-    absolute = _absolute_line(model, when)
+    absolute = _absolute_line(model, when, prefer_burst=prefer_burst)
     return absolute, float(sample)
 
 
-def _absolute_line(model: SwathModel, when: np.datetime64) -> float:
-    """Line index using the burst interval that contains ``when``."""
+def _absolute_line(model: SwathModel, when: np.datetime64, prefer_burst: int | None = None) -> float:
+    """Line index of ``when``.
+
+    Without ``prefer_burst``, the first burst interval that contains the
+    time is used. With it, the line is measured from that burst's first
+    azimuth time even when the instant also falls in the previous burst.
+    """
+    if prefer_burst is not None:
+        index = int(prefer_burst)
+        if index < 0 or index >= len(model.bursts):
+            raise ValueError(f"burst {index} is outside 0..{len(model.bursts) - 1}")
+        elapsed = int((when - model.bursts[index].azimuth_time).astype(np.int64)) * 1e-9
+        return index * model.lines_per_burst + elapsed / model.azimuth_time_interval_s
     best = 0
     for index, burst in enumerate(model.bursts):
         elapsed = int((when - burst.azimuth_time).astype(np.int64)) * 1e-9
@@ -427,16 +445,24 @@ def backgeocode(
 ) -> np.ndarray:
     """Resample ``secondary`` onto ``reference`` by range-Doppler geolocation.
 
-    Both images are deramped first. Each reference sample is located on the
-    ellipsoid or on ``dem`` and the secondary value is resampled there, then
-    reramped unless ``reramp`` is false. ``max_solves=None`` solves every
-    pixel. A smaller budget interpolates the line/sample map and is kept only
-    when check pixels stay within ``max_residual_px`` of a dense solve.
+    The secondary is deramped with its own burst phase, each reference sample
+    is located on the ellipsoid or on ``dem``, and the baseband value is
+    resampled there. Reramp multiplies by the secondary phase bilinearly
+    sampled at that same source coordinate. The reference image is not
+    phase-multiplied: its Doppler stays on the reference grid, and the
+    secondary is restored in the secondary's own range-Doppler time, which
+    is what keeps the interpolation off the TOPS chirp without substituting
+    the reference chirp. ``reramp=False`` leaves the baseband samples.
+    ``max_solves=None`` solves every pixel. A smaller budget interpolates
+    the line/sample map and is kept only when check pixels stay within
+    ``max_residual_px`` of a dense solve.
     """
     backgeocode.last_stride = 1
     backgeocode.last_residual_px = 0.0
-    reference_deramped = deramp(reference, remove=True, orbit=reference_orbit)
-    secondary_deramped = deramp(secondary, remove=True, orbit=secondary_orbit)
+    secondary_phase = tops_phase(secondary, orbit=secondary_orbit)
+    secondary_deramped = (
+        np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
+    ).astype(np.complex64)
     rows, cols = reference.shape
     limit = rows * cols if max_solves is None else int(max_solves)
     stride = _solve_stride(rows, cols, limit)
@@ -481,11 +507,10 @@ def backgeocode(
     sampled = resample_complex(secondary_deramped, line_s, sample_s, resampling)
     if not reramp:
         return sampled
-    return deramp(
-        RadarGrid(reference.row, reference.col, sampled, reference.model),
-        remove=False,
-        orbit=reference_orbit,
-    )
+    # Same kernel and source coordinate as the baseband samples. This is the
+    # secondary deramp/demod phase, not the reference phase.
+    phase_at_source = resample_real(secondary_phase, line_s, sample_s, resampling)
+    return (sampled * np.exp(-1j * phase_at_source)).astype(np.complex64)
 
 
 def _locate_grid(
@@ -543,12 +568,14 @@ def _one_secondary_coordinate(
         if not valid:
             return float("nan"), float("nan")
         ground = ground_point_at_height(reference_orbit, azimuth, slant, sampled, degree=degree)
+    burst = int(absolute) // int(reference.model.lines_per_burst)
     line, sample = radar_coordinates(
         secondary.model,
         secondary_orbit,
         ground,
         guess=repeat_azimuth_time(reference.model, absolute, secondary.model),
         degree=degree,
+        prefer_burst=burst,
     )
     return line - secondary.row, sample - secondary.col
 
@@ -593,6 +620,35 @@ def _map_residual(
             continue
         errors.append(max(abs(true_line - line_s[row, col]), abs(true_sample - sample_s[row, col])))
     return 0.0 if not errors else float(max(errors))
+
+
+def resample_real(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
+    """Resample one real array with the same kernel as :func:`resample_complex`.
+
+    Polynomial kernels stay in float64. The deramp phase is thousands of
+    radians, and a complex64 round trip would quantise it before the reramp.
+    """
+    from scipy.ndimage import map_coordinates
+
+    name = str(method).strip().upper()
+    orders = {
+        "NEAREST_NEIGHBOUR": 0,
+        "BILINEAR_INTERPOLATION": 1,
+        "CUBIC_CONVOLUTION": 3,
+        "BICUBIC_INTERPOLATION": 3,
+    }
+    values = np.asarray(image, dtype=np.float64)
+    line = np.asarray(line, dtype=np.float64)
+    sample = np.asarray(sample, dtype=np.float64)
+    valid = np.isfinite(line) & np.isfinite(sample)
+    if name in orders:
+        coords = np.stack((np.where(valid, line, 0.0), np.where(valid, sample, 0.0)))
+        out = map_coordinates(values, coords, order=orders[name], mode="constant", cval=0.0)
+        out = np.asarray(out, dtype=np.float64)
+        out[~valid] = 0.0
+        return out
+    sampled = resample_complex(values + 0j, line, sample, method)
+    return np.asarray(sampled.real, dtype=np.float64)
 
 
 def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
@@ -823,6 +879,63 @@ def enhanced_spectral_diversity(
     else:
         phase = np.angle(np.sum(cross))
     return float(phase / (2.0 * np.pi * float(separation_hz))), coherence
+
+
+def overlap_block_shifts(
+    master_early: np.ndarray,
+    master_late: np.ndarray,
+    slave_early: np.ndarray,
+    slave_late: np.ndarray,
+    *,
+    separation_hz: float,
+    azimuth_time_interval_s: float,
+    n_blocks: int = 10,
+    coherence_threshold: float = 0.3,
+) -> list[dict[str, float | int | bool]]:
+    """Periodogram double-difference on equal range blocks of one overlap.
+
+    SNAP splits the valid-sample overlap into ``n_blocks`` along range.
+    Each block is the same unweighted single-tone estimator as
+    :func:`enhanced_spectral_diversity`. Coherence below
+    ``coherence_threshold`` is reported and is not a measurement. The shift
+    is in seconds. Nothing is added back onto the slave.
+    """
+    looks = (master_early, master_late, slave_early, slave_late)
+    shape = np.asarray(master_early).shape
+    if any(np.asarray(item).shape != shape for item in looks):
+        raise ValueError("ESD overlap looks must share one shape")
+    if int(n_blocks) < 1:
+        raise ValueError("ESD needs at least one range block")
+    if float(separation_hz) <= 0.0 or float(azimuth_time_interval_s) <= 0.0:
+        raise ValueError("spectral separation and azimuth interval must be positive")
+    width = int(shape[1])
+    block_width = width // int(n_blocks)
+    if block_width < 1:
+        raise ValueError(f"overlap width {width} cannot be split into {n_blocks} blocks")
+    reports: list[dict[str, float | int | bool]] = []
+    for index in range(int(n_blocks)):
+        col0 = index * block_width
+        col1 = width if index == int(n_blocks) - 1 else (index + 1) * block_width
+        early_i = np.asarray(slave_early[:, col0:col1], dtype=np.complex64) * np.conj(
+            np.asarray(master_early[:, col0:col1], dtype=np.complex64)
+        )
+        late_i = np.asarray(slave_late[:, col0:col1], dtype=np.complex64) * np.conj(
+            np.asarray(master_late[:, col0:col1], dtype=np.complex64)
+        )
+        cross = early_i * np.conj(late_i)
+        coherence = float(np.abs(np.sum(cross)) / (np.sum(np.abs(cross)) + 1e-12))
+        phase = float(np.angle(np.sum(cross)))
+        reports.append(
+            {
+                "block": index,
+                "col0": col0,
+                "col1": col1,
+                "coherence": coherence,
+                "shift_s": phase / (2.0 * np.pi * float(separation_hz)),
+                "accepted": coherence >= float(coherence_threshold),
+            }
+        )
+    return reports
 
 
 def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
