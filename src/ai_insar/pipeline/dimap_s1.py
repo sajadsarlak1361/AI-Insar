@@ -168,6 +168,175 @@ def parse_snap_utc(text: str):
     return np.datetime64(stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{micros:06d}")
 
 
+def inspect_beam_dimap(path) -> dict[str, object]:
+    """Read product identity from a BEAM-DIMAP header. Rasters are not loaded."""
+    source = Path(path)
+    root = ET.parse(source).getroot()
+    bands = [((item.text or "").strip()) for item in root.iter() if _local(item.tag) == "BAND_NAME" and (item.text or "").strip()]
+    rows = _dim_text(root, "NROWS")
+    cols = _dim_text(root, "NCOLS")
+    name = _dim_text(root, "DATASET_NAME") or source.stem
+    vectors = _abstracted_orbit_vectors(root)
+    return {
+        "path": source,
+        "name": name,
+        "first_line": dimap_abstracted_time(source, "first_line_time"),
+        "last_line": dimap_abstracted_time(source, "last_line_time"),
+        "lines": int(rows or "0"),
+        "samples": int(cols or "0"),
+        "bands": tuple(bands),
+        "orbit_vectors": len(vectors),
+    }
+
+
+def dimap_orbit_shift(path, precise, degree: int = 3) -> tuple[float, np.ndarray]:
+    """Metres between the DIMAP state vectors and ``precise`` at the first line.
+
+    The comparison time is abstracted ``first_line_time``. Both orbits are
+    interpolated with the same polynomial degree.
+    """
+    root = ET.parse(path).getroot()
+    current = _orbit_from_vectors(_abstracted_orbit_vectors(root))
+    when = parse_snap_utc(dimap_abstracted_time(path, "first_line_time"))
+    before, _velocity = current.interpolate(when, degree)
+    after, velocity = precise.interpolate(when, degree)
+    before = np.atleast_2d(before)[0]
+    after = np.atleast_2d(after)[0]
+    return float(np.linalg.norm(after - before)), np.atleast_2d(velocity)[0]
+
+
+def apply_precise_orbit_dimap(source_dim, directory, target: str, precise) -> Path:
+    """Copy a BEAM-DIMAP and replace its orbit state vectors.
+
+    The ``.data`` rasters, including i/q and tie-point grids, are copied
+    byte for byte. Only the header orbit list and the file hrefs change.
+    """
+    import shutil
+
+    source = Path(source_dim)
+    folder = Path(directory)
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = (target or "product").strip() or "product"
+    dest = folder / f"{stem}.dim"
+    dest_data = folder / f"{stem}.data"
+    source_data = source.with_suffix(".data")
+    if not source_data.is_dir():
+        raise ValueError(f"{source} has no {source_data.name} raster directory")
+    if dest_data.exists():
+        shutil.rmtree(dest_data)
+    shutil.copytree(source_data, dest_data)
+    root = ET.parse(source).getroot()
+    old = source.stem + ".data/"
+    new = stem + ".data/"
+    for element in root.iter():
+        href = element.get("href")
+        if href and href.startswith(old):
+            element.set("href", new + href[len(old) :])
+        if _local(element.tag) == "DATASET_NAME" and (element.text or "").strip():
+            element.text = stem
+    vectors = _vectors_for_header(precise, root)
+    _replace_abstracted_orbit_vectors(root, vectors)
+    dest.write_bytes(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + ET.tostring(root, encoding="utf-8"))
+    return dest
+
+
+def _vectors_for_header(precise, root: ET.Element) -> tuple[tuple[str, str, str, str, str, str, str], ...]:
+    first = parse_snap_utc(dimap_abstracted_time_from_root(root, "first_line_time"))
+    last = parse_snap_utc(dimap_abstracted_time_from_root(root, "last_line_time"))
+    return orbit_records_around(precise, first, last)
+
+
+def dimap_abstracted_time_from_root(root: ET.Element, name: str) -> str:
+    for element in root.iter():
+        if _local(element.tag) == "MDATTR" and element.get("name") == name and (element.text or "").strip():
+            return (element.text or "").strip()
+    raise ValueError(f"DIMAP has no {name}")
+
+
+def _abstracted_orbit_vectors(root: ET.Element) -> list[tuple[str, float, float, float, float, float, float]]:
+    found = None
+    for element in root.iter():
+        if _local(element.tag) == "MDElem" and element.get("name") == "Orbit_State_Vectors":
+            found = element
+            break
+    if found is None:
+        raise ValueError("DIMAP has no Orbit_State_Vectors")
+    records = []
+    for child in list(found):
+        if _local(child.tag) != "MDElem" or not str(child.get("name", "")).startswith("orbit_vector"):
+            continue
+        attrs = {
+            item.get("name"): (item.text or "").strip()
+            for item in list(child)
+            if _local(item.tag) == "MDATTR"
+        }
+        records.append(
+            (
+                attrs["time"],
+                float(attrs["x_pos"]),
+                float(attrs["y_pos"]),
+                float(attrs["z_pos"]),
+                float(attrs["x_vel"]),
+                float(attrs["y_vel"]),
+                float(attrs["z_vel"]),
+            )
+        )
+    if len(records) < 4:
+        raise ValueError("DIMAP orbit list has fewer than 4 state vectors")
+    return records
+
+
+def _orbit_from_vectors(records: list[tuple[str, float, float, float, float, float, float]]):
+    from ai_insar.pipeline.geometry import Orbit
+
+    times = [parse_snap_utc(item[0]) for item in records]
+    position = [[item[1], item[2], item[3]] for item in records]
+    velocity = [[item[4], item[5], item[6]] for item in records]
+    return Orbit(times, position, velocity)
+
+
+def _replace_abstracted_orbit_vectors(root: ET.Element, records: tuple[tuple[str, ...], ...]) -> None:
+    found = None
+    for element in root.iter():
+        if _local(element.tag) == "MDElem" and element.get("name") == "Orbit_State_Vectors":
+            found = element
+            break
+    if found is None:
+        raise ValueError("DIMAP has no Orbit_State_Vectors")
+    child_tag = found.tag
+    attr_tag = "MDATTR"
+    for child in list(found):
+        if _local(child.tag) == "MDATTR":
+            attr_tag = child.tag
+        found.remove(child)
+    for index, record in enumerate(records, start=1):
+        node = ET.Element(child_tag)
+        node.set("name", f"orbit_vector{index}")
+        when, x, y, z, vx, vy, vz = record
+        for name, value, kind in (
+            ("time", when, "utc"),
+            ("x_pos", x, "float64"),
+            ("y_pos", y, "float64"),
+            ("z_pos", z, "float64"),
+            ("x_vel", vx, "float64"),
+            ("y_vel", vy, "float64"),
+            ("z_vel", vz, "float64"),
+        ):
+            attr = ET.SubElement(node, attr_tag)
+            attr.set("name", name)
+            attr.set("type", kind)
+            attr.set("mode", "rw")
+            attr.text = value
+        found.append(node)
+
+
+def _dim_text(root: ET.Element, tag: str) -> str:
+    for element in root.iter():
+        if _local(element.tag) == tag and (element.text or "").strip():
+            return (element.text or "").strip()
+    return ""
+
+
 def dimap_abstracted_time(path, name: str) -> str:
     """Return one abstracted-metadata UTC string from a BEAM-DIMAP header."""
     text = Path(path).read_text(encoding="utf-8", errors="replace")

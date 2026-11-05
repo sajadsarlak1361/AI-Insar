@@ -98,6 +98,33 @@ class ProductExplorer(QtWidgets.QDockWidget):
         self._products: list[SafeProduct] = []
         self.set_product(None)
 
+    def add_dimap(self, title: str, details: list[tuple[str, str]], bands: list[str]) -> None:
+        """Show a BEAM-DIMAP opened from disk. Existing SAFE rows stay."""
+        if (
+            self.tree.topLevelItemCount() == 1
+            and self.tree.topLevelItem(0).text(0) == "No Sentinel-1 product open"
+        ):
+            self.tree.clear()
+        for index in range(self.tree.topLevelItemCount()):
+            if self.tree.topLevelItem(index).text(0) == title:
+                self.tree.scrollToItem(self.tree.topLevelItem(index))
+                return
+        root = QtWidgets.QTreeWidgetItem([title])
+        root.setData(0, _ROLE, ("dimap", title))
+        meta = QtWidgets.QTreeWidgetItem(["Metadata"])
+        for label, value in details:
+            meta.addChild(QtWidgets.QTreeWidgetItem([f"{label}: {value}"]))
+        root.addChild(meta)
+        band_node = QtWidgets.QTreeWidgetItem(["Bands"])
+        for name in bands:
+            item = QtWidgets.QTreeWidgetItem([name])
+            item.setData(0, _ROLE, ("dimap-band", name))
+            band_node.addChild(item)
+        root.addChild(band_node)
+        self.tree.addTopLevelItem(root)
+        self.tree.scrollToItem(root)
+        self.preview_caption.setText(title)
+
     def set_product(self, product: SafeProduct | None) -> None:
         self.set_products([] if product is None else [product], reference_id=None if product is None else product.product_id)
 

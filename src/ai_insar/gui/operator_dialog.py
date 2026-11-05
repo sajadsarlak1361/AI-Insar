@@ -275,7 +275,7 @@ class OperatorDialog(QtWidgets.QDialog):
             self,
             "Source product",
             "",
-            "Sentinel-1 SAFE zip (*.zip);;NumPy (*.npy);;All files (*)",
+            "Sentinel-1 SAFE zip (*.zip);;BEAM-DIMAP (*.dim);;NumPy (*.npy);;All files (*)",
         )
         if path:
             self.source.setCurrentText(path)

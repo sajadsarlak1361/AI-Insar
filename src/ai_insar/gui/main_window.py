@@ -201,6 +201,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._split_product_ids: set[str] = set()
         self._split_io: dict | None = None
         self._split_bindings: dict[str, dict] = {}
+        self._opened_dimaps: dict[str, dict] = {}
         self._product_status: str | None = None
         self.stage_buttons: list[QtWidgets.QPushButton] = []
         self._build()
@@ -1383,6 +1384,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_orbit_dialog(self) -> None:
         dialog = ApplyOrbitDialog(self, sources=self._orbit_sources())
+        line = dialog.source.lineEdit()
+        if line is not None:
+            line.editingFinished.connect(lambda: self._show_dimap_if_present(dialog.source.currentText()))
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_orbit_params(dialog.parameters())
@@ -1399,6 +1403,13 @@ class MainWindow(QtWidgets.QMainWindow):
             if dimap and str(dimap) not in sources:
                 sources.append(str(dimap))
         return sources or self._source_names()
+
+    def _show_dimap_if_present(self, text: str) -> None:
+        from pathlib import Path
+
+        path = Path(text.strip())
+        if path.suffix.lower() == ".dim" and path.is_file():
+            self._show_dimap(path)
 
     def apply_interferogram_params(self, params: dict) -> None:
         request = params["request"]
@@ -1667,10 +1678,17 @@ class MainWindow(QtWidgets.QMainWindow):
         model = subject.get("model")
         shift = None
         velocity = None
+        dimap = subject.get("dimap")
+        if dimap is not None and Path(dimap).is_file():
+            from ai_insar.pipeline.dimap_s1 import dimap_orbit_shift
+
+            shift, velocity = dimap_orbit_shift(dimap, precise, degree)
+            self._show_dimap(dimap)
         if model is not None and model.orbit.time[0] <= when <= model.orbit.time[-1]:
-            before, _old_velocity = model.orbit.interpolate(when, degree)
-            after, velocity = precise.interpolate(when, degree)
-            shift = float(np.linalg.norm(after - before))
+            if shift is None:
+                before, _old_velocity = model.orbit.interpolate(when, degree)
+                after, velocity = precise.interpolate(when, degree)
+                shift = float(np.linalg.norm(after - before))
             updated = _with_orbit(model, precise)
             grid = subject.get("grid")
             if grid is not None:
@@ -1686,6 +1704,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.workspace.secondary_orbit = precise
         elif subject["role"] == "reference":
             self.workspace.precise_orbit = precise
+        elif (
+            self.workspace.precise_orbit is not None
+            and not (self.workspace.precise_orbit.time[0] <= when <= self.workspace.precise_orbit.time[-1])
+        ):
+            self.workspace.secondary_orbit = precise
+        else:
+            self.workspace.precise_orbit = precise
         speed = ""
         if velocity is not None:
             speed = f" Speed {float(np.linalg.norm(velocity)):.1f} m/s."
@@ -1699,6 +1724,7 @@ class MainWindow(QtWidgets.QMainWindow):
         written_dim = None
         if request.format_name == "BEAM-DIMAP":
             written_dim = self._write_orbit_dimap(request.directory, request.target, subject, precise)
+            self._show_dimap(written_dim)
             self._log(f"Saved {written_dim.name}. SLC samples are unchanged. Orbit state vectors are the precise file.")
         payload = {
             "applied": True,
@@ -1790,12 +1816,38 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return dimap_abstracted_time(path, name)
 
+    def _show_dimap(self, path) -> None:
+        """List a BEAM-DIMAP in Product Explorer. The raster is not loaded."""
+        from pathlib import Path
+
+        from ai_insar.pipeline.dimap_s1 import inspect_beam_dimap
+
+        source = Path(path)
+        if not source.is_file():
+            return
+        record = inspect_beam_dimap(source)
+        self._opened_dimaps[str(source)] = record
+        self.product_explorer.add_dimap(
+            source.name,
+            [
+                ("first_line_time", str(record["first_line"])),
+                ("last_line_time", str(record["last_line"])),
+                ("raster", f"{record['samples']} x {record['lines']}"),
+                ("orbit vectors", str(record["orbit_vectors"])),
+            ],
+            list(record["bands"]),
+        )
+        self.product_explorer.show()
+
     def _write_orbit_dimap(self, directory, target: str, subject: dict, precise) -> Path:
         from pathlib import Path
 
         from ai_insar.pipeline.dimap import read_beam_dimap_band, write_beam_dimap
-        from ai_insar.pipeline.dimap_s1 import slc_split_source
+        from ai_insar.pipeline.dimap_s1 import apply_precise_orbit_dimap, slc_split_source
 
+        dimap = subject.get("dimap")
+        if dimap is not None and Path(dimap).is_file():
+            return apply_precise_orbit_dimap(dimap, directory, target, precise)
         product = subject.get("product")
         measurement = subject.get("measurement")
         grid = subject.get("grid")
