@@ -19,7 +19,7 @@ from ai_insar.pipeline.geometry import (
     geodetic_to_ecef,
     ground_point_at_height,
 )
-from ai_insar.pipeline.s1_annotation import SwathModel
+from ai_insar.pipeline.s1_annotation import SwathModel, snap_utc_seconds
 
 
 @dataclass
@@ -76,14 +76,15 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
     return out
 
 
-def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
-    """Absolute source line of every SNAP deburst output line.
+def deburst_output_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
+    """Absolute source line of every deburst output line, or ``-1`` for no-data.
 
-    The output time axis runs from the first selected burst's first line to
-    the last selected burst's last line. Overlap is resolved by the mid time
-    between the two burst times that contain the sample, which is the rule in
-    SNAP ``TOPSARDeburstOp``. Bursts that are not in ``burst_indexes`` are not
-    in the product, so their overlaps are kept.
+    The time axis is SNAP's: burst times are ``getMJD()*86400``, the height
+    is the truncated ``(lastLineTime-firstLineTime)/dt``, and an overlap
+    sample belongs to the later burst only when its time is strictly after
+    the mid-time. Lines outside the truncated valid-azimuth window are
+    no-data. ``burst_indexes`` are 0-based positions in the annotation.
+    Bursts omitted from a split are not used to trim the outer edge.
     """
     if burst_indexes is None:
         indexes = list(range(len(model.bursts)))
@@ -93,18 +94,19 @@ def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None =
         raise ValueError(f"burst indexes {indexes} are outside this swath")
     interval = float(model.azimuth_time_interval_s)
     lines = int(model.lines_per_burst)
-    epoch = model.bursts[indexes[0]].azimuth_time
-
-    def seconds(when: np.datetime64) -> float:
-        return float((when - epoch).astype(np.int64)) * 1e-9
-
-    first_s = [seconds(model.bursts[index].azimuth_time) for index in indexes]
+    first_s = [snap_utc_seconds(model.bursts[index].azimuth_time) for index in indexes]
     last_s = [start + (lines - 1) * interval for start in first_s]
     height = int((last_s[-1] - first_s[0]) / interval)
     if height < 1:
         raise ValueError("deburst time span is empty")
-    chosen: list[int] = []
+    first_valid = first_s[0] + int(model.bursts[indexes[0]].first_valid_line) * interval
+    last_valid = first_s[-1] + int(model.bursts[indexes[-1]].last_valid_line) * interval
+    y_min = int((first_valid - first_s[0]) / interval)
+    y_max = int((last_valid - first_s[0]) / interval)
+    chosen = np.full(height, -1, dtype=np.int32)
     for line in range(height):
+        if line < y_min or line > y_max:
+            continue
         target = first_s[0] + line * interval
         hits: list[tuple[int, int, float, float]] = []
         for position, index in enumerate(indexes):
@@ -120,18 +122,24 @@ def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None =
         if len(hits) == 2:
             mid = (hits[0][3] + hits[1][2]) / 2.0
             pick = hits[1] if target > mid else hits[0]
-        chosen.append(pick[0] * lines + pick[1])
-    if not chosen:
+        chosen[line] = pick[0] * lines + pick[1]
+    if int(np.count_nonzero(chosen >= 0)) == 0:
         raise ValueError("deburst kept no lines")
-    return np.asarray(chosen, dtype=np.int32)
+    return chosen
+
+
+def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
+    """Source lines that are copied. Leading and trailing no-data lines are omitted."""
+    rows = deburst_output_rows(model, burst_indexes)
+    return rows[rows >= 0]
 
 
 def deburst_lines(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> list[tuple[int, int, int]]:
-    """Local inclusive line ranges kept from each selected burst.
+    """Local inclusive line ranges that are copied from each selected burst.
 
-    Each item is ``(burst_index, first_line, last_line)``. The ranges follow
-    :func:`deburst_source_rows`, so a split product does not trim its outer
-    edge against a burst that was not selected.
+    Each item is ``(burst_index, first_line, last_line)``. No-data lines at
+    the valid-azimuth truncation are not listed here; they are zeros in
+    :func:`deburst_output_rows`.
     """
     rows = deburst_source_rows(model, burst_indexes)
     lines = int(model.lines_per_burst)
@@ -160,11 +168,24 @@ def deburst(grids: list[RadarGrid]) -> RadarGrid:
         raise ValueError("deburst needs at least one burst")
     model = grids[0].model
     col = grids[0].col
+    width = int(grids[0].data.shape[1])
     indexes = sorted({int(grid.row // model.lines_per_burst) for grid in grids})
-    source_rows = deburst_source_rows(model, indexes)
+    source_rows = deburst_output_rows(model, indexes)
+    copied = source_rows[source_rows >= 0]
+    full = bool(copied.size) and all(
+        any(int(grid.row) <= int(absolute) < int(grid.row) + int(grid.data.shape[0]) for grid in grids)
+        for absolute in copied
+    )
     pieces: list[np.ndarray] = []
     first_absolute = None
     for absolute in source_rows:
+        if int(absolute) < 0:
+            if full:
+                if first_absolute is None:
+                    first_absolute = int(copied[0])
+                pieces.append(np.zeros(width, dtype=np.complex64))
+            continue
+        placed = False
         for grid in grids:
             if grid.col != col or grid.model.lines_per_burst != model.lines_per_burst:
                 raise ValueError("deburst windows must share the column crop and swath")
@@ -173,7 +194,10 @@ def deburst(grids: list[RadarGrid]) -> RadarGrid:
                 if first_absolute is None:
                     first_absolute = int(absolute)
                 pieces.append(np.asarray(grid.data[local], dtype=np.complex64))
+                placed = True
                 break
+        if full and not placed:
+            raise ValueError("deburst source line is missing from the burst windows")
     if not pieces or first_absolute is None:
         raise ValueError("deburst kept no lines")
     return RadarGrid(row=int(first_absolute), col=col, data=np.stack(pieces, axis=0), model=model)

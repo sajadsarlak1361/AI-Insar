@@ -197,6 +197,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._busy = False
         self._preferred_layer: str | None = None
         self.safe_product = None
+        self.safe_products = []
         self._product_status: str | None = None
         self.stage_buttons: list[QtWidgets.QPushButton] = []
         self._build()
@@ -514,16 +515,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._preferred_layer = "SLC amplitude"
 
     def _opened_safe_paths(self) -> list:
-        if self.safe_product is None:
-            return []
-        return [self.safe_product.root]
+        products = list(self.safe_products)
+        if not products and self.safe_product is not None:
+            products = [self.safe_product]
+        return [product.root for product in products]
 
     def _source_names(self) -> list[str]:
         names: list[str] = []
         if self.workspace.stack is not None:
             names.append(f"Workspace SLC stack {self.workspace.stack.data.shape}")
-        if self.safe_product is not None:
-            names.append(self.safe_product.product_id)
+        for product in self.safe_products or ([] if self.safe_product is None else [self.safe_product]):
+            if product.product_id not in names:
+                names.append(product.product_id)
         return names
 
     def open_safe_product(self) -> None:
@@ -589,7 +592,7 @@ class MainWindow(QtWidgets.QMainWindow):
         col: int,
         height: int,
         width: int,
-        form_interferograms: bool = True,
+        form_interferograms: bool = False,
         reference=None,
         burst_first: int = 0,
         burst_last: int = 0,
@@ -653,11 +656,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.stack = stack
         self.workspace.dem_m = None
         self.workspace.safe_inputs = list(records)
+        self.workspace.crop_without_coregistration = True
         reference = next(item for item in records if item.is_reference)
         day = (reference.acquisition or "")[:10]
-        matched = np.where(stack.dates.astype(str) == day)[0] if day else np.array([])
+        stack_days = np.array([str(item)[:10] for item in stack.dates])
+        matched = np.where(stack_days == day)[0] if day else np.array([])
         self.workspace.reference_index = int(matched[0]) if matched.size == 1 else None
         self.workspace.clear_products()
+        self._bind_loaded_safe_products(records, stack, int(row), int(col), swath, pol)
         reference_name = next(item.file_name for item in records if item.is_reference)
         names = ", ".join(item.file_name for item in records)
         tracks = {item.track for item in records if item.track}
@@ -678,10 +684,85 @@ class MainWindow(QtWidgets.QMainWindow):
                 "The array is the shared row/column crop, not a burst stitch."
             )
         self._preferred_layer = "SLC amplitude"
+        self._log(
+            f"Import crop is rows {row}:{row + height}, columns {col}:{col + width}. "
+            "This bounded crop is not a burst-limited scientific ROI."
+        )
         if form_interferograms and stack.n_dates >= 2:
+            self._log(
+                "Forming a teaching interferogram on the crop. "
+                "Split, Apply Orbit File, Back Geocoding, and ESD were not run."
+            )
             self.run_interferograms()
         elif form_interferograms:
-            self._log("One SAFE zip is in the stack. A second date is required before an interferogram.")
+            self._log("One SAFE product is in the stack. A second date is required before an interferogram.")
+        else:
+            self._log(
+                "Interferograms were not formed. Split, Apply Orbit File, Back Geocoding, "
+                "and ESD have not run."
+            )
+
+    def _bind_loaded_safe_products(self, records, stack, row: int, col: int, swath: str, pol: str) -> None:
+        """Show every loaded SAFE product and keep a radar window for the crop.
+
+        The crop is the import window. It is not a burst-limited scientific ROI
+        and it is not coregistration. Annotation orbits stay on the grid model
+        until Apply Orbit File replaces them.
+        """
+        from pathlib import Path
+
+        from ai_insar.pipeline.s1_annotation import read_swath_from_product
+        from ai_insar.pipeline.tops_ops import RadarGrid
+        from ai_insar.safe import resolve_safe, select_measurement
+
+        products = []
+        for record in records:
+            try:
+                products.append(resolve_safe(Path(record.path)))
+            except Exception as exc:
+                self._log(f"{record.file_name} was not opened in the product explorer: {exc}")
+        self.safe_products = products
+        reference_record = next(item for item in records if item.is_reference)
+        reference_product = next(
+            (product for product in products if product.product_id == reference_record.product_id),
+            products[0] if products else None,
+        )
+        self.safe_product = reference_product
+        if products:
+            self.product_explorer.set_products(products, reference_id=None if reference_product is None else reference_product.product_id)
+            self.product_explorer.show()
+        self.workspace.reference_grid = None
+        self.workspace.secondary_grid = None
+        self.workspace.precise_orbit = None
+        self.workspace.secondary_orbit = None
+        days = [str(item)[:10] for item in stack.dates]
+        for index, day in enumerate(days):
+            record = next((item for item in records if (item.acquisition or "")[:10] == day), None)
+            product = next((item for item in products if record is not None and item.product_id == record.product_id), None)
+            if product is None:
+                continue
+            try:
+                measurement = select_measurement(product, swath, pol)
+                model = read_swath_from_product(product, measurement)
+            except Exception as exc:
+                self._log(f"Annotation radar grid was not stored for {product.product_id}: {exc}")
+                continue
+            grid = RadarGrid(row, col, np.asarray(stack.data[index], dtype=np.complex64), model)
+            if self.workspace.reference_index == index or (
+                self.workspace.reference_index is None and record is not None and record.is_reference
+            ):
+                self.workspace.reference_grid = grid
+                self.workspace.swath_model = model
+                self._log(
+                    f"Stored the reference radar window {grid.shape} at row {row}, column {col} "
+                    f"from {product.product_id}. The annotation orbit is not a precise orbit yet."
+                )
+            elif self.workspace.secondary_grid is None:
+                self.workspace.secondary_grid = grid
+                self._log(
+                    f"Stored the secondary radar window {grid.shape} at row {row}, column {col} "
+                    f"from {product.product_id}."
+                )
 
     def open_safe_path(self, path) -> None:
         """Inspect a SAFE zip (or a folder / manifest). Pixels are not read."""
@@ -689,6 +770,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         product = resolve_safe(Path(path))
         self.safe_product = product
+        self.safe_products = [product]
         self.product_explorer.set_product(product)
         self.product_explorer.show()
         self._product_status = format_product_status(product)
@@ -853,11 +935,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_split_dialog(self) -> None:
         dialog = TopsSplitDialog(self)
-        if self.safe_product is not None:
-            dialog.bind_product(self.safe_product)
+        self._bind_split_dialog(dialog)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_split(dialog.parameters())
+
+    def _bind_split_dialog(self, dialog) -> None:
+        products = list(self.safe_products)
+        if not products and self.safe_product is not None:
+            products = [self.safe_product]
+        if not products:
+            return
+        reference = self.safe_product if self.safe_product in products else products[0]
+        dialog.source.blockSignals(True)
+        dialog.source.clear()
+        for product in products:
+            dialog.source.addItem(str(product.root), product.product_id)
+        dialog.source.blockSignals(False)
+        dialog.bind_product(reference)
+
+        def _rebind(text: str) -> None:
+            for product in products:
+                if str(product.root) == text:
+                    dialog.bind_product(product)
+                    return
+
+        dialog.source.currentTextChanged.connect(_rebind)
 
     def open_deburst_dialog(self) -> None:
         dialog = TopsDeburstDialog(self, can_run=self.workspace.reference_grid is not None)
@@ -876,6 +979,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_backgeocoding_dialog(self) -> None:
         dialog = BackGeocodingDialog(self, runner=self.apply_backgeocoding)
+        paths = self._opened_safe_paths()
+        if paths:
+            dialog.product_set.add_paths(paths)
         dialog.exec()
 
     def open_phase_dialog(self) -> None:
@@ -1234,8 +1340,9 @@ class MainWindow(QtWidgets.QMainWindow):
         ifg[0] = subtract_phase(ifg[0], phase)
         self.workspace.interferograms = ifg
         self._log(
-            f"Removed geometric phase (height {height:.1f} m) from pair 0. "
-            f"RMS {float(np.sqrt(np.mean(phase**2))):.3f} rad."
+            "Removed ellipsoid flat-earth phase from pair 0"
+            + (" plus the per-pixel topographic term." if dem is not None else ".")
+            + f" RMS {float(np.sqrt(np.nanmean(phase**2))):.3f} rad."
         )
 
     def _combo_int(self, params: dict, key: str, default: int) -> int:
@@ -1256,19 +1363,38 @@ class MainWindow(QtWidgets.QMainWindow):
             square=bool(params["square_pixel"]),
         )
         if params["single_reference"]:
-            pairs = [(0, later) for later in range(1, self.workspace.stack.n_dates)]
-            if pairs != list(self.workspace.pairs):
+            reference = self.workspace.reference_index
+            if reference is None:
+                pairs = [(0, later) for later in range(1, self.workspace.stack.n_dates)]
+                planes = None
+            else:
+                pairs = []
+                planes = []
+                for secondary in range(self.workspace.stack.n_dates):
+                    if secondary == int(reference):
+                        continue
+                    earlier, later = sorted((secondary, int(reference)))
+                    pairs.append((earlier, later))
+                    planes.append(self.workspace.stack.data[int(reference)] * np.conj(self.workspace.stack.data[secondary]))
+            if pairs != list(self.workspace.pairs or []):
                 self.workspace.pairs = pairs
-                self.workspace.interferograms = form_interferograms(self.workspace.stack.data, pairs)
+                if planes is None:
+                    self.workspace.interferograms = form_interferograms(self.workspace.stack.data, pairs)
+                else:
+                    self.workspace.interferograms = np.stack(planes).astype(np.complex64)
                 self.workspace.filtered = None
                 self.workspace.unwrapped = None
                 self.workspace.los_m = None
                 self.workspace.velocity_m_yr = None
                 self.workspace.mask = None
-                self._log(
-                    "Single reference: pairs are date 0 with each later date. "
-                    "Interferograms were recomputed."
-                )
+                if reference is None:
+                    relation = "pairs are date 0 with each later date, later × conjugate(earlier)"
+                else:
+                    relation = (
+                        f"each interferogram is reference index {int(reference)} "
+                        "× conjugate(secondary)"
+                    )
+                self._log(f"Single reference: {relation}. Interferograms were recomputed.")
         self.run_coherence()
         if request.open_in_app:
             self._preferred_layer = "Coherence"
@@ -1498,6 +1624,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"check residual {backgeocode.last_residual_px:.4f} pixels."
         )
         self.workspace.secondary_grid = RadarGrid(early.row, early.col, resampled, early.model)
+        self.workspace.crop_without_coregistration = False
         self._log(
             f"Back Geocoding resampled the secondary onto the reference grid {resampled.shape}. "
             "Deramp, range-Doppler, bilinear"
@@ -1946,6 +2073,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def run_interferograms(self) -> None:
+        if self.workspace.crop_without_coregistration:
+            self._log(
+                "Teaching crop-window alignment: the same row and column window in each measurement. "
+                "There is no coregistration."
+            )
         compute_interferograms(self.workspace, self._log)
         self._preferred_layer = "Interferogram phase"
 

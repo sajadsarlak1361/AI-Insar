@@ -81,16 +81,21 @@ def test_real_burst_chain_deburst_flat_earth_coregistration_and_snaphu(tmp_path:
     early_orbit = read_eof_orbit(EARLY_ORB)
     late_orbit = read_eof_orbit(LATE_ORB)
     kept = deburst_lines(early_model)
-    # SNAP keeps the first line of the first burst. It does not drop lines
-    # whose firstValidSample is -1; those samples stay in the raster.
-    assert kept[0][1] == 0
+    # The copied azimuth starts at the truncated valid-line index. That can
+    # be one line earlier than firstValidSample because SNAP truncates
+    # (validTime-firstTime)/dt.
+    assert kept[0][1] <= early_model.bursts[0].first_valid_line
     assert kept[1][1] > early_model.bursts[1].first_valid_line
     assert sum(stop - start + 1 for _index, start, stop in kept) < early_model.number_of_lines
-    # A split of SNAP bursts 5 and 6 does not trim the outer overlap with the
-    # bursts that were not selected.
+    # Annotation index 4 is azimuth 2021-06-30T05:26:15.752882, which is
+    # SNAP's 1-based burst 5. Index 5 is the next burst. The split does not
+    # trim those bursts against bursts that were not selected.
+    assert str(early_model.bursts[4].azimuth_time).startswith("2021-06-30T05:26:15.752882")
+    assert str(early_model.bursts[5].azimuth_time).startswith("2021-06-30T05:26:18.509383")
     split = deburst_lines(early_model, [4, 5])
-    assert split[0] == (4, 0, split[0][2])
+    assert split[0][0] == 4
     assert split[0][1] < early_model.bursts[4].first_valid_line
+    assert split[1][0] == 5
 
     row = 4 * early_model.lines_per_burst + 700
     col = 11000

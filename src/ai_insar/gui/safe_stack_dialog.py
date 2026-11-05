@@ -103,9 +103,11 @@ class SafeStackDialog(QtWidgets.QDialog):
             "and crop, then the dates are sorted by the manifest start time.\n\n"
             "Teaching crop-window alignment: the same row and column window "
             "is taken from each measurement. There is no coregistration, "
-            "deburst, or calibration. With two or more dates, the interferogram "
-            "stage can run as later × conjugate(earlier) on this stack. "
-            "SAFE folders are accepted as well as .zip files."
+            "deburst, or calibration. The crop is not Split, Apply Orbit File, "
+            "Back Geocoding, or ESD. If interferograms are requested, each one "
+            "is the selected reference times the conjugate of another date. "
+            "That equals later × conjugate(earlier) only when the reference is "
+            "the later date. SAFE folders are accepted as well as .zip files."
         )
         note.setWordWrap(True)
         note.setObjectName("safeStackNote")
@@ -196,9 +198,11 @@ class SafeStackDialog(QtWidgets.QDialog):
 
         self.form_ifg = QtWidgets.QCheckBox("Form interferograms after the stack is loaded")
         self.form_ifg.setObjectName("safeStackFormIfg")
-        self.form_ifg.setChecked(True)
+        self.form_ifg.setChecked(False)
         self.form_ifg.setToolTip(
-            "Runs stage 2 on this stack: each pair is later × conjugate(earlier)."
+            "Off by default. Checking it forms a teaching interferogram on this crop only. "
+            "It does not run Split, Apply Orbit File, Back Geocoding, or ESD. "
+            "There is no coregistration. The complex value is reference × conjugate(secondary)."
         )
         layout.addWidget(self.form_ifg)
         layout.addStretch(1)

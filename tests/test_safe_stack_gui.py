@@ -46,7 +46,7 @@ def test_file_menu_loads_a_safe_stack_and_forms_interferograms(qapp, tmp_path: P
     assert note is not None
     assert "crop-window alignment" in note.text()
     assert "no coregistration" in note.text()
-    assert dialog.form_ifg.isChecked()
+    assert not dialog.form_ifg.isChecked()
 
     window.load_safe_stack(
         [late, early],
@@ -79,5 +79,52 @@ def test_file_menu_loads_a_safe_stack_and_forms_interferograms(qapp, tmp_path: P
     assert window.workspace.coherence is not None
     assert window.workspace.coherence.shape == ifg.shape
     assert "ERROR" not in window.log.toPlainText()
+    assert "There is no coregistration." in window.log.toPlainText()
     window.close()
     dialog.close()
+
+
+def test_stack_load_binds_the_reference_and_does_not_form_an_interferogram(qapp, tmp_path: Path):
+    early = dated_safe_zip(tmp_path, "20210630", 1 + 0j)
+    late = dated_safe_zip(tmp_path, "20210712", 0 + 1j)
+    window = MainWindow()
+    window.load_safe_stack(
+        [late, early],
+        swath="IW1",
+        pol="VV",
+        row=0,
+        col=0,
+        height=2,
+        width=2,
+        reference=early,
+        form_interferograms=False,
+    )
+    qapp.processEvents()
+    assert window.workspace.interferograms is None
+    assert window.workspace.reference_index == 0
+    assert window.workspace.crop_without_coregistration is True
+    assert window.safe_product is not None
+    labels = [
+        window.product_explorer.tree.topLevelItem(index).text(0)
+        for index in range(window.product_explorer.tree.topLevelItemCount())
+    ]
+    assert not any(label == "No Sentinel-1 product open" for label in labels)
+    assert any(label.endswith("(reference)") and "20210630" in label for label in labels)
+    assert any("20210712" in label for label in labels)
+    log = window.log.toPlainText()
+    assert "SAFE zip stack" in log
+    assert "There is no coregistration." in log
+    assert "not a burst-limited scientific ROI" in log
+    assert "Interferograms were not formed" in log
+    from ai_insar.gui.chain_dialogs import TopsSplitDialog
+
+    split = TopsSplitDialog(window)
+    window._bind_split_dialog(split)
+    swaths = [split.subswath.itemText(index) for index in range(split.subswath.count())]
+    assert swaths[0] == ""
+    assert "IW1" in swaths
+    assert window.workspace.reference_grid is not None
+    assert window.workspace.reference_grid.row == 0
+    assert window.workspace.precise_orbit is None
+    split.close()
+    window.close()

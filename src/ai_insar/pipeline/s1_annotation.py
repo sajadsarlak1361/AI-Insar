@@ -8,6 +8,7 @@ are kept.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -88,6 +89,29 @@ class SwathModel:
 
 
 WGS84_MEAN_RADIUS_M = 6371000.0
+# SNAP ProductData.UTC.getMJD is days since 2000-01-01, then burst times are
+# getMJD()*86400. 1/86400 in float64 is not a dyadic rational, so a burst
+# interval is not an integer number of azimuth lines.
+_SNAP_UTC_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_SNAP_DAY_SCALE = 1.0 / 86400.0
+
+
+def snap_utc_seconds(when: np.datetime64) -> float:
+    """Seconds since 2000-01-01 on SNAP's UTC scale.
+
+    This is the clock ``Sentinel1Utils`` stores in ``burstFirstLineTime``.
+    Subtracting two values and dividing by the azimuth interval must use
+    these doubles: a nanosecond datetime difference rounds the other way
+    and changes the deburst line count.
+    """
+    text = str(when)
+    head, fraction = text.split(".")
+    micros = int((fraction + "000000")[:6])
+    stamp = datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    days = (datetime(stamp.year, stamp.month, stamp.day, tzinfo=timezone.utc) - _SNAP_UTC_EPOCH).days
+    seconds = stamp.hour * 3600 + stamp.minute * 60 + stamp.second
+    mjd = days + (seconds + micros * 1e-6) * _SNAP_DAY_SCALE
+    return float(mjd * 86400.0)
 
 
 def read_swath_annotation(path: Path | str) -> SwathModel:

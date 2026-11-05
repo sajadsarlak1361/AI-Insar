@@ -1,0 +1,66 @@
+{
+  "snap_gpt": "12.0.0",
+  "snap_gui_audit": "14.0.0",
+  "pair": {
+    "reference": "S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B",
+    "secondary": "S1A_IW_SLC__1SDV_20210712T052605_20210712T052632_038740_049246_C00B",
+    "swath": "IW1",
+    "polarisation": "VV",
+    "annotation_burst_indexes_0_based": [4, 5],
+    "snap_burst_indexes_1_based": [5, 6],
+    "burst_4_azimuth_time": "2021-06-30T05:26:15.752882",
+    "burst_5_azimuth_time": "2021-06-30T05:26:18.509383",
+    "range_samples": [11000, 11520]
+  },
+  "stages": [
+    {
+      "stage": "TOPS Split and Apply Orbit File pixels",
+      "executed_in_snap12": true,
+      "executed_in_ai_insar": true,
+      "max_abs_difference": 0.0,
+      "shape": [3016, 520],
+      "matched": true,
+      "note": "Apply Orbit File does not change SLC samples."
+    },
+    {
+      "stage": "Apply Orbit File state vectors",
+      "executed_in_snap12": true,
+      "executed_in_ai_insar": true,
+      "max_position_difference_m": 0.0008825566446900676,
+      "vectors": 25,
+      "orbit_file": "S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF.zip",
+      "matched": true,
+      "note": "Same POEORB, polynomial degree 3. Pixel equality is not this check."
+    },
+    {
+      "stage": "Back Geocoding",
+      "executed_in_snap12": true,
+      "pixel_compared": false,
+      "matched": false,
+      "note": "The full-swath graph set coregistered_stack=1. A same-window pixel comparison is not done."
+    },
+    {
+      "stage": "ESD",
+      "executed_in_snap12_acceptance_graph": false,
+      "matched": false,
+      "note": "tests/snap_graphs/iw1_vv_bursts_5_6.xml goes from Back-Geocoding to Interferogram. The multilook DIMAP has no ESD metadata. An overlap estimate on this branch was about 0.015 and was not applied. That is not a successful ESD."
+    },
+    {
+      "stage": "TOPSAR Deburst",
+      "executed_in_snap12": true,
+      "executed_in_ai_insar": true,
+      "snap_lines": 2847,
+      "ai_insar_lines": 2847,
+      "max_abs_difference": 0.0,
+      "nodata_lines": 36,
+      "matched": true,
+      "note": "Height is the truncated SNAP UTC span. Lines outside the truncated valid-azimuth window are zero. This is the reference SLC deburst, samples 11000:11520."
+    },
+    {
+      "stage": "Interferogram, multilook, Goldstein, SNAPHU, displacement, terrain, KMZ",
+      "pixel_compared": false,
+      "matched": false,
+      "note": "Not claimed equal. SNAP 12 did write a full-swath multilook (1142x474, azimuth looks 6) and a terrain product. They are not a pixel match to this branch."
+    }
+  ]
+}

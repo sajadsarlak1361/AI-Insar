@@ -118,25 +118,28 @@ def write_beam_dimap(
     <NUM_TIE_POINT_GRIDS>2</NUM_TIE_POINT_GRIDS>
     <Tie_Point_Grid_Info>
       <TIE_POINT_GRID_INDEX>0</TIE_POINT_GRID_INDEX>
+      <TIE_POINT_DESCRIPTION/>
       <PHYSICAL_UNIT>deg</PHYSICAL_UNIT>
       <TIE_POINT_GRID_NAME>latitude</TIE_POINT_GRID_NAME>
       <DATA_TYPE>float32</DATA_TYPE>
       <NCOLS>2</NCOLS><NROWS>2</NROWS>
-      <OFFSET_X>0.5</OFFSET_X><OFFSET_Y>0.5</OFFSET_Y>
+      <OFFSET_X>0.0</OFFSET_X><OFFSET_Y>0.0</OFFSET_Y>
       <STEP_X>{step_x}</STEP_X><STEP_Y>{step_y}</STEP_Y>
+      <CYCLIC discontinuity="0">false</CYCLIC>
     </Tie_Point_Grid_Info>
     <Tie_Point_Grid_Info>
       <TIE_POINT_GRID_INDEX>1</TIE_POINT_GRID_INDEX>
+      <TIE_POINT_DESCRIPTION/>
       <PHYSICAL_UNIT>deg</PHYSICAL_UNIT>
       <TIE_POINT_GRID_NAME>longitude</TIE_POINT_GRID_NAME>
       <DATA_TYPE>float32</DATA_TYPE>
       <NCOLS>2</NCOLS><NROWS>2</NROWS>
-      <OFFSET_X>0.5</OFFSET_X><OFFSET_Y>0.5</OFFSET_Y>
+      <OFFSET_X>0.0</OFFSET_X><OFFSET_Y>0.0</OFFSET_Y>
       <STEP_X>{step_x}</STEP_X><STEP_Y>{step_y}</STEP_Y>
+      <CYCLIC discontinuity="0">false</CYCLIC>
     </Tie_Point_Grid_Info>
   </Tie_Point_Grids>
   <Geoposition>
-    <BAND_INDEX>0</BAND_INDEX>
     <Geoposition_Points>
       <TIE_POINT_GRID_NAME_LAT>latitude</TIE_POINT_GRID_NAME_LAT>
       <TIE_POINT_GRID_NAME_LON>longitude</TIE_POINT_GRID_NAME_LON>
@@ -171,7 +174,7 @@ def write_beam_dimap(
         </Horizontal_Datum>
       </Geographic_CS>
     </Horizontal_CS>
-    <WKT>{_WGS84_WKT}</WKT>
+    {"" if bounds is not None else f"<WKT>{_WGS84_WKT}</WKT>"}
   </Coordinate_Reference_System>
   <Raster_Dimensions>
     <NCOLS>{cols}</NCOLS>

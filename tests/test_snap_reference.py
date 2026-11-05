@@ -21,6 +21,8 @@ from ai_insar.pipeline.snaphu_io import export_snaphu
 from ai_insar.pipeline.tops_ops import (
     RadarGrid,
     burst_overlap_rows,
+    deburst_output_rows,
+    deburst_window,
     deramp,
     enhanced_spectral_diversity,
     overlap_doppler_separation_hz,
@@ -83,6 +85,38 @@ def test_gpt_reopens_beam_dimap_complex_values(tmp_path: Path):
     imag = np.fromfile(tmp_path / "via_subset.data" / "q_IW1_VV.img", dtype=endian)
     assert np.array_equal(real, np.arange(12, dtype=np.int16))
     assert np.array_equal(imag, np.arange(12, dtype=np.int16))
+    geocoded = write_beam_dimap(
+        tmp_path,
+        "geocoded",
+        values,
+        (12.6, 50.2, 12.9, 50.5),
+        band_name="IW1_VV",
+        unit="1",
+    )
+    geocoded_out = tmp_path / "geocoded_subset.dim"
+    geocoded_proc = subprocess.run(
+        [
+            "/home/ubuntu/esa-snap/bin/gpt",
+            "Subset",
+            f"-Ssource={geocoded}",
+            "-Pregion=0,0,4,3",
+            "-t",
+            str(geocoded_out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if geocoded_proc.returncode != 0:
+        pytest.fail(geocoded_proc.stderr[-800:])
+    opened = geocoded_out.read_text(encoding="utf-8", errors="replace")
+    assert "TIE_POINT_GRID_NAME_LAT" in opened
+    assert "latitude" in opened
+    geo_header = (tmp_path / "geocoded_subset.data" / "i_IW1_VV.hdr").read_text(encoding="utf-8")
+    geo_endian = ">i2" if "byte order = 1" in geo_header else "<i2"
+    geo_real = np.fromfile(tmp_path / "geocoded_subset.data" / "i_IW1_VV.img", dtype=geo_endian)
+    geo_imag = np.fromfile(tmp_path / "geocoded_subset.data" / "q_IW1_VV.img", dtype=geo_endian)
+    assert np.array_equal(geo_real, np.arange(12, dtype=np.int16))
+    assert np.array_equal(geo_imag, np.arange(12, dtype=np.int16))
 
 
 def test_snap_two_burst_subset_matches_the_slc_reader():
@@ -97,6 +131,36 @@ def test_snap_two_burst_subset_matches_the_slc_reader():
     assert float(np.max(np.abs(ours - snap))) == 0.0
     assert float(np.mean(np.abs(ours))) > 1.0
     assert TIFF.stat().st_size == before
+
+
+def test_snap_deburst_of_bursts_5_and_6_matches_output_grid():
+    """SNAP 12 TOPSAR-Deburst of annotation bursts 4 and 5, samples 11000:11520.
+
+    Burst 4 (0-based) is the burst whose azimuth time is
+    2021-06-30T05:26:15.752882. That is SNAP firstBurstIndex 5. The output
+    has 2847 lines because (lastLineTime-firstLineTime)/dt truncates.
+    """
+    measurement = Path(
+        "/tmp/safe-full/S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B.SAFE"
+        "/measurement/s1a-iw1-slc-vv-20210630t052604-20210630t052629-038565-048cfd-004.tiff"
+    )
+    snap_i_path = Path("/tmp/snap-ref/stage/deburst_ref.data/i_IW1_VV.img")
+    snap_q_path = Path("/tmp/snap-ref/stage/deburst_ref.data/q_IW1_VV.img")
+    if not measurement.is_file() or not snap_i_path.is_file() or not ANN.is_file():
+        pytest.skip("SNAP deburst reference is not on disk")
+    model = read_swath_annotation(ANN)
+    assert str(model.bursts[4].azimuth_time).startswith("2021-06-30T05:26:15.752882")
+    assert str(model.bursts[5].azimuth_time).startswith("2021-06-30T05:26:18.509383")
+    plan = deburst_output_rows(model, [4, 5])
+    assert plan.shape == (2847,)
+    assert int(np.sum(plan < 0)) == 36
+    window = read_tiff_window(measurement, ROW, 11000, HEIGHT, 520)
+    debursted = deburst_window(window, model, ROW, 11000)
+    assert debursted.data.shape == (2847, 520)
+    snap_i = np.fromfile(snap_i_path, dtype=">i2").reshape(2847, 520)
+    snap_q = np.fromfile(snap_q_path, dtype=">i2").reshape(2847, 520)
+    snap = snap_i.astype(np.float32) + 1j * snap_q.astype(np.float32)
+    assert float(np.max(np.abs(debursted.data - snap))) == 0.0
 
 
 def test_two_burst_deramp_roundtrip_is_exact():
