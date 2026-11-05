@@ -67,6 +67,7 @@ class OperatorRequest:
     directory: str
     open_in_app: bool
     skipped: tuple[str, ...] = ()
+    format_name: str = "NumPy (.npy)"
 
 
 def _disable(widget: QtWidgets.QWidget, note: str) -> None:
@@ -309,6 +310,7 @@ class OperatorDialog(QtWidgets.QDialog):
             directory=self.directory.text().strip(),
             open_in_app=self.open_box.isChecked(),
             skipped=skipped,
+            format_name=self.format_box.currentText(),
         )
 
     def _on_run(self) -> None:
@@ -736,47 +738,67 @@ class GoldsteinDialog(OperatorDialog):
             suffix=PRODUCT_SUFFIX["goldstein"],
             object_name="goldsteinDialog",
             notes=(
-                "Adaptive alpha, the FFT block extent in metres, and the coherence mask "
-                "are disabled. Alpha, FFT size, and the spectral window width are applied."
+                "SNAP 14 batch 4: Use adaptive alpha is checked and the numeric fields stay white. "
+                "Checked adaptive alpha uses α = clip(1 − block-mean coherence, minimum, maximum). "
+                "It is refused when no coherence image exists. A non-zero FFT block extent in metres "
+                "is refused because this stack has no pixel spacing."
             ),
+            source_label="Source product:",
+            target_text="",
+            directory_text="/home/box",
+            formats=OBSERVED_SAVE_FORMATS,
+            format_default="BEAM-DIMAP",
         )
         form = QtWidgets.QFormLayout()
         self.alpha = _double(1.0, 0.0, 1.0, "goldAlpha", decimals=2, step=0.05)
-        self.alpha.setToolTip("Adaptive filter exponent in (0, 1]. 0 reconstructs the input in this build.")
         self.adaptive = QtWidgets.QCheckBox("Use adaptive alpha")
         self.adaptive.setObjectName("goldAdaptive")
-        _disable(self.adaptive, _ADAPTIVE_NOTE)
+        self.adaptive.setChecked(True)
         self.alpha_min = _double(0.2, 0.0, 1.0, "goldAlphaMin", decimals=2, step=0.05)
-        _disable(self.alpha_min, _ADAPTIVE_NOTE)
         self.alpha_max = _double(1.0, 0.0, 1.0, "goldAlphaMax", decimals=2, step=0.05)
-        _disable(self.alpha_max, _ADAPTIVE_NOTE)
         self.fft_size = _combo(("32", "64", "128", "256"), "64", "goldFftSize")
         self.block_extent = _double(0.0, 0.0, 10000.0, "goldBlockExtent", decimals=1, step=1.0)
-        _disable(self.block_extent, "FFT block extent in metres is not implemented. FFT size is in pixels.")
         self.window = _combo(("3", "5", "7"), "3", "goldWindow")
-        self.window.setToolTip("Spectral smoothing width passed to the in-tree Goldstein filter.")
         self.coherence_mask = QtWidgets.QCheckBox("Use coherence mask")
         self.coherence_mask.setObjectName("goldCoherenceMask")
-        _disable(self.coherence_mask, _MASK_NOTE)
+        self.coherence_mask.setChecked(False)
         self.coherence_threshold = _double(0.2, 0.0, 1.0, "goldCoherenceThreshold", decimals=2, step=0.05)
-        _disable(self.coherence_threshold, _MASK_NOTE)
-        form.addRow("Adaptive Filter Exponent in (0, 1]", self.alpha)
+        form.addRow("Adaptive Filter Exponent in (0,1]:", self.alpha)
         form.addRow(self.adaptive)
-        form.addRow("Adaptive alpha minimum", self.alpha_min)
-        form.addRow("Adaptive alpha maximum", self.alpha_max)
-        form.addRow("FFT Size", self.fft_size)
-        form.addRow("FFT Block Extent (m)", self.block_extent)
-        form.addRow("Window Size", self.window)
+        form.addRow("Adaptive alpha minimum:", self.alpha_min)
+        form.addRow("Adaptive alpha maximum:", self.alpha_max)
+        form.addRow("FFT Size:", self.fft_size)
+        form.addRow("FFT Block Extent (m):", self.block_extent)
+        form.addRow("Window Size:", self.window)
         form.addRow(self.coherence_mask)
-        form.addRow("Coherence Threshold in [0, 1]", self.coherence_threshold)
+        form.addRow("Coherence Threshold in [0,1]:", self.coherence_threshold)
         self.add_processing(form)
+
+    def validate(self) -> str:
+        message = self.validate_io()
+        if message:
+            return message
+        if float(self.block_extent.value()) != 0.0:
+            return (
+                "FFT Block Extent (m) is not zero. This stack has no pixel spacing, "
+                "so a metre block size is not converted."
+            )
+        if float(self.alpha_min.value()) > float(self.alpha_max.value()):
+            return "Adaptive alpha minimum is above the maximum."
+        return ""
 
     def parameters(self) -> dict:
         return {
-            "request": self.io_request(skipped=("Adaptive alpha is not applied.", "Coherence mask is not applied.")),
+            "request": self.io_request(),
             "alpha": float(self.alpha.value()),
+            "adaptive": self.adaptive.isChecked(),
+            "alpha_min": float(self.alpha_min.value()),
+            "alpha_max": float(self.alpha_max.value()),
             "fft_size": int(self.fft_size.currentText()),
+            "block_extent_m": float(self.block_extent.value()),
             "window_size": int(self.window.currentText()),
+            "coherence_mask": self.coherence_mask.isChecked(),
+            "coherence_threshold": float(self.coherence_threshold.value()),
         }
 
 

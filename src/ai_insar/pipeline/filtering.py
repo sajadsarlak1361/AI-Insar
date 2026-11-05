@@ -58,6 +58,9 @@ def goldstein_filter(
     overlap: float = 0.5,
     spectrum_smooth: int = 3,
     backend: str | None = None,
+    coherence: np.ndarray | None = None,
+    alpha_min: float = 0.2,
+    alpha_max: float = 1.0,
 ) -> np.ndarray:
     """Filter one complex interferogram. Returns ``complex64`` of the same shape.
 
@@ -80,6 +83,13 @@ def goldstein_filter(
     if overlap < 0.0 or overlap >= 1.0:
         raise ValueError("overlap must be in [0, 1)")
     smooth = max(1, int(spectrum_smooth))
+    coh = None
+    if coherence is not None:
+        coh = np.asarray(coherence, dtype=np.float64)
+        if coh.shape != ifg.shape:
+            raise ValueError("coherence shape must match the interferogram")
+        if not 0.0 <= float(alpha_min) <= float(alpha_max) <= 1.0:
+            raise ValueError("adaptive alpha bounds must satisfy 0 <= min <= max <= 1")
     chosen = _resolve_backend(backend)
     source = np.array(ifg, dtype=np.complex64, copy=True)
     invalid = ~np.isfinite(source)
@@ -89,7 +99,7 @@ def goldstein_filter(
 
     filtered = None
     used = "numpy"
-    if chosen == "torch":
+    if chosen == "torch" and coh is None:
         try:
             filtered = _goldstein_torch(source, float(alpha), win, float(overlap), smooth)
         except Exception:
@@ -97,7 +107,16 @@ def goldstein_filter(
         else:
             used = "torch"
     if filtered is None:
-        filtered = _goldstein_numpy(source, float(alpha), win, float(overlap), smooth)
+        filtered = _goldstein_numpy(
+            source,
+            float(alpha),
+            win,
+            float(overlap),
+            smooth,
+            coherence=coh,
+            alpha_min=float(alpha_min),
+            alpha_max=float(alpha_max),
+        )
         used = "numpy"
     if saved is not None:
         filtered[invalid] = saved
@@ -188,15 +207,26 @@ def _goldstein_numpy(
     win: int,
     overlap: float,
     spectrum_smooth: int,
+    coherence: np.ndarray | None = None,
+    alpha_min: float = 0.2,
+    alpha_max: float = 1.0,
 ) -> np.ndarray:
     height, width = source.shape
     step = max(1, int(round(win * (1.0 - overlap))))
     pad_y, _n_y = _pad_and_count(height, win, step)
     pad_x, _n_x = _pad_and_count(width, win, step)
     padded = source
+    padded_coh = None
     if pad_y or pad_x:
         padded = np.pad(source, ((0, pad_y), (0, pad_x)), mode="edge")
+        if coherence is not None:
+            padded_coh = np.pad(coherence, ((0, pad_y), (0, pad_x)), mode="edge")
+    elif coherence is not None:
+        padded_coh = coherence
     view = sliding_window_view(padded, (win, win))[::step, ::step]
+    coh_view = None
+    if padded_coh is not None:
+        coh_view = sliding_window_view(padded_coh, (win, win))[::step, ::step]
     n_rows = int(view.shape[0])
     n_cols = int(view.shape[1])
     weight = _triangular_weight(win)
@@ -207,7 +237,12 @@ def _goldstein_numpy(
     for row0 in range(0, n_rows, rows_per):
         row1 = min(n_rows, row0 + rows_per)
         patches = np.array(view[row0:row1], dtype=np.complex64, copy=True).reshape(-1, win, win)
-        spatial = _filter_patch_batch_numpy(patches, alpha, spectrum_smooth)
+        patch_alpha: float | np.ndarray = alpha
+        if coh_view is not None:
+            means = np.nanmean(coh_view[row0:row1].reshape(-1, win * win), axis=1)
+            means = np.where(np.isfinite(means), means, 0.0)
+            patch_alpha = np.clip(1.0 - means, alpha_min, alpha_max).astype(np.float32)
+        spatial = _filter_patch_batch_numpy(patches, patch_alpha, spectrum_smooth)
         spatial *= weight
         spatial = np.ascontiguousarray(spatial.reshape(row1 - row0, n_cols, win, win))
         _accumulate(acc, count, spatial, weight, row0 * step, step)
@@ -221,7 +256,7 @@ def _goldstein_numpy(
 
 def _filter_patch_batch_numpy(
     patches: np.ndarray,
-    alpha: float,
+    alpha: float | np.ndarray,
     spectrum_smooth: int,
 ) -> np.ndarray:
     """Batched ``ifft(|FFT|**alpha * FFT)`` for patches shaped ``(n, win, win)``."""
@@ -231,8 +266,12 @@ def _filter_patch_batch_numpy(
         magnitude = uniform_filter1d(magnitude, size=spectrum_smooth, axis=-1, mode="nearest")
         magnitude = uniform_filter1d(magnitude, size=spectrum_smooth, axis=-2, mode="nearest")
     np.maximum(magnitude, 1e-10, out=magnitude)
-    if alpha != 0.0:
-        spectrum *= np.power(magnitude, np.float32(alpha))
+    exponent = np.asarray(alpha, dtype=np.float32)
+    if exponent.ndim == 0:
+        if float(exponent) != 0.0:
+            spectrum *= np.power(magnitude, exponent)
+    else:
+        spectrum *= np.power(magnitude, exponent.reshape(-1, 1, 1))
     spatial = _fft2(spectrum, inverse=True)
     return np.ascontiguousarray(spatial, dtype=np.complex64)
 

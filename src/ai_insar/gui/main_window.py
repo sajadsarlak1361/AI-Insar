@@ -11,6 +11,12 @@ from ai_insar.conventions import CONVENTIONS_TEXT, LIMITATIONS_TEXT
 from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.batch4_dialogs import (
+    BatchSnaphuUnwrapDialog,
+    MultilookDialog,
+    SnaphuExportDialog,
+    SnaphuImportDialog,
+)
 from ai_insar.gui.chain_dialogs import BackGeocodingDialog, EsdDialog, TopsDeburstDialog, TopsSplitDialog
 from ai_insar.gui.fetch_dialog import FetchSentinelDialog
 from ai_insar.gui.operator_dialog import (
@@ -40,7 +46,7 @@ from ai_insar.pipeline.engine import (
     compute_unwrap,
     run_all,
 )
-from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY
+from ai_insar.pipeline.filtering import GOLDSTEIN_LABEL, GOLDSTEIN_PRESETS, GOLDSTEIN_SUMMARY, goldstein_filter
 from ai_insar.pipeline.synthetic import SLCStack, generate_demo_stack
 from ai_insar.pipeline.tops import split_swath
 from ai_insar.safe import format_product_status, preview_amplitude, resolve_safe, select_measurement
@@ -785,11 +791,32 @@ class MainWindow(QtWidgets.QMainWindow):
             ("S-1 Enhanced Spectral Diversity", self.open_esd_dialog, "radarEsd"),
             ("Interferogram Formation", self.open_interferogram_dialog, "radarInterferogram"),
             ("S-1 TOPS Deburst", self.open_deburst_dialog, "radarTopsDeburst"),
+            ("Multilooking", self.open_multilook_dialog, "radarMultilook"),
+            ("Goldstein Phase Filtering", self.open_goldstein_dialog, "radarGoldstein"),
+            ("Snaphu Export", self.open_snaphu_export_dialog, "radarSnaphuExport"),
+            ("Batch Snaphu Unwrap", self.open_batch_snaphu_dialog, "radarBatchSnaphu"),
+            ("Snaphu Import", self.open_snaphu_import_dialog, "radarSnaphuImport"),
         )
         for label, callback, object_name in actions:
             item = menu.addAction(label)
             item.setObjectName(object_name)
             item.triggered.connect(self._click(callback, None))
+        for label, object_name, tip in (
+            (
+                "Subset…",
+                "radarSubset",
+                "Raster → Subset was gray with no product loaded. The dialog was not opened.",
+            ),
+            (
+                "Save Product As…",
+                "radarSaveProductAs",
+                "File → Save Product As was gray with no product loaded. The dialog was not opened.",
+            ),
+        ):
+            blocked = menu.addAction(label)
+            blocked.setObjectName(object_name)
+            blocked.setEnabled(False)
+            blocked.setToolTip(tip)
 
     def open_split_dialog(self) -> None:
         dialog = TopsSplitDialog(self)
@@ -812,6 +839,158 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_backgeocoding_dialog(self) -> None:
         dialog = BackGeocodingDialog(self)
         dialog.exec()
+
+    def open_multilook_dialog(self) -> None:
+        bands: list[str] = []
+        if self.workspace.interferograms is not None:
+            bands.append("Interferogram")
+        if self.workspace.coherence is not None:
+            bands.append("Coherence")
+        dialog = MultilookDialog(self, bands=bands)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_multilook(dialog.parameters())
+
+    def open_snaphu_export_dialog(self) -> None:
+        dialog = SnaphuExportDialog(self, has_interferogram=self.workspace.interferograms is not None)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_snaphu_export(dialog.parameters())
+
+    def open_batch_snaphu_dialog(self) -> None:
+        dialog = BatchSnaphuUnwrapDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_batch_snaphu(dialog.parameters())
+
+    def open_snaphu_import_dialog(self) -> None:
+        dialog = SnaphuImportDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self.apply_snaphu_import(dialog.parameters())
+
+    def apply_multilook(self, params: dict) -> None:
+        from ai_insar.pipeline.multilook import multilook_array
+
+        if params["gr_square"]:
+            raise RuntimeError(
+                "GR Square Pixel needs ground-range and azimuth spacing. "
+                "Those values are not on this stack, so azimuth looks were not invented."
+            )
+        bands = list(params["bands"])
+        if not bands:
+            raise RuntimeError("Source Bands is empty.")
+        range_looks = int(params["range_looks"])
+        azimuth_looks = int(params["azimuth_looks"])
+        intensity = bool(params["output_intensity"])
+        if "Interferogram" in bands:
+            if self.workspace.interferograms is None:
+                raise RuntimeError("No interferogram is loaded.")
+            self.workspace.interferograms = multilook_array(
+                self.workspace.interferograms,
+                range_looks,
+                azimuth_looks,
+                output_intensity=intensity,
+            )
+            self.workspace.filtered = None
+            self.workspace.unwrapped = None
+            self.workspace.los_m = None
+            self.workspace.velocity_m_yr = None
+            self.workspace.mask = None
+            if "Coherence" not in bands:
+                self.workspace.coherence = None
+                self.workspace.mean_coherence = None
+        if "Coherence" in bands:
+            if self.workspace.coherence is None:
+                raise RuntimeError("No coherence is loaded.")
+            self.workspace.coherence = multilook_array(
+                self.workspace.coherence,
+                range_looks,
+                azimuth_looks,
+                output_intensity=False,
+            )
+            self.workspace.mean_coherence = np.mean(self.workspace.coherence, axis=0).astype(np.float32)
+        shape = self.workspace.interferograms.shape if self.workspace.interferograms is not None else self.workspace.coherence.shape
+        self._log(
+            f"Multilook independent looks: {azimuth_looks} azimuth × {range_looks} range. "
+            f"Output shape {shape}. "
+            + (
+                "Output is intensity."
+                if intensity
+                else "Complex samples were averaged. This is not a resample."
+            )
+        )
+
+    def apply_snaphu_export(self, params: dict) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.snaphu_io import export_snaphu
+
+        if self.workspace.interferograms is None or self.workspace.coherence is None:
+            raise RuntimeError("Snaphu export needs an interferogram and a coherence image. Zeros were not written.")
+        if self.workspace.interferograms.shape != self.workspace.coherence.shape:
+            raise RuntimeError("Interferogram and coherence shapes differ.")
+        pair_count = int(self.workspace.interferograms.shape[0])
+        phase = np.angle(self.workspace.interferograms[0]).astype(np.float64)
+        coherence = np.asarray(self.workspace.coherence[0], dtype=np.float64)
+        wavelength = None if self.workspace.stack is None else float(self.workspace.stack.wavelength_m)
+        conf = export_snaphu(
+            params["folder"],
+            phase,
+            coherence,
+            stat_mode=params["stat_mode"],
+            init_method=params["init_method"],
+            tile_rows=int(params["tile_rows"]),
+            tile_columns=int(params["tile_columns"]),
+            processors=int(params["processors"]),
+            row_overlap=int(params["row_overlap"]),
+            column_overlap=int(params["column_overlap"]),
+            tile_cost_threshold=int(params["tile_cost_threshold"]),
+            wavelength_m=wavelength,
+            pair_index=0,
+            pair_count=pair_count,
+        )
+        extra = ""
+        if pair_count > 1:
+            extra = f" Pairs 1..{pair_count - 1} were not exported."
+        self._log(
+            f"Snaphu export wrote {conf.name} in {Path(params['folder'])} "
+            f"for pair 0 of {pair_count}, shape {phase.shape}. Not unwrapped.{extra}"
+        )
+
+    def apply_batch_snaphu(self, params: dict) -> None:
+        from ai_insar.pipeline.snaphu_io import run_snaphu
+
+        completed = run_snaphu(params["export_folder"], params["install_location"])
+        self._log(
+            "External snaphu finished with exit 0. "
+            f"stdout: {(completed.stdout or '').strip() or '(empty)'}. "
+            "Fast unwrap was not used."
+        )
+
+    def apply_snaphu_import(self, params: dict) -> None:
+        from pathlib import Path
+
+        from ai_insar.pipeline.snaphu_io import import_unwrapped
+
+        phase_folder = Path(params["phase_folder"])
+        unwrap_folder = Path(params["unwrapped_folder"])
+        if phase_folder.resolve() != unwrap_folder.resolve():
+            raise RuntimeError("The phase folder and the unwrapped folder must be the same export.")
+        unwrapped = import_unwrapped(unwrap_folder)
+        self.workspace.unwrapped = unwrapped[None, ...]
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
+        if params["skip_wrapped"]:
+            self._log(
+                "Do NOT save Wrapped interferogram is checked. "
+                "BEAM-DIMAP was not written. The wrapped interferogram remains in the workspace."
+            )
+        self._log(
+            f"Imported unwrapped phase {unwrapped.shape} from {unwrap_folder / 'unwrap.img'}. "
+            "The values were read from the file. They were not unwrapped again."
+        )
 
     def apply_split(self, params: dict) -> None:
         """Read one subswath's burst lines. This does not deburst or coregister."""
@@ -964,23 +1143,70 @@ class MainWindow(QtWidgets.QMainWindow):
         request = params["request"]
         for line in request.skipped:
             self._log(line)
+        if request.save and request.format_name != "NumPy (.npy)":
+            raise RuntimeError(f"{request.format_name} is not written by this build.")
         alpha = float(params["alpha"])
         fft_size = int(params["fft_size"])
         if not 0.0 <= alpha <= 1.0:
             raise ValueError("alpha must be between 0 and 1")
         if fft_size < 8:
             raise ValueError("FFT size must be at least 8")
+        if float(params.get("block_extent_m", 0.0)) != 0.0:
+            raise RuntimeError(
+                "FFT Block Extent (m) is not zero. Pixel spacing is not available, "
+                "so the FFT size in pixels was not replaced."
+            )
         self.workspace.config.goldstein_alpha = alpha
         self.workspace.config.goldstein_window = fft_size
         self.workspace.config.goldstein_spectrum_smooth = int(params["window_size"])
-        self._log(
-            f"Goldstein parameters: alpha={alpha:.2f}, FFT size={fft_size}, "
-            f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
-        )
-        self.run_filter()
+        if params.get("adaptive") or params.get("coherence_mask"):
+            self._goldstein_with_coherence(params)
+        else:
+            self._log(
+                f"Goldstein constant alpha={alpha:.2f}, FFT size={fft_size}, "
+                f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
+            )
+            self.run_filter()
         if request.open_in_app:
             self._preferred_layer = "Filtered phase"
-        self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+        if request.save:
+            self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+
+    def _goldstein_with_coherence(self, params: dict) -> None:
+        if self.workspace.interferograms is None or self.workspace.coherence is None:
+            raise RuntimeError(
+                "Use adaptive alpha or the coherence mask needs a coherence image "
+                "of the same shape as the interferogram. Constant alpha was not substituted."
+            )
+        if self.workspace.coherence.shape != self.workspace.interferograms.shape:
+            raise RuntimeError("Coherence and interferogram shapes differ.")
+        filtered = np.empty_like(self.workspace.interferograms, dtype=np.complex64)
+        threshold = float(params.get("coherence_threshold", 0.2))
+        use_mask = bool(params.get("coherence_mask"))
+        adaptive = bool(params.get("adaptive"))
+        for index in range(self.workspace.interferograms.shape[0]):
+            plane = np.array(self.workspace.interferograms[index], dtype=np.complex64, copy=True)
+            coherence = self.workspace.coherence[index]
+            if use_mask:
+                plane[coherence < threshold] = 0
+            filtered[index] = goldstein_filter(
+                plane,
+                alpha=float(params["alpha"]),
+                window=int(params["fft_size"]),
+                spectrum_smooth=int(params["window_size"]),
+                coherence=coherence if adaptive else None,
+                alpha_min=float(params.get("alpha_min", 0.2)),
+                alpha_max=float(params.get("alpha_max", 1.0)),
+            )
+        self.workspace.filtered = filtered
+        self.workspace.unwrapped = None
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
+        mode = "adaptive block coherence" if adaptive else "constant alpha"
+        if use_mask:
+            mode += f", coherence mask < {threshold:.2f}"
+        self._log(f"Goldstein {mode}. FFT size={int(params['fft_size'])}. Fast unwrap was not used.")
 
     def apply_topo_params(self, params: dict) -> None:
         request = params["request"]
@@ -1107,6 +1333,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _save_request(self, request, array, suffix: str) -> None:
         if not request.save or array is None:
             return
+        if getattr(request, "format_name", "NumPy (.npy)") != "NumPy (.npy)":
+            raise RuntimeError(f"{request.format_name} is not written by this build.")
         path = write_npy_product(request.directory, request.target, suffix, array)
         self._log(f"Saved {path.name} ({suffix}).")
 

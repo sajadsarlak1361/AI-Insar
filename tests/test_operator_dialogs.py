@@ -176,15 +176,14 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     _prepare(gold)
     assert "Z_filt" in gold.findChild(QLabel, "operatorHelp").text()
     assert gold.alpha.value() == 1.0
-    assert not gold.adaptive.isEnabled()
-    assert "not implemented" in gold.adaptive.toolTip().lower()
-    assert gold.alpha_min.value() == 0.2 and not gold.alpha_min.isEnabled()
-    assert gold.alpha_max.value() == 1.0
+    assert gold.adaptive.isChecked() and gold.adaptive.isEnabled()
+    assert gold.alpha_min.value() == 0.2 and gold.alpha_min.isEnabled()
+    assert gold.alpha_max.value() == 1.0 and gold.alpha_max.isEnabled()
     assert gold.fft_size.currentText() == "64"
-    assert not gold.block_extent.isEnabled()
+    assert gold.block_extent.value() == 0.0 and gold.block_extent.isEnabled()
     assert gold.window.currentText() == "3"
-    assert not gold.coherence_mask.isEnabled()
-    assert gold.coherence_threshold.value() == 0.2 and not gold.coherence_threshold.isEnabled()
+    assert not gold.coherence_mask.isChecked() and gold.coherence_mask.isEnabled()
+    assert gold.coherence_threshold.value() == 0.2 and gold.coherence_threshold.isEnabled()
     gold.close()
 
     orbit = ApplyOrbitDialog(window, sources=["Workspace SLC stack"])
@@ -262,9 +261,11 @@ def test_dialogs_run_existing_pipeline_stages(qapp, tmp_path: Path):
     gold = GoldsteinDialog(window, sources=window._source_names())
     _prepare(gold)
     gold.alpha.setValue(0.4)
+    gold.adaptive.setChecked(False)
     gold.fft_size.setCurrentText("32")
     gold.window.setCurrentText("3")
     gold.save_box.setChecked(True)
+    gold.format_box.setCurrentText("NumPy (.npy)")
     gold.directory.setText(str(tmp_path))
     gold.target.setText("scene")
     window.apply_goldstein_params(gold.parameters())
