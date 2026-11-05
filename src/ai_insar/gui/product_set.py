@@ -55,54 +55,11 @@ def format_product_list(rows: Sequence[ProductRow]) -> str:
     return "\n".join(lines)
 
 
-def choose_safe_products(parent: QtWidgets.QWidget | None) -> list[str]:
-    """Non-native chooser. Files and folders can be multi-selected."""
-    dialog = QtWidgets.QFileDialog(parent, "Add Product")
-    dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog, True)
-    dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
-    dialog.setNameFilter("Sentinel-1 SAFE (*.zip *.SAFE);;SAFE zip (*.zip);;All files (*)")
-    dialog.setViewMode(QtWidgets.QFileDialog.ViewMode.Detail)
-    for view in dialog.findChildren(QtWidgets.QAbstractItemView):
-        if view.objectName() in {"listView", "treeView"}:
-            view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-    if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-        return []
-    found: list[str] = []
-    for view in dialog.findChildren(QtWidgets.QAbstractItemView):
-        if view.objectName() not in {"listView", "treeView"}:
-            continue
-        model = view.model()
-        selection = view.selectionModel()
-        if model is None or selection is None:
-            continue
-        for index in selection.selectedRows(0):
-            path = _path_from_index(model, index)
-            if path:
-                found.append(path)
-    found.extend(dialog.selectedFiles())
-    unique: list[str] = []
-    seen: set[str] = set()
-    for item in found:
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        unique.append(item)
-    return unique
+def choose_safe_products(parent: QtWidgets.QWidget | None, *, start: str | None = None) -> list[str]:
+    """Open the multi-folder / zip chooser used by Add and File → Open."""
+    from ai_insar.gui.safe_chooser import choose_safe_products as _choose
 
-
-def _path_from_index(model, index) -> str:
-    current = model
-    cursor = index
-    for _depth in range(6):
-        if isinstance(current, QtWidgets.QFileSystemModel):
-            return current.filePath(cursor)
-        map_to = getattr(current, "mapToSource", None)
-        source = getattr(current, "sourceModel", None)
-        if not callable(map_to) or not callable(source):
-            break
-        cursor = map_to(cursor)
-        current = source()
-    return ""
+    return _choose(parent, start=start)
 
 
 class ProductSetWidget(QtWidgets.QWidget):
@@ -142,6 +99,9 @@ class ProductSetWidget(QtWidgets.QWidget):
 
         buttons = QtWidgets.QVBoxLayout()
         self.add_button = self._button("Add", "productSetAdd", self._add_clicked)
+        self.add_button.setStatusTip(
+            "Add SAFE folders or zip files. Several folders can be selected together."
+        )
         self.add_opened_button = self._button("Add Opened", "productSetAddOpened", self._add_opened)
         self.remove_button = self._button("Remove", "productSetRemove", self.remove_selected)
         self.move_top_button = self._button("Move Top", "productSetMoveTop", lambda: self._move(extreme="top"))

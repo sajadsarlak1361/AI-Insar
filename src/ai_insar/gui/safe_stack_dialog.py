@@ -13,7 +13,6 @@ from pathlib import Path
 from ai_insar.gui.product_set import OpenedPaths, ProductSetWidget
 from ai_insar.gui.qt import QtWidgets
 from ai_insar.safe import DEFAULT_POLARISATION, DEFAULT_SWATH
-from ai_insar.safe_stack import is_safe_input
 from ai_insar.snap_products import OPERATOR_HELP
 
 _SWATHS = ("IW1", "IW2", "IW3", "EW1", "EW2", "EW3", "EW4", "EW5", "WV1", "WV2")
@@ -113,8 +112,11 @@ class SafeStackDialog(QtWidgets.QDialog):
         layout.addWidget(note)
 
         form = QtWidgets.QFormLayout()
-        self.reference = QtWidgets.QLabel("(none)")
+        self.reference = QtWidgets.QComboBox()
         self.reference.setObjectName("createStackReference")
+        self.reference.setToolTip(
+            "User-chosen reference. Every other selected product stays in the stack."
+        )
         self.resampling = QtWidgets.QComboBox()
         self.resampling.setObjectName("createStackResampling")
         self.resampling.addItems(_RESAMPLING)
@@ -182,6 +184,14 @@ class SafeStackDialog(QtWidgets.QDialog):
         form.addRow("Column", self.col)
         form.addRow("Height", self.height)
         form.addRow("Width", self.width)
+        self.burst_first = self._pixel(0)
+        self.burst_last = self._pixel(0)
+        self.burst_first.setObjectName("safeStackBurstFirst")
+        self.burst_last.setObjectName("safeStackBurstLast")
+        self.burst_first.setToolTip("First burst, 1-based. 0 with last 0 means the burst range is not limited.")
+        self.burst_last.setToolTip("Last burst, 1-based. Checked against each product. The pixel crop is separate.")
+        form.addRow("First burst (0 = all)", self.burst_first)
+        form.addRow("Last burst (0 = all)", self.burst_last)
         layout.addLayout(form)
 
         self.form_ifg = QtWidgets.QCheckBox("Form interferograms after the stack is loaded")
@@ -209,25 +219,56 @@ class SafeStackDialog(QtWidgets.QDialog):
     def paths(self) -> list[Path]:
         return self.product_set.paths()
 
+    def reference_path(self) -> Path | None:
+        data = self.reference.currentData()
+        if data:
+            return Path(str(data))
+        paths = self.paths()
+        return paths[0] if paths else None
+
+    def burst_first_value(self) -> int:
+        return int(self.burst_first.value())
+
+    def burst_last_value(self) -> int:
+        return int(self.burst_last.value())
+
     def _sync_reference(self) -> None:
-        rows = self.product_set.rows()
-        self.reference.setText(rows[0].file_name if rows else "(none)")
+        current = self.reference.currentData()
+        self.reference.blockSignals(True)
+        self.reference.clear()
+        for row in self.product_set.rows():
+            self.reference.addItem(row.file_name, str(row.path))
+        if current is not None:
+            index = self.reference.findData(current)
+            if index >= 0:
+                self.reference.setCurrentIndex(index)
+        self.reference.blockSignals(False)
 
     def _on_run(self) -> None:
+        from ai_insar.safe_stack import inspect_safe_products
+
         paths = self.paths()
         if not paths:
             self.product_set.status.setText(
                 "Error: [NodeId: ProductSet-Reader] Please add a source product"
             )
             return
-        bad = [path.name for path in paths if not is_safe_input(path)]
-        if bad:
-            self.product_set.status.setText("Not a SAFE zip or SAFE folder: " + ", ".join(bad))
-            return
         if self.resampling.currentText() != "NONE":
             self.product_set.status.setText("InSAR requires Resampling Type NONE.")
             return
         if int(self.height.value()) < 1 or int(self.width.value()) < 1:
             self.product_set.status.setText("Crop height and width must be at least 1.")
+            return
+        try:
+            inspect_safe_products(
+                paths,
+                swath=self.swath(),
+                pol=self.polarisation(),
+                reference=self.reference_path(),
+                burst_first=self.burst_first_value(),
+                burst_last=self.burst_last_value(),
+            )
+        except ValueError as exc:
+            self.product_set.status.setText(str(exc))
             return
         self.accept()

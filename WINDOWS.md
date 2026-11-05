@@ -67,10 +67,12 @@ batch file again (pip will see that the editable install is already there).
 
 ## Parameter dialogs
 
-File → **Open SAFE stack…** waits on a product list. Add several SAFE
-folders and `.zip` files. The table shows File Name, Type, Acquisition,
-Track, and Orbit, and a counter such as `2 Products`. Manifest fields that
-cannot be read stay blank.
+File → **Open SAFE stack…**, **Open SAFE folder…**, and **Open Sentinel-1
+SAFE Product…** use the same chooser. Select several SAFE folders and
+`.zip` files together (Ctrl or Shift). It is not a one-folder dialog.
+The table then shows File Name, Type, Acquisition, Track, and Orbit, and
+a counter such as `2 Products`. Run keeps every listed product in the
+stack. Manifest fields that cannot be read stay blank.
 
 The Interferogram, Coherence, Goldstein, Topographic Phase Removal, and
 Apply Orbit File menus open a dialog (I/O and Processing Parameters) and

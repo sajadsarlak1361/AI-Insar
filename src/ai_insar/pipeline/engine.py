@@ -17,6 +17,7 @@ from ai_insar.pipeline.detect import detect_displacement
 from ai_insar.pipeline.filtering import filter_stack, goldstein_filter
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
 from ai_insar.pipeline.synthetic import SLCStack
+from ai_insar.safe_stack import SafeInput
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
 from ai_insar.pipeline.unwrap import (
     UNWRAP_LABELS,
@@ -113,6 +114,7 @@ class Workspace:
     topo_baseline_perp_m: float = 0.0
     topo_slant_range_m: float = 800_000.0
     topo_incidence_deg: float = 35.0
+    safe_inputs: list[SafeInput] = field(default_factory=list)
 
     def clear_products(self) -> None:
         self.pairs = None

@@ -211,11 +211,15 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
-**File → Open SAFE stack…** opens a SNAP-style product list. Add several
-SAFE folders and/or `.zip` files (multi-select). The table columns are
-File Name, Type, Acquisition, Track, and Orbit, with an **N Products**
-counter. Type, acquisition, track (relative orbit), and absolute orbit are
-read from the manifest when they are present, and left blank otherwise.
+**File → Open SAFE stack…**, **Open SAFE folder…**, and **Open Sentinel-1
+SAFE Product…** use one chooser. Ctrl or Shift selects several SAFE folders
+and `.zip` files together. It is not a single-folder dialog and it is not
+zip-only. A folder that contains several SAFE products adds every product.
+The table columns are File Name, Type, Acquisition, Track, and Orbit, with
+an **N Products** counter. Type, acquisition, track (relative orbit), and
+absolute orbit are read from the manifest when they are present, and left
+blank otherwise. The reference row is chosen in the dialog. Closing the
+list loads nothing. Run reads every listed product into the SLC cube.
 Zips are not unzipped. Create Stack parameters on that dialog keep
 Resampling **NONE**, Initial Offset **Orbit** (not applied), and Output
 Extents **Master**. A progress dialog then reads every product with the
@@ -238,10 +242,9 @@ and `_Orb` on NumPy files. BEAM-DIMAP and orbit-file download are outside
 this build. Line-of-sight displacement follows `d = −(λ/4π) Δφ`
 (suffix `_Disp`).
 
-**File → Open Sentinel-1 SAFE Product…** opens one Sentinel-1 `.zip` without
-extracting it. Several zips open the product list. **Open SAFE folder…**
-starts from the folder you pick and uses that same list; Close still
-inspects the folder in the Product Explorer. `manifest.safe` is optional.
+`manifest.safe` inside a selected folder is accepted. Zips stay zipped.
+The Product Explorer is separate from this list: the stack keeps every
+selected product. See [15-step coverage](docs/snap-chain.md).
 The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 `Intensity_`), and the quick-look. Double-click a band for a decimated
 amplitude preview. **Add to SLC stack (crop…)** reads one window (default

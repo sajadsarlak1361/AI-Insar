@@ -444,6 +444,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def generate_sample(self) -> None:
         self.workspace.stack = generate_demo_stack()
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = []
         self.workspace.clear_products()
         stack = self.workspace.stack
         self._log(f"Generated sample SLC {stack.data.shape} {stack.data.dtype}. {stack.description}")
@@ -461,6 +462,7 @@ class MainWindow(QtWidgets.QMainWindow):
         stack = load_slc(path)
         self.workspace.stack = stack
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = []
         self.workspace.clear_products()
         self._log(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {path}. {stack.description}")
         self._preferred_layer = "SLC amplitude"
@@ -479,16 +481,22 @@ class MainWindow(QtWidgets.QMainWindow):
         return names
 
     def open_safe_product(self) -> None:
-        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "Open Sentinel-1 SAFE zip",
-            "",
-            SAFE_OPEN_FILTER,
-        )
+        """Choose one or more SAFE zips or folders, then list every one before loading."""
+        self._open_product_set_from_chooser()
+
+    def open_safe_folder(self) -> None:
+        """Choose several SAFE folders (and zips) in one dialog. None are dropped."""
+        self._open_product_set_from_chooser()
+
+    def open_safe_stack(self) -> None:
+        """List SAFE folders and zips, then build one time-sorted complex64 stack."""
+        self._open_product_set_from_chooser()
+
+    def _open_product_set_from_chooser(self) -> None:
+        from ai_insar.gui.product_set import choose_safe_products
+
+        paths = choose_safe_products(self)
         if not paths:
-            return
-        if len(paths) == 1:
-            self.open_safe_path(paths[0])
             return
         dialog = SafeStackDialog(
             self,
@@ -498,35 +506,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._log(dialog.product_set.summary())
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            self.open_safe_path(paths[0])
-            return
-        self.load_from_product_set(dialog)
-
-    def open_safe_folder(self) -> None:
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Open SAFE folder")
-        if not directory:
-            return
-        dialog = SafeStackDialog(
-            self,
-            n_files=1,
-            initial_paths=[directory],
-            opened_paths=self._opened_safe_paths,
-        )
-        dialog.setWindowTitle("Open SAFE folder")
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            self.open_safe_path(directory)
-            return
-        self.load_from_product_set(dialog)
-
-    def open_safe_stack(self) -> None:
-        """List SAFE folders and zips, then build one time-sorted complex64 stack."""
-        dialog = SafeStackDialog(self, n_files=0, opened_paths=self._opened_safe_paths)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self._log(f"SAFE list closed. {len(paths)} product(s) were not loaded.")
             return
         self.load_from_product_set(dialog)
 
     def load_from_product_set(self, dialog: SafeStackDialog) -> None:
-        """Load the products listed in the dialog and write that list to the log."""
+        """Load every listed product and write the count, names, and metadata to the log."""
         paths = dialog.paths()
         if not paths:
             raise RuntimeError("ProductSet-Reader: please add a source product.")
@@ -543,6 +528,9 @@ class MainWindow(QtWidgets.QMainWindow):
             height=int(dialog.height.value()),
             width=int(dialog.width.value()),
             form_interferograms=dialog.form_ifg.isChecked(),
+            reference=dialog.reference_path(),
+            burst_first=dialog.burst_first_value(),
+            burst_last=dialog.burst_last_value(),
         )
 
     def load_safe_stack(
@@ -556,13 +544,24 @@ class MainWindow(QtWidgets.QMainWindow):
         height: int,
         width: int,
         form_interferograms: bool = True,
+        reference=None,
+        burst_first: int = 0,
+        burst_last: int = 0,
     ) -> None:
-        """Read ``paths`` with a progress dialog, then optionally form interferograms."""
+        """Read every path, then optionally form interferograms. All products stay in the cube."""
         from pathlib import Path
 
-        from ai_insar.safe_stack import SafeStackCancelled, stack_safe_zips
+        from ai_insar.safe_stack import SafeStackCancelled, inspect_safe_products, stack_safe_zips
 
         files = [Path(path) for path in paths]
+        records = inspect_safe_products(
+            files,
+            swath=swath,
+            pol=pol,
+            reference=reference,
+            burst_first=burst_first,
+            burst_last=burst_last,
+        )
         dialog = QtWidgets.QProgressDialog(
             "Reading SAFE products…",
             "Cancel",
@@ -607,11 +606,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.workspace.stack = stack
         self.workspace.dem_m = None
+        self.workspace.safe_inputs = list(records)
         self.workspace.clear_products()
+        reference_name = next(item.file_name for item in records if item.is_reference)
+        names = ", ".join(item.file_name for item in records)
+        tracks = {item.track for item in records if item.track}
         self._log(
-            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(files)} product(s). "
+            f"SAFE stack {stack.data.shape} {stack.data.dtype} from {len(records)} product(s): {names}. "
+            f"Reference: {reference_name}. "
             f"{stack.description}"
         )
+        if len(tracks) > 1:
+            self._log(
+                "These products do not share one relative orbit (track): "
+                + ", ".join(f"{item.file_name} track {item.track}" for item in records)
+                + ". All of them stay in the stack."
+            )
+        if records[0].burst_first is not None:
+            self._log(
+                f"Burst range {records[0].burst_first}–{records[0].burst_last} is stored for each product. "
+                "The array is the shared row/column crop, not a burst stitch."
+            )
         self._preferred_layer = "SLC amplitude"
         if form_interferograms and stack.n_dates >= 2:
             self.run_interferograms()
