@@ -81,9 +81,16 @@ def test_real_burst_chain_deburst_flat_earth_coregistration_and_snaphu(tmp_path:
     early_orbit = read_eof_orbit(EARLY_ORB)
     late_orbit = read_eof_orbit(LATE_ORB)
     kept = deburst_lines(early_model)
-    assert kept[0][1] >= early_model.bursts[0].first_valid_line
+    # SNAP keeps the first line of the first burst. It does not drop lines
+    # whose firstValidSample is -1; those samples stay in the raster.
+    assert kept[0][1] == 0
     assert kept[1][1] > early_model.bursts[1].first_valid_line
     assert sum(stop - start + 1 for _index, start, stop in kept) < early_model.number_of_lines
+    # A split of SNAP bursts 5 and 6 does not trim the outer overlap with the
+    # bursts that were not selected.
+    split = deburst_lines(early_model, [4, 5])
+    assert split[0] == (4, 0, split[0][2])
+    assert split[0][1] < early_model.bursts[4].first_valid_line
 
     row = 4 * early_model.lines_per_burst + 700
     col = 11000

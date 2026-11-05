@@ -143,8 +143,9 @@ class TerrainCorrectionDialog(OperatorDialog):
         message = self.validate_io()
         if message:
             return message
-        if self.image_resampling.currentText() == "DELAUNAY_INTERPOLATION":
-            return "DELAUNAY_INTERPOLATION is not applied."
+        dem_method = self.dem_resampling.currentText()
+        if dem_method not in {"NEAREST_NEIGHBOUR", "BILINEAR_INTERPOLATION"}:
+            return f"DEM resampling {dem_method} is not applied."
         return ""
 
     def parameters(self) -> dict:
@@ -158,6 +159,7 @@ class TerrainCorrectionDialog(OperatorDialog):
             "request": self.io_request(),
             "dem": self.dem.currentText(),
             "dem_path": self.dem_path.text().strip(),
+            "dem_resampling": self.dem_resampling.currentText(),
             "image_resampling": self.image_resampling.currentText(),
             "spacing_m": _optional(self.spacing_m.text()),
             "spacing_deg": _optional(self.spacing_deg.text()),

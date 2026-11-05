@@ -1615,6 +1615,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 out_rows=out_rows,
                 out_cols=out_cols,
                 resampling=resampling,
+                dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
                 projection=mode,
             )
             finite = heights[np.isfinite(heights)]

@@ -31,10 +31,58 @@ SNAP_I = Path("/tmp/snap-ref/two_bursts.data/i_IW1_VV.img")
 SNAP_Q = Path("/tmp/snap-ref/two_bursts.data/q_IW1_VV.img")
 TIFF = Path("/tmp/safe-real/20210630/measurement.tiff")
 ANN = Path("/tmp/safe-real/20210630/s1a-iw1-slc-vv.xml")
-ROW = 4 * 1508
+# linesPerBurst is 1508. SNAP burst indices are 1-based.
+# 1-based bursts 5 and 6 are 0-based bursts 4 and 5, rows 6032:9048.
+LINES_PER_BURST = 1508
+ROW = 4 * LINES_PER_BURST
 COL = 11000
-HEIGHT = 2 * 1508
+HEIGHT = 2 * LINES_PER_BURST
 WIDTH = 512
+
+
+def test_burst_numbers_match_lines_per_burst():
+    if not ANN.is_file():
+        pytest.skip("annotation is not on disk")
+    model = read_swath_annotation(ANN)
+    assert model.lines_per_burst == LINES_PER_BURST
+    # 0-based burst 4 starts at row 6032 and is SNAP burst 5.
+    assert 4 * model.lines_per_burst == 6032
+    assert 6 * model.lines_per_burst == 9048
+    early, late = burst_overlap_rows(model, 4)
+    assert early[0] == 7374
+    assert early[1] == 7540 == late[0]
+    assert 6032 <= early[0] < 7540
+    assert 7540 <= late[0] < 9048
+
+
+def test_gpt_reopens_beam_dimap_complex_values(tmp_path: Path):
+    import subprocess
+
+    from ai_insar.pipeline.dimap import write_beam_dimap
+
+    values = (np.arange(12) + 1j * np.arange(12)).reshape(3, 4).astype(np.complex64)
+    dim = write_beam_dimap(tmp_path, "sample", values, None, band_name="IW1_VV", unit="1")
+    destination = tmp_path / "via_subset.dim"
+    proc = subprocess.run(
+        [
+            "/home/ubuntu/esa-snap/bin/gpt",
+            "Subset",
+            f"-Ssource={dim}",
+            "-Pregion=0,0,4,3",
+            "-t",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(proc.stderr[-500:])
+    header = (tmp_path / "via_subset.data" / "i_IW1_VV.hdr").read_text(encoding="utf-8")
+    endian = ">i2" if "byte order = 1" in header else "<i2"
+    real = np.fromfile(tmp_path / "via_subset.data" / "i_IW1_VV.img", dtype=endian)
+    imag = np.fromfile(tmp_path / "via_subset.data" / "q_IW1_VV.img", dtype=endian)
+    assert np.array_equal(real, np.arange(12, dtype=np.int16))
+    assert np.array_equal(imag, np.arange(12, dtype=np.int16))
 
 
 def test_snap_two_burst_subset_matches_the_slc_reader():

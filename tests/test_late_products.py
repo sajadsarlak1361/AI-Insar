@@ -102,6 +102,39 @@ def test_selected_reference_is_not_replaced_by_the_later_date(qapp):
     window.close()
 
 
+def test_three_distinct_products_keep_time_order_and_the_middle_reference(qapp, tmp_path: Path):
+    from safe_factory import dated_safe_zip
+
+    early = dated_safe_zip(tmp_path, "20210401", 1 + 0j)
+    middle = dated_safe_zip(tmp_path, "20210513", 4 + 0j)
+    late = dated_safe_zip(tmp_path, "20210624", 0 + 3j)
+    window = MainWindow()
+    window.load_safe_stack(
+        [late, early, middle],
+        swath="IW1",
+        pol="VV",
+        row=0,
+        col=0,
+        height=2,
+        width=2,
+        form_interferograms=True,
+        reference=middle,
+    )
+    stack = window.workspace.stack
+    assert stack is not None
+    assert list(stack.dates) == [
+        np.datetime64("2021-04-01"),
+        np.datetime64("2021-05-13"),
+        np.datetime64("2021-06-24"),
+    ]
+    assert window.workspace.reference_index == 1
+    assert sum(item.is_reference for item in window.workspace.safe_inputs) == 1
+    assert window.workspace.interferograms.shape[0] == 2
+    assert np.allclose(window.workspace.interferograms[0], stack.data[1] * np.conj(stack.data[0]))
+    assert np.allclose(window.workspace.interferograms[1], stack.data[1] * np.conj(stack.data[2]))
+    window.close()
+
+
 def test_terrain_dialog_lists_match_the_empty_product_audit(qapp):
     dialog = TerrainCorrectionDialog()
     dialog.save_box.setChecked(False)

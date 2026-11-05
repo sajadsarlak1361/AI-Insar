@@ -8,6 +8,7 @@ not a crop and not an amplitude correlation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -75,31 +76,77 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
     return out
 
 
-def deburst_lines(model: SwathModel) -> list[tuple[int, int, int]]:
-    """Absolute rows kept from each burst after the mid-time overlap cut.
+def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
+    """Absolute source line of every SNAP deburst output line.
 
-    Each item is ``(burst_index, first_line, last_line)`` with both lines
-    included. Lines marked invalid by ``firstValidSample < 0`` are excluded.
+    The output time axis runs from the first selected burst's first line to
+    the last selected burst's last line. Overlap is resolved by the mid time
+    between the two burst times that contain the sample, which is the rule in
+    SNAP ``TOPSARDeburstOp``. Bursts that are not in ``burst_indexes`` are not
+    in the product, so their overlaps are kept.
     """
+    if burst_indexes is None:
+        indexes = list(range(len(model.bursts)))
+    else:
+        indexes = sorted({int(item) for item in burst_indexes})
+    if not indexes or indexes[0] < 0 or indexes[-1] >= len(model.bursts):
+        raise ValueError(f"burst indexes {indexes} are outside this swath")
+    interval = float(model.azimuth_time_interval_s)
+    lines = int(model.lines_per_burst)
+    epoch = model.bursts[indexes[0]].azimuth_time
+
+    def seconds(when: np.datetime64) -> float:
+        return float((when - epoch).astype(np.int64)) * 1e-9
+
+    first_s = [seconds(model.bursts[index].azimuth_time) for index in indexes]
+    last_s = [start + (lines - 1) * interval for start in first_s]
+    height = int((last_s[-1] - first_s[0]) / interval)
+    if height < 1:
+        raise ValueError("deburst time span is empty")
+    chosen: list[int] = []
+    for line in range(height):
+        target = first_s[0] + line * interval
+        hits: list[tuple[int, int, float, float]] = []
+        for position, index in enumerate(indexes):
+            if first_s[position] <= target < last_s[position]:
+                local = int((target - first_s[position]) / interval + 0.5)
+                local = min(max(local, 0), lines - 1)
+                hits.append((index, local, first_s[position], last_s[position]))
+                if len(hits) == 2:
+                    break
+        if not hits:
+            continue
+        pick = hits[0]
+        if len(hits) == 2:
+            mid = (hits[0][3] + hits[1][2]) / 2.0
+            pick = hits[1] if target > mid else hits[0]
+        chosen.append(pick[0] * lines + pick[1])
+    if not chosen:
+        raise ValueError("deburst kept no lines")
+    return np.asarray(chosen, dtype=np.int32)
+
+
+def deburst_lines(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> list[tuple[int, int, int]]:
+    """Local inclusive line ranges kept from each selected burst.
+
+    Each item is ``(burst_index, first_line, last_line)``. The ranges follow
+    :func:`deburst_source_rows`, so a split product does not trim its outer
+    edge against a burst that was not selected.
+    """
+    rows = deburst_source_rows(model, burst_indexes)
+    lines = int(model.lines_per_burst)
     kept: list[tuple[int, int, int]] = []
-    mids: list[np.datetime64] = []
-    for index in range(len(model.bursts) - 1):
-        end = model.line_time((index + 1) * model.lines_per_burst - 1)
-        start_next = model.bursts[index + 1].azimuth_time
-        # Midpoint in nanoseconds, avoiding datetime float division.
-        delta = (start_next - end).astype(np.int64)
-        mids.append(end + np.timedelta64(int(delta // 2), "ns"))
-    for index, burst in enumerate(model.bursts):
-        first = burst.first_valid_line
-        last = burst.last_valid_line
-        if index > 0:
-            while first <= last and model.line_time(index * model.lines_per_burst + first) < mids[index - 1]:
-                first += 1
-        if index < len(model.bursts) - 1:
-            while last >= first and model.line_time(index * model.lines_per_burst + last) > mids[index]:
-                last -= 1
-        if first <= last:
-            kept.append((index, first, last))
+    start = int(rows[0])
+    previous = start
+    for absolute in rows[1:]:
+        absolute = int(absolute)
+        same_burst = absolute // lines == start // lines
+        if absolute == previous + 1 and same_burst:
+            previous = absolute
+            continue
+        kept.append((start // lines, start % lines, previous % lines))
+        start = previous = absolute
+    kept.append((start // lines, start % lines, previous % lines))
     return kept
 
 
@@ -113,28 +160,23 @@ def deburst(grids: list[RadarGrid]) -> RadarGrid:
         raise ValueError("deburst needs at least one burst")
     model = grids[0].model
     col = grids[0].col
+    indexes = sorted({int(grid.row // model.lines_per_burst) for grid in grids})
+    source_rows = deburst_source_rows(model, indexes)
     pieces: list[np.ndarray] = []
     first_absolute = None
-    plan = {index: (start, stop) for index, start, stop in deburst_lines(model)}
-    for grid in grids:
-        if grid.col != col or grid.model is not model and grid.model.lines_per_burst != model.lines_per_burst:
-            raise ValueError("deburst windows must share the column crop and swath")
-        burst_index = grid.row // model.lines_per_burst
-        if burst_index not in plan:
-            continue
-        start, stop = plan[burst_index]
-        local_start = start - (grid.row - burst_index * model.lines_per_burst)
-        local_stop = stop - (grid.row - burst_index * model.lines_per_burst) + 1
-        local_start = max(0, local_start)
-        local_stop = min(grid.data.shape[0], local_stop)
-        if local_start >= local_stop:
-            continue
-        if first_absolute is None:
-            first_absolute = burst_index * model.lines_per_burst + local_start
-        pieces.append(np.asarray(grid.data[local_start:local_stop], dtype=np.complex64))
+    for absolute in source_rows:
+        for grid in grids:
+            if grid.col != col or grid.model.lines_per_burst != model.lines_per_burst:
+                raise ValueError("deburst windows must share the column crop and swath")
+            local = int(absolute) - int(grid.row)
+            if 0 <= local < grid.data.shape[0]:
+                if first_absolute is None:
+                    first_absolute = int(absolute)
+                pieces.append(np.asarray(grid.data[local], dtype=np.complex64))
+                break
     if not pieces or first_absolute is None:
         raise ValueError("deburst kept no lines")
-    return RadarGrid(row=int(first_absolute), col=col, data=np.concatenate(pieces, axis=0), model=model)
+    return RadarGrid(row=int(first_absolute), col=col, data=np.stack(pieces, axis=0), model=model)
 
 
 def flat_earth_phase(
@@ -772,6 +814,7 @@ def terrain_correct(
     out_cols: int = 8,
     degree: int = 3,
     resampling: str = "BILINEAR_INTERPOLATION",
+    dem_resampling: str = "BILINEAR_INTERPOLATION",
     projection: str = "geographic",
 ) -> tuple[np.ndarray, tuple[float, float, float, float], np.ndarray]:
     """Inverse range-Doppler resample using a DEM height at every output coordinate.
@@ -783,7 +826,7 @@ def terrain_correct(
         raise ValueError("Terrain correction needs a DEM. Ellipsoid height 0 is not a substitute.")
 
     def height_of(lat_deg: float, lon_deg: float) -> tuple[float, bool]:
-        return dem.ellipsoidal_height(lat_deg, lon_deg)
+        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling)
 
     image, bounds, heights = _geocode(
         grid,
@@ -829,24 +872,22 @@ def _geocode(
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
     if mode == "utm":
-        from ai_insar.pipeline.dem import utm_to_wgs84, wgs84_to_utm
+        from pyproj import Transformer
 
-        corners = [wgs84_to_utm(lat, lon) for lat, lon in zip(lats, lons)]
-        eastings = [item[0] for item in corners]
-        northings = [item[1] for item in corners]
-        zone = corners[0][2]
-        northern = north >= 0.0
+        zone = int((float(np.mean(lons)) + 180.0) // 6.0) + 1
+        epsg = (32600 if float(np.mean(lats)) >= 0.0 else 32700) + zone
+        to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+        to_geo = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+        eastings, northings = to_utm.transform(lons, lats)
         east_axis = np.linspace(min(eastings), max(eastings), int(out_cols))
         north_axis = np.linspace(max(northings), min(northings), int(out_rows))
         lat_axis = np.empty((int(out_rows), int(out_cols)))
         lon_axis = np.empty_like(lat_axis)
         for row_index, northing in enumerate(north_axis):
-            for col_index, easting in enumerate(east_axis):
-                lat_axis[row_index, col_index], lon_axis[row_index, col_index] = utm_to_wgs84(
-                    float(easting), float(northing), zone, northern=northern
-                )
+            lon_axis[row_index], lat_axis[row_index] = to_geo.transform(east_axis, np.full(int(out_cols), northing))
         _geocode.last_utm_zone = zone
-        _geocode.last_utm_bounds = (min(eastings), min(northings), max(eastings), max(northings))
+        _geocode.last_utm_epsg = epsg
+        _geocode.last_utm_bounds = (float(min(eastings)), float(min(northings)), float(max(eastings)), float(max(northings)))
     else:
         lat_axis = np.linspace(north, south, int(out_rows))
         lon_axis = np.linspace(west, east, int(out_cols))
@@ -927,12 +968,11 @@ def geocode_window(
 
 
 def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, float] | None = None) -> None:
-    """Write a float32 TIFF and, when bounds exist, a world file.
+    """Write a float32 GeoTIFF. Bounds are west, south, east, north in degrees.
 
-    ``bounds`` is west, south, east, north in degrees. Complex data is stored
-    as two bands, real then imaginary. BEAM-DIMAP is not written.
+    When bounds are present the file is EPSG:4326 via rasterio. Complex data
+    is two bands, real then imaginary.
     """
-    import tifffile
     from pathlib import Path
 
     array = np.asarray(image)
@@ -944,19 +984,34 @@ def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, fl
         stored = np.stack((array.real, array.imag), axis=0).astype(np.float32)
         height, width = array.shape[-2], array.shape[-1]
     else:
-        stored = array.astype(np.float32)
+        stored = np.asarray(array, dtype=np.float32)
+        if stored.ndim == 2:
+            stored = stored[None, ...]
         height, width = stored.shape[-2], stored.shape[-1]
-    tifffile.imwrite(destination, stored)
+    if stored.ndim == 2:
+        stored = stored[None, ...]
     if bounds is None:
+        import tifffile
+
+        tifffile.imwrite(destination, stored if stored.shape[0] > 1 else stored[0])
         return
+    import rasterio
+    from rasterio.transform import from_bounds
+
     west, south, east, north = bounds
-    pixel_x = (east - west) / max(width, 1)
-    pixel_y = (north - south) / max(height, 1)
-    world = destination.with_suffix(".tfw")
-    world.write_text(
-        f"{pixel_x:.12g}\n0\n0\n{-pixel_y:.12g}\n{west + pixel_x / 2:.12g}\n{north - pixel_y / 2:.12g}\n",
-        encoding="utf-8",
-    )
+    transform = from_bounds(west, south, east, north, width, height)
+    with rasterio.open(
+        destination,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=int(stored.shape[0]),
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dataset:
+        dataset.write(stored)
 
 
 def write_kmz(path, image: np.ndarray, bounds: tuple[float, float, float, float]) -> None:
