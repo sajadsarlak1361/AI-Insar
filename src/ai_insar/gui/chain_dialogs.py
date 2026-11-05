@@ -153,6 +153,7 @@ class TopsSplitDialog(OperatorDialog):
         except (OSError, ValueError) as exc:
             self.error.setText(str(exc))
             return
+        self.error.setText("")
         self.bind_product(product)
 
     def bind_product(self, product: SafeProduct) -> None:

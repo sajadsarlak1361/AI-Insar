@@ -1221,19 +1221,36 @@ class MainWindow(QtWidgets.QMainWindow):
             if request.format_name != "BEAM-DIMAP":
                 self._write_product(request.directory, request.target, request.format_name, data, None)
             else:
+                from ai_insar.pipeline.dimap_s1 import slc_split_source
+
+                source = slc_split_source(
+                    product,
+                    measurement,
+                    row=row,
+                    height=height,
+                    width=width,
+                    col=0,
+                )
                 path = write_beam_dimap(
                     request.directory,
                     request.target,
                     data,
                     None,
                     band_name=f"{measurement.swath}_{measurement.polarisation}",
+                    source=source,
                 )
-                self._log(f"Saved {path}. Source files were not modified.")
+                self._log(
+                    f"Saved {path}. Raster line 0 zero-Doppler time is {source.first_line_snap}. "
+                    f"subset_offset_y is {source.subset_offset_y}. "
+                    f"The scene start {source.scene_first_snap} is the source swath clock, not line 0. "
+                    "Source files were not modified."
+                )
         self._log(description)
         self._log(
             f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
             f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field."
         )
+        self._remember_split_product(product)
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
         """Keep the split window as a radar grid. Zip annotations are read in place."""
@@ -1260,6 +1277,19 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.workspace.secondary_grid = grid
         self._log(f"Stored the secondary split {data.shape} from {product.product_id}.")
+
+    def _remember_split_product(self, product) -> None:
+        """Keep every split source in the explorer. A later date does not replace the first."""
+        products = list(self.safe_products)
+        if not any(item.product_id == product.product_id for item in products):
+            products.append(product)
+        self.safe_products = products
+        if self.safe_product is None:
+            self.safe_product = product
+        reference = self.safe_product if self.safe_product in products else products[0]
+        self.product_explorer.set_products(products, reference_id=reference.product_id)
+        self.product_explorer.show()
+        self._product_status = format_product_status(reference)
 
     def open_interferogram_dialog(self) -> None:
         dialog = InterferogramDialog(self, sources=self._source_names())
@@ -2560,6 +2590,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _log(self, message: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log.appendPlainText(f"[{stamp}] {message}")
+        self.log.ensureCursorVisible()
+        QtWidgets.QApplication.processEvents()
 
     def _show_text(self, title: str, text: str) -> None:
         dialog = QtWidgets.QDialog(self)

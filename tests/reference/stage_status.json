@@ -37,9 +37,17 @@
     {
       "order": 1,
       "stage": "TOPS Split",
-      "snap12": "IW1 VV bursts 5-6, then subset samples 11000:11520",
-      "comparison": "reference master after back-geocoding equals the SLC read, max abs 0 on 3016x520",
-      "matched": true
+      "snap14_full_width": "coordinator compared 44b7457 DIMAP to SNAP 14 on 3016x22849",
+      "snap14_complex_samples": 68912584,
+      "snap14_unequal_pairs": 0,
+      "snap14_max_abs": 0,
+      "snap14_verdict": "PASS_SAMPLES_ONLY on revision 44b7457, before abstracted metadata was written",
+      "pixel0_june": "30-JUN-2021 05:26:15.752882",
+      "pixel0_july": "12-JUL-2021 05:26:16.426464",
+      "subset_offset_y": 6032,
+      "scene_start_is_not_pixel0": true,
+      "matched": true,
+      "note": "All 68,912,584 complex samples matched SNAP 14 with zero residual. That build's DIMAP had no Abstracted_Metadata. This revision writes the burst-window clock, subset_offset_y, product id, annotation, and geolocation tie points taken from the SAFE. Scene start stays on the source-band record and is not first_line_time. SNAP 12 GPT Apply-Orbit-File and Back-Geocoding opened a window of that DIMAP. SNAP 14 has not re-read this revision."
     },
     {
       "order": 2,
@@ -90,7 +98,8 @@
       "ai_insar_accepted_mean_px": -0.001513926547609831,
       "matched": false,
       "displacement_chain": "not valid",
-      "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. That window is not one SNAP block. On the full valid-sample overlap, split into the same 10 range blocks, 7 blocks are at or above 0.3. Their unweighted mean is -0.001514 px. SNAP's applied shift is -0.001511 px. The per-block list does not match; block 1 is the first reject here (coherence 0.007) while SNAP records +0.001666 px for that block. SNAP's file is in pixels, and the printed mean is the negative of the weighted block mean. Threshold stays 0.3. No displacement product is claimed."
+      "unit_correction": "An earlier status stored snap12_block_shifts_s and snap12_applied_azimuth_shift_s and described -0.001511 as seconds (about 0.735 lines). That unit was wrong. The SNAP block file and the applied value are pixels. -0.001511 px is about 3.1 microseconds. The keys are now snap12_block_shifts_px and snap12_applied_azimuth_shift_px.",
+      "note": "The 520-sample ROI overlap has Periodogram coherence 0.103 and no shift is applied there. That window is not one SNAP block. On the full valid-sample overlap, split into the same 10 range blocks, 7 blocks are at or above 0.3. Their unweighted mean is -0.001514 px. SNAP's applied shift is -0.001511 px. The per-block list does not match; block 1 is the first reject here (coherence 0.007) while SNAP records +0.001666 px for that block. A matching mean is not block agreement. Threshold stays 0.3. No displacement product is claimed."
     },
     {
       "order": "5-15",

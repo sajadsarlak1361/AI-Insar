@@ -26,8 +26,15 @@ def write_beam_dimap(
     *,
     band_name: str = "band",
     unit: str = "1",
+    source: object | None = None,
 ) -> Path:
-    """Write ``target.dim`` and ``target.data`` under ``directory``."""
+    """Write ``target.dim`` and ``target.data`` under ``directory``.
+
+    ``source`` is a :class:`ai_insar.pipeline.dimap_s1.SlcDimapSource`. When it
+    is set, the product type is ``Derived from (SLC)`` and the burst-window
+    clock is written into abstracted metadata. The sample file layout does
+    not change.
+    """
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
     stem = (target or "product").strip() or "product"
@@ -45,14 +52,20 @@ def write_beam_dimap(
     for index, (name, values, dtype_name) in enumerate(bands):
         raw = data_dir / f"{name}.img"
         header = data_dir / f"{name}.hdr"
+        band_unit = _band_unit(name, unit, source)
         envi_type = 4 if values.dtype == np.float32 else 2
         stored = values.astype(">f4" if envi_type == 4 else ">i2")
         stored.tofile(raw)
+        description = (
+            f"Sentinel-1 IW Level-1 SLC Product - Unit: {band_unit}"
+            if source is not None
+            else f"AI Insar - Unit: {band_unit}"
+        )
         header.write_text(
             "\n".join(
                 (
                     "ENVI",
-                    f"description = {{AI Insar - Unit: {unit}}}",
+                    f"description = {{{description}}}",
                     f"samples = {cols}",
                     f"lines = {rows}",
                     "bands = 1",
@@ -82,7 +95,7 @@ def write_beam_dimap(
                     f"        <BAND_RASTER_WIDTH>{cols}</BAND_RASTER_WIDTH>",
                     f"        <BAND_RASTER_HEIGHT>{rows}</BAND_RASTER_HEIGHT>",
                     f"        <DATA_TYPE>{dtype_name}</DATA_TYPE>",
-                    f"        <PHYSICAL_UNIT>{unit}</PHYSICAL_UNIT>",
+                    f"        <PHYSICAL_UNIT>{band_unit}</PHYSICAL_UNIT>",
                     "        <SCALING_FACTOR>1.0</SCALING_FACTOR>",
                     "        <SCALING_OFFSET>0.0</SCALING_OFFSET>",
                     "        <LOG10_SCALED>false</LOG10_SCALED>",
@@ -94,7 +107,10 @@ def write_beam_dimap(
         )
     tie_xml = ""
     tie_files = ""
-    if bounds is not None:
+    source_ties = tuple(getattr(source, "tie_grids", ()) or ())
+    if source_ties:
+        tie_files, tie_xml = _source_tie_xml(stem, data_dir, source_ties)
+    elif bounds is not None:
         west, south, east, north = bounds
         tie_dir = data_dir / "tie_point_grids"
         tie_dir.mkdir(parents=True, exist_ok=True)
@@ -156,7 +172,7 @@ def write_beam_dimap(
     <DATASET_NAME>{stem}</DATASET_NAME>
   </Dataset_Id>
   <Production>
-    <PRODUCT_TYPE>AI-INSAR</PRODUCT_TYPE>
+    <PRODUCT_TYPE>{"Derived from (SLC)" if source is not None else "AI-INSAR"}</PRODUCT_TYPE>
   </Production>
   <Coordinate_Reference_System>
     <Horizontal_CS>
@@ -174,7 +190,7 @@ def write_beam_dimap(
         </Horizontal_Datum>
       </Geographic_CS>
     </Horizontal_CS>
-    {"" if bounds is not None else f"<WKT>{_WGS84_WKT}</WKT>"}
+    {"" if bounds is not None or source_ties else f"<WKT>{_WGS84_WKT}</WKT>"}
   </Coordinate_Reference_System>
   <Raster_Dimensions>
     <NCOLS>{cols}</NCOLS>
@@ -190,6 +206,7 @@ def write_beam_dimap(
   <Image_Interpretation>
 {chr(10).join(band_xml)}
   </Image_Interpretation>{tie_xml}
+{"" if source is None else chr(10) + source.dataset_sources_xml()}
 </Dimap_Document>
 """
     dim_path.write_text(document, encoding="utf-8")
@@ -213,6 +230,62 @@ def read_beam_dimap_band(dim_path: Path | str, band_index: int = 0) -> np.ndarra
     byte_order = _envi_int(header, "byte order") if "byte order" in header.read_text(encoding="utf-8") else 0
     dtype = np.dtype((">f4" if byte_order == 1 else "<f4") if data_type == 4 else (">i2" if byte_order == 1 else "<i2"))
     return np.fromfile(raw, dtype=dtype).reshape(lines, samples)
+
+
+def _source_tie_xml(stem: str, data_dir: Path, grids: tuple) -> tuple[str, str]:
+    tie_dir = data_dir / "tie_point_grids"
+    tie_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    infos = []
+    for index, (name, unit, values, offset_x, offset_y, step_x, step_y, cyclic) in enumerate(grids):
+        _write_tie(tie_dir / name, np.asarray(values, dtype=np.float32), name)
+        href = f"{stem}.data/tie_point_grids/{name}.hdr"
+        files.append(
+            "    <Tie_Point_Grid_File>\n"
+            f'      <TIE_POINT_GRID_FILE_PATH href="{href}"/>\n'
+            f"      <TIE_POINT_GRID_INDEX>{index}</TIE_POINT_GRID_INDEX>\n"
+            "    </Tie_Point_Grid_File>"
+        )
+        rows, cols = np.asarray(values).shape
+        discontinuity = "180" if cyclic else "0"
+        flag = "true" if cyclic else "false"
+        infos.append(
+            "    <Tie_Point_Grid_Info>\n"
+            f"      <TIE_POINT_GRID_INDEX>{index}</TIE_POINT_GRID_INDEX>\n"
+            "      <TIE_POINT_DESCRIPTION/>\n"
+            f"      <PHYSICAL_UNIT>{unit}</PHYSICAL_UNIT>\n"
+            f"      <TIE_POINT_GRID_NAME>{name}</TIE_POINT_GRID_NAME>\n"
+            "      <DATA_TYPE>float32</DATA_TYPE>\n"
+            f"      <NCOLS>{cols}</NCOLS><NROWS>{rows}</NROWS>\n"
+            f"      <OFFSET_X>{offset_x}</OFFSET_X><OFFSET_Y>{offset_y}</OFFSET_Y>\n"
+            f"      <STEP_X>{step_x}</STEP_X><STEP_Y>{step_y}</STEP_Y>\n"
+            f'      <CYCLIC discontinuity="{discontinuity}">{flag}</CYCLIC>\n'
+            "    </Tie_Point_Grid_Info>"
+        )
+    files_xml = "\n" + "\n".join(files)
+    body = (
+        "\n  <Tie_Point_Grids>\n"
+        f"    <NUM_TIE_POINT_GRIDS>{len(grids)}</NUM_TIE_POINT_GRIDS>\n"
+        + "\n".join(infos)
+        + "\n  </Tie_Point_Grids>\n"
+        "  <Geoposition>\n"
+        "    <Geoposition_Points>\n"
+        "      <TIE_POINT_GRID_NAME_LAT>latitude</TIE_POINT_GRID_NAME_LAT>\n"
+        "      <TIE_POINT_GRID_NAME_LON>longitude</TIE_POINT_GRID_NAME_LON>\n"
+        "    </Geoposition_Points>\n"
+        "  </Geoposition>"
+    )
+    return files_xml, body
+
+
+def _band_unit(name: str, unit: str, source: object | None) -> str:
+    if source is None:
+        return unit
+    if name.startswith("i_"):
+        return "real"
+    if name.startswith("q_"):
+        return "imaginary"
+    return unit
 
 
 def _write_tie(stem: Path, values: np.ndarray, name: str) -> None:

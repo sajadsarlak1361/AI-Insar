@@ -74,6 +74,13 @@ def test_typing_a_safe_folder_fills_split_controls(qapp, tmp_path: Path):
     assert dialog.burst_text.text() == "1 to 9 (max number of bursts: 9)"
     assert dialog.validate() == ""
     assert dialog.parameters()["source"] == str(safe)
+    dialog.source.setCurrentText(str(tmp_path))
+    qapp.processEvents()
+    assert "not a Sentinel-1 SAFE" in dialog.error.text()
+    dialog.source.setCurrentText(str(safe))
+    qapp.processEvents()
+    assert dialog.error.text() == ""
+    assert dialog.subswath.findText("IW1") >= 0
     dialog.close()
 
 
@@ -138,6 +145,18 @@ def test_stack_split_saves_dimap_and_keeps_the_other_date(qapp, tmp_path: Path):
     assert window.workspace.secondary_grid is not None
     assert window.workspace.secondary_grid.data.shape == (3016, 22849)
     assert len(window.workspace.safe_inputs) == 2
+    log = window.log.toPlainText()
+    assert "Stored the reference split (3016, 22849)" in log
+    assert "Stored the secondary split (3016, 22849)" in log
+    assert "20210630" in log.split("Stored the reference split")[1]
+    assert "20210712" in log.split("Stored the secondary split")[1]
+    labels = [
+        window.product_explorer.tree.topLevelItem(i).text(0)
+        for i in range(window.product_explorer.tree.topLevelItemCount())
+    ]
+    assert any("20210630" in label and label.endswith("(reference)") for label in labels)
+    assert any("20210712" in label for label in labels)
+    assert not any(label == "No Sentinel-1 product open" for label in labels)
     dialog.close()
     window.close()
 
