@@ -1723,7 +1723,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         written_dim = None
         if request.format_name == "BEAM-DIMAP":
-            written_dim = self._write_orbit_dimap(request.directory, request.target, subject, precise)
+            written_dim = self._write_orbit_dimap(
+                request.directory,
+                request.target,
+                subject,
+                precise,
+                orbit_file=path,
+                orbit_type=str(params.get("orbit_type") or "Sentinel Precise (Auto Download)"),
+                degree=degree,
+            )
             self._show_dimap(written_dim)
             self._log(f"Saved {written_dim.name}. SLC samples are unchanged. Orbit state vectors are the precise file.")
         payload = {
@@ -1839,7 +1847,17 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.product_explorer.show()
 
-    def _write_orbit_dimap(self, directory, target: str, subject: dict, precise) -> Path:
+    def _write_orbit_dimap(
+        self,
+        directory,
+        target: str,
+        subject: dict,
+        precise,
+        *,
+        orbit_file=None,
+        orbit_type: str = "Sentinel Precise (Auto Download)",
+        degree: int = 3,
+    ) -> Path:
         from pathlib import Path
 
         from ai_insar.pipeline.dimap import read_beam_dimap_band, write_beam_dimap
@@ -1847,7 +1865,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         dimap = subject.get("dimap")
         if dimap is not None and Path(dimap).is_file():
-            return apply_precise_orbit_dimap(dimap, directory, target, precise)
+            return apply_precise_orbit_dimap(
+                dimap,
+                directory,
+                target,
+                precise,
+                orbit_file=orbit_file,
+                orbit_type=orbit_type,
+                degree=degree,
+            )
         product = subject.get("product")
         measurement = subject.get("measurement")
         grid = subject.get("grid")

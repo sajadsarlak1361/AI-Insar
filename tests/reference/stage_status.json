@@ -56,7 +56,7 @@
       "state_vector_max_position_difference_m": 0.0008825566446900676,
       "vector_count": 25,
       "matched": true,
-      "note": "SLC pixels are unchanged by this operator. The check is the state vectors. A BEAM-DIMAP chosen as Source is read from disk in a fresh process: i/q and tie grids are copied byte for byte, Orbit_State_Vectors are replaced from the local EOF, the shift is the vector difference at first_line_time, and the product is listed in Product Explorer. A full 3016x22849 June split was orbited that way in a second process."
+      "note": "SLC pixels are unchanged. Against the SNAP 12 June Apply-Orbit-File DIMAP, the stored table is 25 vectors at 1 s from first_line_time-10 s, positions within 0.0009 m and velocities within 1e-6 m/s, and orbit_state_vector_file is 'Sentinel Precise  <EOF name>'. Split tie-point grids match that SNAP product byte for byte (the previous stage-1 tie-point claim was shape and units, not samples). Abstracted_Metadata now carries the SNAP keys (corners, Doppler coefficients, processing graph TOPSAR-Split/Write/Apply-Orbit-File/Write). centre_* is still the four-corner mean (about 1.7e-4 deg and 0.055 deg of heading off SNAP's scene geocoding) and total_size is the raster plus SAFE metadata files, 308828 bytes off SNAP's in-memory raw-storage count. Not a desktop run of this wheel."
     },
     {
       "order": 3,

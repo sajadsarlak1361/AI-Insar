@@ -206,7 +206,7 @@ def write_beam_dimap(
   <Image_Interpretation>
 {chr(10).join(band_xml)}
   </Image_Interpretation>{tie_xml}
-{"" if source is None else chr(10) + source.dataset_sources_xml()}
+{"" if source is None else chr(10) + source.dataset_sources_xml(str(dim_path))}
 </Dimap_Document>
 """
     dim_path.write_text(document, encoding="utf-8")
@@ -238,7 +238,12 @@ def _source_tie_xml(stem: str, data_dir: Path, grids: tuple) -> tuple[str, str]:
     files = []
     infos = []
     for index, (name, unit, values, offset_x, offset_y, step_x, step_y, cyclic) in enumerate(grids):
-        _write_tie(tie_dir / name, np.asarray(values, dtype=np.float32), name)
+        _write_tie(
+            tie_dir / name,
+            np.asarray(values, dtype=np.float32),
+            name,
+            description=f"Sentinel-1 IW Level-1 SLC Product - Unit: {unit}",
+        )
         href = f"{stem}.data/tie_point_grids/{name}.hdr"
         files.append(
             "    <Tie_Point_Grid_File>\n"
@@ -288,14 +293,14 @@ def _band_unit(name: str, unit: str, source: object | None) -> str:
     return unit
 
 
-def _write_tie(stem: Path, values: np.ndarray, name: str) -> None:
+def _write_tie(stem: Path, values: np.ndarray, name: str, description: str = "AI Insar tie point") -> None:
     values.astype(">f4").tofile(stem.with_suffix(".img"))
     rows, cols = values.shape
     stem.with_suffix(".hdr").write_text(
         "\n".join(
             (
                 "ENVI",
-                "description = {AI Insar tie point}",
+                f"description = {{{description}}}",
                 f"samples = {cols}",
                 f"lines = {rows}",
                 "bands = 1",
@@ -305,6 +310,8 @@ def _write_tie(stem: Path, values: np.ndarray, name: str) -> None:
                 "interleave = bsq",
                 "byte order = 1",
                 f"band names = {{ {name} }}",
+                "data gain values = {1.0}",
+                "data offset values = {0.0}",
                 "",
             )
         ),

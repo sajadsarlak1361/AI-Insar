@@ -119,10 +119,10 @@ def test_july_eof_is_not_applied_to_the_june_reference(qapp, tmp_path: Path):
     assert (tmp_path / "june_orbit_Orb.json").is_file()
     june_when = parse_snap_utc(dimap_abstracted_time(june_out, "first_line_time"))
     assert str(june_when).startswith("2021-06-30")
-    june_precise = read_eof_orbit(JUNE_EOF)
-    june_vector = next(when for when in june_precise.time if abs(int((when - june_when).astype(np.int64))) < 120_000_000_000)
-    index = int(np.where(june_precise.time == june_vector)[0][0])
-    assert f"{float(june_precise.position_m[index, 0]):.6f}" in june_out.read_text(encoding="utf-8")
+    june_text = june_out.read_text(encoding="utf-8")
+    assert "30-JUN-2021 05:26:05.752882" in june_text
+    assert "Sentinel Precise  S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF" in june_text
+    assert "TOPSAR-Split" in june_text and "Apply-Orbit-File" in june_text
 
     _apply(window, tmp_path, july_dim, JULY_EOF, "july_orbit")
     assert window.workspace.precise_orbit is june_orbit
@@ -132,11 +132,9 @@ def test_july_eof_is_not_applied_to_the_june_reference(qapp, tmp_path: Path):
     assert july_out.is_file()
     july_when = parse_snap_utc(dimap_abstracted_time(july_out, "first_line_time"))
     assert str(july_when).startswith("2021-07-12")
-    july_precise = read_eof_orbit(JULY_EOF)
-    july_vector = next(when for when in july_precise.time if abs(int((when - july_when).astype(np.int64))) < 120_000_000_000)
-    index = int(np.where(july_precise.time == july_vector)[0][0])
     july_text = july_out.read_text(encoding="utf-8")
-    assert f"{float(july_precise.position_m[index, 0]):.6f}" in july_text
+    assert "12-JUL-2021 05:26:06.426464" in july_text
+    assert "Sentinel Precise  S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF" in july_text
     assert "2021-06-30T05:26:15" not in july_text.split("Orbit_State_Vectors", 1)[1].split("</MDElem>", 1)[0]
     log = window.log.toPlainText()
     assert "20210712" in log

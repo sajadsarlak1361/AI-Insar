@@ -122,12 +122,9 @@ def test_full_split_dimap_orbit_in_a_new_process(tmp_path: Path):
     assert "30-JUN-2021 05:26:15.752882" in text
     assert "<NCOLS>22849</NCOLS>" in text
     assert "<NROWS>3016</NROWS>" in text
-    from ai_insar.pipeline.s1_annotation import read_eof_orbit
-
-    precise = read_eof_orbit(JUNE_EOF)
-    when = np.datetime64("2021-06-30T05:26:15.752882")
-    vector = next(item for item in precise.time if abs(int((item - when).astype(np.int64))) < 120_000_000_000)
-    index = int(np.where(precise.time == vector)[0][0])
-    assert f"{float(precise.position_m[index, 0]):.6f}" in text
+    assert "30-JUN-2021 05:26:05.752882" in text
+    assert "30-JUN-2021 05:26:29.752882" in text
+    assert "Sentinel Precise  S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF" in text
+    assert "Apply-Orbit-File" in text
     assert "Shift " in completed.stdout
     assert "not measured" not in completed.stdout
