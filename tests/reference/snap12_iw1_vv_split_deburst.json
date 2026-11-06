@@ -1,0 +1,33 @@
+{
+  "split": {
+    "shape_ours": [
+      3016,
+      520
+    ],
+    "shape_snap": [
+      3016,
+      520
+    ],
+    "max_abs": 0.0,
+    "n_mismatch": 0
+  },
+  "deburst": {
+    "ours_lines": 2848,
+    "snap_lines": 2847,
+    "source_rows": 2848,
+    "first_source_row": 6032,
+    "last_source_row": 9046,
+    "prefix_aligned": {
+      "max_abs": 605.7392578125,
+      "n_mismatch": 18663
+    },
+    "ours_without_last_line": {
+      "max_abs": 605.7392578125,
+      "n_mismatch": 18663
+    },
+    "ours_without_first_line": {
+      "max_abs": 5477.681640625,
+      "n_mismatch": 1479831
+    }
+  }
+}

@@ -125,6 +125,7 @@ class Workspace:
     geocode_bounds: tuple | None = None
     elevation: object | None = None
     esd_azimuth_shift_s: float | None = None
+    crop_without_coregistration: bool = False
 
     def clear_products(self) -> None:
         self.pairs = None

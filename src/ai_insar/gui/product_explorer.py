@@ -95,18 +95,76 @@ class ProductExplorer(QtWidgets.QDockWidget):
         self.preview.setMinimumSize(220, 140)
         layout.addWidget(self.preview, stretch=1)
         self.setWidget(body)
+        self._products: list[SafeProduct] = []
         self.set_product(None)
 
+    def add_dimap(self, title: str, details: list[tuple[str, str]], bands: list[str]) -> None:
+        """Show a BEAM-DIMAP opened from disk. Existing SAFE rows stay."""
+        if (
+            self.tree.topLevelItemCount() == 1
+            and self.tree.topLevelItem(0).text(0) == "No Sentinel-1 product open"
+        ):
+            self.tree.clear()
+        for index in range(self.tree.topLevelItemCount()):
+            if self.tree.topLevelItem(index).text(0) == title:
+                self.tree.scrollToItem(self.tree.topLevelItem(index))
+                return
+        root = QtWidgets.QTreeWidgetItem([title])
+        root.setData(0, _ROLE, ("dimap", title))
+        meta = QtWidgets.QTreeWidgetItem(["Metadata"])
+        for label, value in details:
+            meta.addChild(QtWidgets.QTreeWidgetItem([f"{label}: {value}"]))
+        root.addChild(meta)
+        band_node = QtWidgets.QTreeWidgetItem(["Bands"])
+        for name in bands:
+            item = QtWidgets.QTreeWidgetItem([name])
+            item.setData(0, _ROLE, ("dimap-band", name))
+            band_node.addChild(item)
+        root.addChild(band_node)
+        self.tree.addTopLevelItem(root)
+        self.tree.scrollToItem(root)
+        self.preview_caption.setText(title)
+
     def set_product(self, product: SafeProduct | None) -> None:
-        self._product = product
+        self.set_products([] if product is None else [product], reference_id=None if product is None else product.product_id)
+
+    def set_products(
+        self,
+        products: list[SafeProduct],
+        *,
+        reference_id: str | None = None,
+        secondary_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        self._products = list(products)
         self.tree.clear()
         self.preview.set_raster(None, None)
-        if product is None:
+        if not products:
+            self._product = None
             self.preview_caption.setText("Open a Sentinel-1 SAFE product to inspect it.")
             placeholder = QtWidgets.QTreeWidgetItem(["No Sentinel-1 product open"])
             self.tree.addTopLevelItem(placeholder)
             return
+        secondary = set(secondary_ids or ())
+        self._product = next((item for item in products if item.product_id == reference_id), products[0])
         self.preview_caption.setText("Double-click a band to preview amplitude.")
+        focus = None
+        for product in products:
+            title = _product_title(product, reference_id=reference_id, secondary_ids=secondary)
+            root = QtWidgets.QTreeWidgetItem([title])
+            root.setData(0, _ROLE, ("product", product.product_id))
+            self._append_product(root, product)
+            self.tree.addTopLevelItem(root)
+            if product.product_id == reference_id or focus is None:
+                focus = root
+        # Keep every product name on screen. Expanding both SAFE trees hides the second date.
+        self.tree.collapseAll()
+        if focus is not None:
+            self.tree.scrollToItem(focus)
+
+    def product(self) -> SafeProduct | None:
+        return self._product
+
+    def _append_product(self, root: QtWidgets.QTreeWidgetItem, product: SafeProduct) -> None:
         meta = QtWidgets.QTreeWidgetItem(["Metadata"])
         fields = (
             ("Platform", product.platform),
@@ -124,7 +182,7 @@ class ProductExplorer(QtWidgets.QDockWidget):
         )
         for label, value in fields:
             meta.addChild(QtWidgets.QTreeWidgetItem([f"{label}: {value}"]))
-        self.tree.addTopLevelItem(meta)
+        root.addChild(meta)
         bands = QtWidgets.QTreeWidgetItem(["Bands"])
         swaths = list(product.swaths)
         for measurement in product.measurements:
@@ -150,18 +208,17 @@ class ProductExplorer(QtWidgets.QDockWidget):
                 kind = "band" if present else "missing"
                 for prefix in (f"i_{swath}_{pol}", f"q_{swath}_{pol}", f"Intensity_{swath}_{pol}"):
                     item = QtWidgets.QTreeWidgetItem([prefix + size + suffix])
-                    item.setData(0, _ROLE, (kind, swath, pol))
+                    item.setData(0, _ROLE, (kind, swath, pol, product.product_id))
                     if not present:
                         item.setForeground(0, QtGui.QBrush(QtGui.QColor("#8894a8")))
                     group.addChild(item)
             if used:
                 bands.addChild(group)
-        self.tree.addTopLevelItem(bands)
+        root.addChild(bands)
         if product.quicklook_href:
             quick = QtWidgets.QTreeWidgetItem(["Quicklook"])
-            quick.setData(0, _ROLE, ("quicklook",))
-            self.tree.addTopLevelItem(quick)
-        self.tree.expandAll()
+            quick.setData(0, _ROLE, ("quicklook", product.product_id))
+            root.addChild(quick)
 
     def show_preview(self, amplitude, caption: str) -> None:
         from ai_insar.gui.render import amplitude_rgb
@@ -174,13 +231,26 @@ class ProductExplorer(QtWidgets.QDockWidget):
         item = self.tree.currentItem()
         data = item.data(0, _ROLE) if item is not None else None
         if data and data[0] in {"band", "missing"}:
+            self._activate(str(data[3]) if len(data) > 3 else "")
             return str(data[1]), str(data[2])
         return DEFAULT_SWATH, DEFAULT_POLARISATION
+
+    def _activate(self, product_id: str) -> None:
+        if not product_id:
+            return
+        for product in self._products:
+            if product.product_id == product_id:
+                self._product = product
+                return
 
     def _on_double_click(self, item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
         data = item.data(0, _ROLE)
         if not data:
             return
+        if len(data) > 3:
+            self._activate(str(data[3]))
+        elif len(data) > 1 and data[0] in {"quicklook", "product"}:
+            self._activate(str(data[1]))
         if data[0] == "band":
             self.bandActivated.emit(str(data[1]), str(data[2]))
         elif data[0] == "quicklook":
@@ -198,6 +268,18 @@ class ProductExplorer(QtWidgets.QDockWidget):
         action = menu.addAction("Add to SLC stack (crop…)")
         action.triggered.connect(lambda _checked=False: self.addToStackRequested.emit())
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+
+def _product_title(product: SafeProduct, *, reference_id: str | None, secondary_ids: set[str]) -> str:
+    """Date plus product id, with the pair role the explorer must keep visible."""
+    when = (product.start_utc or "")[:10]
+    if reference_id and product.product_id == reference_id:
+        role = " (reference)"
+    elif product.product_id in secondary_ids:
+        role = " (secondary)"
+    else:
+        role = ""
+    return f"{when} {product.product_id}{role}".strip()
 
 
 def _find_measurement(product: SafeProduct, swath: str, pol: str):

@@ -1,0 +1,63 @@
+<graph id="stage-deburst-subset">
+  <version>1.0</version>
+  <node id="Read">
+    <operator>Read</operator>
+    <parameters><file>${source}</file></parameters>
+  </node>
+  <node id="Split">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Subset-split">
+    <operator>Subset</operator>
+    <sources><sourceProduct refid="Orbit"/></sources>
+    <parameters>
+      <region>11000,0,520,3016</region>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+  <node id="Write-split">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="Subset-split"/></sources>
+    <parameters>
+      <file>/tmp/snap-ref/stage/split_orbit_ref.dim</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+  <node id="Deburst">
+    <operator>TOPSAR-Deburst</operator>
+    <sources><sourceProduct refid="Orbit"/></sources>
+    <parameters/>
+  </node>
+  <node id="Subset-deburst">
+    <operator>Subset</operator>
+    <sources><sourceProduct refid="Deburst"/></sources>
+    <parameters>
+      <region>11000,0,520,2848</region>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+  <node id="Write-deburst">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="Subset-deburst"/></sources>
+    <parameters>
+      <file>/tmp/snap-ref/stage/deburst_ref.dim</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+</graph>

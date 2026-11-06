@@ -77,6 +77,9 @@ def test_safe_folder_is_read_with_the_same_crop(tmp_path):
     assert stack.data.shape == (1, 2, 2)
     assert stack.data.dtype == np.complex64
     assert np.allclose(stack.data[0], 1 + 2j)
+    assert stack.description.startswith("SAFE folder stack")
+    assert "SAFE zip stack" not in stack.description
+    assert "no coregistration" in stack.description
 
 
 def test_progress_cancel_and_rejected_inputs(tmp_path):

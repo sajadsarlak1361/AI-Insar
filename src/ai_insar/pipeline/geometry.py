@@ -146,7 +146,7 @@ class Orbit:
             )
         guess_s = float(np.clip(raw, low, high))
         second = guess_s
-        for _ in range(12):
+        for _ in range(20):
             second = float(np.clip(second, low, high))
             when = self._epoch + np.timedelta64(int(round(second * 1e9)), "ns")
             pos, vel = self.interpolate(when, degree)
@@ -160,7 +160,9 @@ class Orbit:
                 break
             step = doppler / rate
             second -= step
-            if abs(step) < 1e-7:
+            # 1 ns is one orbit-time quantum. Stopping earlier leaves a line error
+            # that the ESD unit-phasor sum turns into a block-shift bias.
+            if abs(step) < 1e-12:
                 break
         return self._epoch + np.timedelta64(int(round(second * 1e9)), "ns")
 

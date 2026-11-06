@@ -115,8 +115,22 @@ def stack_safe_zips(
             col=int(col),
             height=int(data.shape[1]),
             width=int(data.shape[2]),
+            container=_container_label(files),
         ),
     )
+
+
+def _container_label(files: Sequence[Path]) -> str:
+    """Name the container that was actually opened. A folder is not a zip."""
+    zips = 0
+    for path in files:
+        if path.is_file() and path.suffix.lower() == ".zip":
+            zips += 1
+    if zips == len(files):
+        return "SAFE zip stack"
+    if zips == 0:
+        return "SAFE folder stack"
+    return "SAFE stack"
 
 
 def _stack_description(
@@ -127,12 +141,13 @@ def _stack_description(
     col: int,
     height: int,
     width: int,
+    container: str,
 ) -> str:
     names = ", ".join(labels[:4])
     if len(labels) > 4:
         names += f", +{len(labels) - 4} more"
     return (
-        f"SAFE zip stack, {band}, crop rows {row}:{row + height}, cols {col}:{col + width}, "
+        f"{container}, {band}, crop rows {row}:{row + height}, cols {col}:{col + width}, "
         f"from {names}. Time-sorted by manifest start time. "
         "Teaching crop-window alignment: the same row and column window in each "
         "measurement. There is no coregistration."
