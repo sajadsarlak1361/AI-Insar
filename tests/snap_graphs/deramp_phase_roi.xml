@@ -1,0 +1,79 @@
+<graph id="deramp-phase-roi">
+  <version>1.0</version>
+  <node id="Read-ref">
+    <operator>Read</operator>
+    <parameters><file>${reference}</file></parameters>
+  </node>
+  <node id="Split-ref">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read-ref</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit-ref">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split-ref</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Read-sec">
+    <operator>Read</operator>
+    <parameters><file>${secondary}</file></parameters>
+  </node>
+  <node id="Split-sec">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read-sec</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit-sec">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split-sec</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Back-Geocoding">
+    <operator>Back-Geocoding</operator>
+    <sources>
+      <sourceProduct refid="Orbit-ref"/>
+      <sourceProduct.1 refid="Orbit-sec"/>
+    </sources>
+    <parameters>
+      <demName>SRTM 3Sec</demName>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <resamplingType>BILINEAR_INTERPOLATION</resamplingType>
+      <maskOutAreaWithoutElevation>false</maskOutAreaWithoutElevation>
+      <outputDerampDemodPhase>true</outputDerampDemodPhase>
+    </parameters>
+  </node>
+  <node id="Subset">
+    <operator>Subset</operator>
+    <sources><sourceProduct refid="Back-Geocoding"/></sources>
+    <parameters>
+      <region>11000,0,520,3016</region>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+  <node id="Write">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="Subset"/></sources>
+    <parameters>
+      <file>/tmp/snap-ref/stage/deramp_phase_roi.dim</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+</graph>

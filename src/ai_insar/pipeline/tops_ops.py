@@ -8,6 +8,7 @@ not a crop and not an amplitude correlation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,7 +19,7 @@ from ai_insar.pipeline.geometry import (
     geodetic_to_ecef,
     ground_point_at_height,
 )
-from ai_insar.pipeline.s1_annotation import SwathModel
+from ai_insar.pipeline.s1_annotation import SwathModel, snap_utc_seconds
 
 
 @dataclass
@@ -43,15 +44,89 @@ def burst_rows(model: SwathModel, burst_index: int) -> tuple[int, int]:
     return start, start + model.lines_per_burst
 
 
-def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
-    """Multiply by the conjugate of the TOPS azimuth chirp, burst by burst.
+def deramp(grid: RadarGrid, *, remove: bool = True, orbit: Orbit | None = None) -> np.ndarray:
+    """Remove or restore the TOPS azimuth phase, burst by burst.
 
-    ``remove=False`` puts the chirp back (reramp). The FM rate is the
-    annotation polynomial at each sample's two-way time.
+    ``remove=False`` reramps. With Doppler polynomials on the swath, the phase
+    is the steering-rate FM chirp about the range-dependent reference time
+    plus Doppler-centroid demodulation. Otherwise the legacy centre-burst
+    chirp is used.
     """
-    out = np.array(grid.data, dtype=np.complex64, copy=True)
-    rows, cols = out.shape
+    phase = tops_phase(grid, orbit=orbit)
+    sign = 1.0 if remove else -1.0
+    return (np.asarray(grid.data, dtype=np.complex64) * np.exp(1j * sign * phase)).astype(np.complex64)
+
+
+def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
+    """Deramp plus demodulation phase in radians, one value per pixel.
+
+    Azimuth time is measured from the first line of the burst. The FM rate is
+    ``ka * ks / (ka - ks)``, with ``ks`` the Doppler rate of the antenna
+    steering. The reference time is the mid-burst time shifted by
+    ``f_dc / ka``. Demodulation uses ``-2π f_dc η`` with that same azimuth
+    time. Polynomials are the burst-indexed annotation records.
+    """
     model = grid.model
+    rows, cols = grid.shape
+    if not model.fm_rates or not model.dc_estimates:
+        return _legacy_chirp(grid)
+    speed = _speed(model, orbit or model.orbit)
+    if speed <= 0.0 or model.wavelength_m <= 0.0:
+        return _legacy_chirp(grid)
+    steering = 2.0 * speed * float(model.azimuth_steering_rate_rad_s) / float(model.wavelength_m)
+    samples = grid.col + np.arange(cols, dtype=np.float64)
+    tau = model.slant_range_time_s + 2.0 * samples * model.range_pixel_spacing_m / 299_792_458.0
+    phase = np.zeros((rows, cols), dtype=np.float64)
+    interval = float(model.azimuth_time_interval_s)
+    eta_mid = model.lines_per_burst * interval / 2.0
+    anchor = int(model.first_valid_pixel)
+    for burst_index, _burst in enumerate(model.bursts):
+        burst_row, burst_stop = burst_rows(model, burst_index)
+        local_start = max(burst_row, grid.row)
+        local_stop = min(burst_stop, grid.row + rows)
+        if local_start >= local_stop:
+            continue
+        fm = model.fm_rates[min(burst_index, len(model.fm_rates) - 1)]
+        dc = model.dc_estimates[min(burst_index, len(model.dc_estimates) - 1)]
+        ka = _polynomial(fm.coefficients, tau - fm.t0_s)
+        fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
+        ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
+        fdc_anchor = float(_polynomial(dc.coefficients, _two_way(model, anchor) - dc.t0_s))
+        if abs(ka_anchor) < 1e-6:
+            continue
+        rate = ka * steering / (ka - steering) if abs(steering) > 1e-6 else ka
+        reference = eta_mid + fdc_anchor / ka_anchor - np.divide(fdc, ka, out=np.zeros_like(fdc), where=np.abs(ka) > 1e-6)
+        line = np.arange(local_start, local_stop, dtype=np.float64) - burst_row
+        eta = line * interval
+        delta = eta[:, None] - reference[None, :]
+        block = -np.pi * rate[None, :] * delta**2 - 2.0 * np.pi * fdc[None, :] * eta[:, None]
+        phase[local_start - grid.row : local_stop - grid.row] = block
+    return phase
+
+
+def _two_way(model: SwathModel, sample: float) -> float:
+    return float(model.slant_range_time_s + 2.0 * float(sample) * model.range_pixel_spacing_m / 299_792_458.0)
+
+
+def _polynomial(coefficients: np.ndarray, delta: np.ndarray | float) -> np.ndarray:
+    value = np.zeros_like(delta, dtype=np.float64)
+    power = np.ones_like(delta, dtype=np.float64)
+    for coefficient in np.asarray(coefficients, dtype=np.float64):
+        value = value + float(coefficient) * power
+        power = power * delta
+    return value
+
+
+def _speed(model: SwathModel, orbit: Orbit) -> float:
+    when = model.bursts[len(model.bursts) // 2].azimuth_time
+    _position, velocity = orbit.interpolate(when, 3)
+    return float(np.linalg.norm(velocity))
+
+
+def _legacy_chirp(grid: RadarGrid) -> np.ndarray:
+    """Centre-burst FM chirp used when the annotation has no polynomial list."""
+    model = grid.model
+    rows, cols = grid.shape
     coefficients = model.fm_rate
     c0 = float(coefficients[0])
     c1 = float(coefficients[1]) if coefficients.size > 1 else 0.0
@@ -59,8 +134,8 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
     sample = grid.col + np.arange(cols, dtype=np.float64)
     delta_tau = 2.0 * sample * model.range_pixel_spacing_m / 299_792_458.0
     rate = c0 + c1 * delta_tau + c2 * delta_tau**2
-    sign = -1.0 if remove else 1.0
-    for burst_index, burst in enumerate(model.bursts):
+    phase = np.zeros((rows, cols), dtype=np.float64)
+    for burst_index, _burst in enumerate(model.bursts):
         burst_row, burst_stop = burst_rows(model, burst_index)
         local_start = max(burst_row, grid.row)
         local_stop = min(burst_stop, grid.row + rows)
@@ -69,37 +144,91 @@ def deramp(grid: RadarGrid, *, remove: bool = True) -> np.ndarray:
         line = np.arange(local_start, local_stop, dtype=np.float64) - burst_row
         center = (model.lines_per_burst - 1) / 2.0
         eta = (line - center) * model.azimuth_time_interval_s
-        phase = np.pi * rate[None, :] * (eta[:, None] ** 2)
-        slc = out[local_start - grid.row : local_stop - grid.row]
-        slc *= np.exp(1j * sign * phase).astype(np.complex64)
-    return out
+        # The legacy multiplier was exp(-j * pi * rate * eta^2) on removal,
+        # which is exp(j * phi) for phi = -pi * rate * eta^2.
+        phase[local_start - grid.row : local_stop - grid.row] = -np.pi * rate[None, :] * (eta[:, None] ** 2)
+    return phase
 
 
-def deburst_lines(model: SwathModel) -> list[tuple[int, int, int]]:
-    """Absolute rows kept from each burst after the mid-time overlap cut.
+def deburst_output_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
+    """Absolute source line of every deburst output line, or ``-1`` for no-data.
 
-    Each item is ``(burst_index, first_line, last_line)`` with both lines
-    included. Lines marked invalid by ``firstValidSample < 0`` are excluded.
+    The time axis is SNAP's: burst times are ``getMJD()*86400``, the height
+    is the truncated ``(lastLineTime-firstLineTime)/dt``, and an overlap
+    sample belongs to the later burst only when its time is strictly after
+    the mid-time. Lines outside the truncated valid-azimuth window are
+    no-data. ``burst_indexes`` are 0-based positions in the annotation.
+    Bursts omitted from a split are not used to trim the outer edge.
     """
+    if burst_indexes is None:
+        indexes = list(range(len(model.bursts)))
+    else:
+        indexes = sorted({int(item) for item in burst_indexes})
+    if not indexes or indexes[0] < 0 or indexes[-1] >= len(model.bursts):
+        raise ValueError(f"burst indexes {indexes} are outside this swath")
+    interval = float(model.azimuth_time_interval_s)
+    lines = int(model.lines_per_burst)
+    first_s = [snap_utc_seconds(model.bursts[index].azimuth_time) for index in indexes]
+    last_s = [start + (lines - 1) * interval for start in first_s]
+    height = int((last_s[-1] - first_s[0]) / interval)
+    if height < 1:
+        raise ValueError("deburst time span is empty")
+    first_valid = first_s[0] + int(model.bursts[indexes[0]].first_valid_line) * interval
+    last_valid = first_s[-1] + int(model.bursts[indexes[-1]].last_valid_line) * interval
+    y_min = int((first_valid - first_s[0]) / interval)
+    y_max = int((last_valid - first_s[0]) / interval)
+    chosen = np.full(height, -1, dtype=np.int32)
+    for line in range(height):
+        if line < y_min or line > y_max:
+            continue
+        target = first_s[0] + line * interval
+        hits: list[tuple[int, int, float, float]] = []
+        for position, index in enumerate(indexes):
+            if first_s[position] <= target < last_s[position]:
+                local = int((target - first_s[position]) / interval + 0.5)
+                local = min(max(local, 0), lines - 1)
+                hits.append((index, local, first_s[position], last_s[position]))
+                if len(hits) == 2:
+                    break
+        if not hits:
+            continue
+        pick = hits[0]
+        if len(hits) == 2:
+            mid = (hits[0][3] + hits[1][2]) / 2.0
+            pick = hits[1] if target > mid else hits[0]
+        chosen[line] = pick[0] * lines + pick[1]
+    if int(np.count_nonzero(chosen >= 0)) == 0:
+        raise ValueError("deburst kept no lines")
+    return chosen
+
+
+def deburst_source_rows(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> np.ndarray:
+    """Source lines that are copied. Leading and trailing no-data lines are omitted."""
+    rows = deburst_output_rows(model, burst_indexes)
+    return rows[rows >= 0]
+
+
+def deburst_lines(model: SwathModel, burst_indexes: Sequence[int] | None = None) -> list[tuple[int, int, int]]:
+    """Local inclusive line ranges that are copied from each selected burst.
+
+    Each item is ``(burst_index, first_line, last_line)``. No-data lines at
+    the valid-azimuth truncation are not listed here; they are zeros in
+    :func:`deburst_output_rows`.
+    """
+    rows = deburst_source_rows(model, burst_indexes)
+    lines = int(model.lines_per_burst)
     kept: list[tuple[int, int, int]] = []
-    mids: list[np.datetime64] = []
-    for index in range(len(model.bursts) - 1):
-        end = model.line_time((index + 1) * model.lines_per_burst - 1)
-        start_next = model.bursts[index + 1].azimuth_time
-        # Midpoint in nanoseconds, avoiding datetime float division.
-        delta = (start_next - end).astype(np.int64)
-        mids.append(end + np.timedelta64(int(delta // 2), "ns"))
-    for index, burst in enumerate(model.bursts):
-        first = burst.first_valid_line
-        last = burst.last_valid_line
-        if index > 0:
-            while first <= last and model.line_time(index * model.lines_per_burst + first) < mids[index - 1]:
-                first += 1
-        if index < len(model.bursts) - 1:
-            while last >= first and model.line_time(index * model.lines_per_burst + last) > mids[index]:
-                last -= 1
-        if first <= last:
-            kept.append((index, first, last))
+    start = int(rows[0])
+    previous = start
+    for absolute in rows[1:]:
+        absolute = int(absolute)
+        same_burst = absolute // lines == start // lines
+        if absolute == previous + 1 and same_burst:
+            previous = absolute
+            continue
+        kept.append((start // lines, start % lines, previous % lines))
+        start = previous = absolute
+    kept.append((start // lines, start % lines, previous % lines))
     return kept
 
 
@@ -113,28 +242,39 @@ def deburst(grids: list[RadarGrid]) -> RadarGrid:
         raise ValueError("deburst needs at least one burst")
     model = grids[0].model
     col = grids[0].col
+    width = int(grids[0].data.shape[1])
+    indexes = sorted({int(grid.row // model.lines_per_burst) for grid in grids})
+    source_rows = deburst_output_rows(model, indexes)
+    copied = source_rows[source_rows >= 0]
+    full = bool(copied.size) and all(
+        any(int(grid.row) <= int(absolute) < int(grid.row) + int(grid.data.shape[0]) for grid in grids)
+        for absolute in copied
+    )
     pieces: list[np.ndarray] = []
     first_absolute = None
-    plan = {index: (start, stop) for index, start, stop in deburst_lines(model)}
-    for grid in grids:
-        if grid.col != col or grid.model is not model and grid.model.lines_per_burst != model.lines_per_burst:
-            raise ValueError("deburst windows must share the column crop and swath")
-        burst_index = grid.row // model.lines_per_burst
-        if burst_index not in plan:
+    for absolute in source_rows:
+        if int(absolute) < 0:
+            if full:
+                if first_absolute is None:
+                    first_absolute = int(copied[0])
+                pieces.append(np.zeros(width, dtype=np.complex64))
             continue
-        start, stop = plan[burst_index]
-        local_start = start - (grid.row - burst_index * model.lines_per_burst)
-        local_stop = stop - (grid.row - burst_index * model.lines_per_burst) + 1
-        local_start = max(0, local_start)
-        local_stop = min(grid.data.shape[0], local_stop)
-        if local_start >= local_stop:
-            continue
-        if first_absolute is None:
-            first_absolute = burst_index * model.lines_per_burst + local_start
-        pieces.append(np.asarray(grid.data[local_start:local_stop], dtype=np.complex64))
+        placed = False
+        for grid in grids:
+            if grid.col != col or grid.model.lines_per_burst != model.lines_per_burst:
+                raise ValueError("deburst windows must share the column crop and swath")
+            local = int(absolute) - int(grid.row)
+            if 0 <= local < grid.data.shape[0]:
+                if first_absolute is None:
+                    first_absolute = int(absolute)
+                pieces.append(np.asarray(grid.data[local], dtype=np.complex64))
+                placed = True
+                break
+        if full and not placed:
+            raise ValueError("deburst source line is missing from the burst windows")
     if not pieces or first_absolute is None:
         raise ValueError("deburst kept no lines")
-    return RadarGrid(row=int(first_absolute), col=col, data=np.concatenate(pieces, axis=0), model=model)
+    return RadarGrid(row=int(first_absolute), col=col, data=np.stack(pieces, axis=0), model=model)
 
 
 def flat_earth_phase(
@@ -248,18 +388,36 @@ def radar_coordinates(
     *,
     guess: np.datetime64,
     degree: int = 3,
+    prefer_burst: int | None = None,
 ) -> tuple[float, float]:
-    """Return ``(absolute_line, sample)`` of a ground point in this swath."""
+    """Return ``(absolute_line, sample)`` of a ground point in this swath.
+
+    ``prefer_burst`` selects that burst's raster copy. An overlap azimuth
+    time sits in two bursts; the earlier copy is a different TOPS phase.
+    Back-geocoding passes the reference burst so the secondary line stays
+    on the same burst index.
+    """
     when = orbit.zero_doppler_time(ground_xyz, guess, degree)
     position, _velocity = orbit.interpolate(when, degree)
     slant = float(np.linalg.norm(ground_xyz - position))
     sample = (slant - model.slant_range_m(0)) / model.range_pixel_spacing_m
-    absolute = _absolute_line(model, when)
+    absolute = _absolute_line(model, when, prefer_burst=prefer_burst)
     return absolute, float(sample)
 
 
-def _absolute_line(model: SwathModel, when: np.datetime64) -> float:
-    """Line index using the burst interval that contains ``when``."""
+def _absolute_line(model: SwathModel, when: np.datetime64, prefer_burst: int | None = None) -> float:
+    """Line index of ``when``.
+
+    Without ``prefer_burst``, the first burst interval that contains the
+    time is used. With it, the line is measured from that burst's first
+    azimuth time even when the instant also falls in the previous burst.
+    """
+    if prefer_burst is not None:
+        index = int(prefer_burst)
+        if index < 0 or index >= len(model.bursts):
+            raise ValueError(f"burst {index} is outside 0..{len(model.bursts) - 1}")
+        elapsed = int((when - model.bursts[index].azimuth_time).astype(np.int64)) * 1e-9
+        return index * model.lines_per_burst + elapsed / model.azimuth_time_interval_s
     best = 0
     for index, burst in enumerate(model.bursts):
         elapsed = int((when - burst.azimuth_time).astype(np.int64)) * 1e-9
@@ -287,16 +445,24 @@ def backgeocode(
 ) -> np.ndarray:
     """Resample ``secondary`` onto ``reference`` by range-Doppler geolocation.
 
-    Both images are deramped first. Each reference sample is located on the
-    ellipsoid or on ``dem`` and the secondary value is resampled there, then
-    reramped unless ``reramp`` is false. ``max_solves=None`` solves every
-    pixel. A smaller budget interpolates the line/sample map and is kept only
-    when check pixels stay within ``max_residual_px`` of a dense solve.
+    The secondary is deramped with its own burst phase, each reference sample
+    is located on the ellipsoid or on ``dem``, and the baseband value is
+    resampled there. Reramp multiplies by the secondary phase bilinearly
+    sampled at that same source coordinate. The reference image is not
+    phase-multiplied: its Doppler stays on the reference grid, and the
+    secondary is restored in the secondary's own range-Doppler time, which
+    is what keeps the interpolation off the TOPS chirp without substituting
+    the reference chirp. ``reramp=False`` leaves the baseband samples.
+    ``max_solves=None`` solves every pixel. A smaller budget interpolates
+    the line/sample map and is kept only when check pixels stay within
+    ``max_residual_px`` of a dense solve.
     """
     backgeocode.last_stride = 1
     backgeocode.last_residual_px = 0.0
-    reference_deramped = deramp(reference, remove=True)
-    secondary_deramped = deramp(secondary, remove=True)
+    secondary_phase = tops_phase(secondary, orbit=secondary_orbit)
+    secondary_deramped = (
+        np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
+    ).astype(np.complex64)
     rows, cols = reference.shape
     limit = rows * cols if max_solves is None else int(max_solves)
     stride = _solve_stride(rows, cols, limit)
@@ -341,7 +507,10 @@ def backgeocode(
     sampled = resample_complex(secondary_deramped, line_s, sample_s, resampling)
     if not reramp:
         return sampled
-    return deramp(RadarGrid(reference.row, reference.col, sampled, reference.model), remove=False)
+    # Same kernel and source coordinate as the baseband samples. This is the
+    # secondary deramp/demod phase, not the reference phase.
+    phase_at_source = resample_real(secondary_phase, line_s, sample_s, resampling)
+    return (sampled * np.exp(-1j * phase_at_source)).astype(np.complex64)
 
 
 def _locate_grid(
@@ -399,12 +568,14 @@ def _one_secondary_coordinate(
         if not valid:
             return float("nan"), float("nan")
         ground = ground_point_at_height(reference_orbit, azimuth, slant, sampled, degree=degree)
+    burst = int(absolute) // int(reference.model.lines_per_burst)
     line, sample = radar_coordinates(
         secondary.model,
         secondary_orbit,
         ground,
         guess=repeat_azimuth_time(reference.model, absolute, secondary.model),
         degree=degree,
+        prefer_burst=burst,
     )
     return line - secondary.row, sample - secondary.col
 
@@ -449,6 +620,35 @@ def _map_residual(
             continue
         errors.append(max(abs(true_line - line_s[row, col]), abs(true_sample - sample_s[row, col])))
     return 0.0 if not errors else float(max(errors))
+
+
+def resample_real(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
+    """Resample one real array with the same kernel as :func:`resample_complex`.
+
+    Polynomial kernels stay in float64. The deramp phase is thousands of
+    radians, and a complex64 round trip would quantise it before the reramp.
+    """
+    from scipy.ndimage import map_coordinates
+
+    name = str(method).strip().upper()
+    orders = {
+        "NEAREST_NEIGHBOUR": 0,
+        "BILINEAR_INTERPOLATION": 1,
+        "CUBIC_CONVOLUTION": 3,
+        "BICUBIC_INTERPOLATION": 3,
+    }
+    values = np.asarray(image, dtype=np.float64)
+    line = np.asarray(line, dtype=np.float64)
+    sample = np.asarray(sample, dtype=np.float64)
+    valid = np.isfinite(line) & np.isfinite(sample)
+    if name in orders:
+        coords = np.stack((np.where(valid, line, 0.0), np.where(valid, sample, 0.0)))
+        out = map_coordinates(values, coords, order=orders[name], mode="constant", cval=0.0)
+        out = np.asarray(out, dtype=np.float64)
+        out[~valid] = 0.0
+        return out
+    sampled = resample_complex(values + 0j, line, sample, method)
+    return np.asarray(sampled.real, dtype=np.float64)
 
 
 def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
@@ -622,6 +822,51 @@ def burst_overlap_rows(model: SwathModel, burst_index: int) -> tuple[tuple[int, 
     return (early, early + count), (late, late + count)
 
 
+def valid_overlap_rows(model: SwathModel, burst_index: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Overlap rows after the invalid-line margins SNAP drops.
+
+    ``burst_overlap_rows`` is the time overlap. The early burst loses the lines
+    after its last valid line, and the next burst loses the lines before its
+    first valid line. Both returned ranges have the same length.
+    """
+    early, late = burst_overlap_rows(model, burst_index)
+    drop_start = int(model.bursts[burst_index + 1].first_valid_line)
+    drop_end = int(model.lines_per_burst) - 1 - int(model.bursts[burst_index].last_valid_line)
+    trimmed = (
+        (early[0] + drop_start, early[1] - drop_end),
+        (late[0] + drop_start, late[1] - drop_end),
+    )
+    if trimmed[0][1] - trimmed[0][0] < 8 or trimmed[0][1] - trimmed[0][0] != trimmed[1][1] - trimmed[1][0]:
+        raise ValueError("trimmed burst overlap is not a usable rectangle")
+    return trimmed
+
+
+def spectral_separation_hz(model: SwathModel, burst_index: int, overlap_lines: int) -> np.ndarray:
+    """Per-sample spectral separation ``kt(range) · (linesPerBurst − overlap) · Δt``.
+
+    ``kt = ka · ks / (ka − ks)``. ``ka`` is the FM polynomial at ``burst_index``
+    in the list the product still carries. On a split swath SNAP indexes that
+    list by the burst number inside the raster, which is the first polynomial
+    when the list was not cut down to the written bursts. One value per range
+    sample, in Hz. The azimuth interval is inside the cycle time, so the
+    values are hertz, not hertz times a line.
+    """
+    if burst_index < 0 or burst_index >= len(model.fm_rates):
+        raise ValueError(f"FM polynomial {burst_index} is not in this swath")
+    if int(overlap_lines) < 0 or int(overlap_lines) >= int(model.lines_per_burst):
+        raise ValueError("overlap line count must be inside one burst")
+    interval = float(model.azimuth_time_interval_s)
+    samples = np.arange(int(model.samples_per_burst), dtype=np.float64)
+    tau = model.slant_range_time_s + 2.0 * samples * float(model.range_pixel_spacing_m) / 299_792_458.0
+    fm = model.fm_rates[int(burst_index)]
+    ka = _polynomial(fm.coefficients, tau - fm.t0_s)
+    speed = _speed(model, model.orbit)
+    steering = 2.0 * speed * float(model.azimuth_steering_rate_rad_s) / float(model.wavelength_m)
+    kt = ka * steering / (ka - steering) if abs(steering) > 1e-6 else ka
+    cycle = (int(model.lines_per_burst) - int(overlap_lines)) * interval
+    return np.asarray(kt * cycle, dtype=np.float64)
+
+
 def overlap_doppler_separation_hz(model: SwathModel, burst_index: int) -> float:
     """Spectral separation, in Hz, of the two TOPS looks in one overlap.
 
@@ -681,6 +926,205 @@ def enhanced_spectral_diversity(
     return float(phase / (2.0 * np.pi * float(separation_hz))), coherence
 
 
+def early_look_coherence(master: np.ndarray, slave: np.ndarray) -> np.ndarray:
+    """5×5 coherence of one overlap look, the window SNAP's ESD weight uses.
+
+    The sum is the early-burst interferogram ``master · conj(slave)``. A pixel
+    whose box meets the edge uses the smaller box. A zero-power box stays 0.
+    """
+    master_c = np.asarray(master)
+    slave_c = np.asarray(slave)
+    if master_c.shape != slave_c.shape or master_c.ndim != 2:
+        raise ValueError("coherence looks must be the same 2-D shape")
+    height, width = master_c.shape
+    real = master_c.real * slave_c.real + master_c.imag * slave_c.imag
+    imag = master_c.imag * slave_c.real - master_c.real * slave_c.imag
+    master_power = master_c.real.astype(np.float64) ** 2 + master_c.imag.astype(np.float64) ** 2
+    slave_power = slave_c.real.astype(np.float64) ** 2 + slave_c.imag.astype(np.float64) ** 2
+
+    def _cumsum(values: np.ndarray) -> np.ndarray:
+        padded = np.zeros((height + 1, width + 1), dtype=np.float64)
+        padded[1:, 1:] = np.asarray(values, dtype=np.float64)
+        return padded.cumsum(0).cumsum(1)
+
+    real_sum, imag_sum, master_sum, slave_sum = (
+        _cumsum(real),
+        _cumsum(imag),
+        _cumsum(master_power),
+        _cumsum(slave_power),
+    )
+    coherence = np.zeros((height, width), dtype=np.float64)
+    half = 2
+    rows = np.arange(height)
+    row0 = np.maximum(rows - half, 0)
+    row1 = np.minimum(rows + half, height - 1) + 1
+    cols = np.arange(width)
+    col0 = np.maximum(cols - half, 0)
+    col1 = np.minimum(cols + half, width - 1) + 1
+    for row in rows:
+        real_box = real_sum[row1[row], col1] - real_sum[row0[row], col1] - real_sum[row1[row], col0] + real_sum[row0[row], col0]
+        imag_box = imag_sum[row1[row], col1] - imag_sum[row0[row], col1] - imag_sum[row1[row], col0] + imag_sum[row0[row], col0]
+        master_box = (
+            master_sum[row1[row], col1] - master_sum[row0[row], col1] - master_sum[row1[row], col0] + master_sum[row0[row], col0]
+        )
+        slave_box = slave_sum[row1[row], col1] - slave_sum[row0[row], col1] - slave_sum[row1[row], col0] + slave_sum[row0[row], col0]
+        good = (master_box != 0.0) & (slave_box != 0.0)
+        coherence[row, good] = np.sqrt((real_box[good] ** 2 + imag_box[good] ** 2) / (master_box[good] * slave_box[good]))
+    return coherence
+
+
+def esd_periodogram_shift_px(
+    phase_rad: np.ndarray,
+    weight: np.ndarray,
+    separation_hz: np.ndarray,
+    azimuth_time_interval_s: float,
+    *,
+    search_peak_hz: float | None = None,
+) -> float:
+    """SNAP periodogram: maximise the real part of the weighted double difference.
+
+    The model phase is ``2π · separation · shift_px · Δt``. Nine candidates are
+    refined until the step and the objective change are both below 1e-4, which
+    is the operator's stopping rule. The return is in pixels.
+    """
+    phase = np.asarray(phase_rad, dtype=np.float64).ravel()
+    weights = np.asarray(weight, dtype=np.float64).ravel()
+    separation = np.asarray(separation_hz, dtype=np.float64).ravel()
+    if phase.shape != weights.shape or phase.shape != separation.shape:
+        raise ValueError("ESD phase, weight, and spectral separation must share one length")
+    interval = float(azimuth_time_interval_s)
+    if interval <= 0.0:
+        raise ValueError("azimuth interval must be positive")
+    peak = float(np.max(np.abs(separation))) if search_peak_hz is None else float(search_peak_hz)
+    if peak <= 0.0 or float(np.sum(weights)) <= 0.0:
+        return 0.0
+    lower = -0.5 / (interval * peak)
+    step = (0.5 / (interval * peak)) * 2.0 / 8.0
+    previous = float(np.finfo(float).tiny)
+    best_index = 0
+    for _ in range(40):
+        best = float(np.finfo(float).tiny)
+        best_index = -1
+        for index in range(9):
+            shift = lower + step * index
+            real = float(np.sum(np.cos(phase - 2.0 * np.pi * separation * shift * interval) * weights))
+            if real > best:
+                best = real
+                best_index = index
+        if abs(previous - best) < 1e-4 and step < 1e-4:
+            return float(lower + step * best_index)
+        previous = best
+        center = lower + step * max(best_index, 0)
+        span = step * 2.0
+        lower = center - step
+        step = span / 8.0
+    return float(lower + step * max(best_index, 0))
+
+
+def overlap_block_shifts(
+    master_early: np.ndarray,
+    master_late: np.ndarray,
+    slave_early: np.ndarray,
+    slave_late: np.ndarray,
+    *,
+    separation_hz: float | np.ndarray,
+    azimuth_time_interval_s: float,
+    n_blocks: int = 10,
+    coherence_threshold: float = 0.3,
+) -> list[dict[str, float | int | bool]]:
+    """SNAP's per-block ESD periodogram, in pixels, for one overlap.
+
+    The phase is ``arg((m_early · conj(s_early)) · conj(m_late · conj(s_late)))``.
+    The weight is ``sqrt(coherence)`` of the early look's 5×5 interferogram when
+    that coherence is above ``coherence_threshold``, and 0 otherwise. This is
+    the Inv Quadratic weight. It is not the amplitude of the double difference.
+    A block whose weight is all zero is not a measurement. The stored shift is
+    the periodogram in pixels. ``shift_s`` is that shift times the azimuth
+    interval. Nothing is added back onto the slave.
+
+    ``separation_hz`` is either one value or one value per full-swath sample.
+    SNAP looks the per-sample array up at ``block · block_width + column``,
+    counting columns from sample 0 of the swath rather than from the first
+    valid sample of the overlap.
+    """
+    looks = (master_early, master_late, slave_early, slave_late)
+    shape = np.asarray(master_early).shape
+    if any(np.asarray(item).shape != shape for item in looks):
+        raise ValueError("ESD overlap looks must share one shape")
+    if int(n_blocks) < 1:
+        raise ValueError("ESD needs at least one range block")
+    interval = float(azimuth_time_interval_s)
+    if interval <= 0.0:
+        raise ValueError("azimuth interval must be positive")
+    width = int(shape[1])
+    block_width = width // int(n_blocks)
+    if block_width < 1:
+        raise ValueError(f"overlap width {width} cannot be split into {n_blocks} blocks")
+    separation = np.asarray(separation_hz, dtype=np.float64).reshape(-1)
+    if separation.size != 1 and separation.size < int(n_blocks) * block_width:
+        raise ValueError("spectral separation must be a scalar or one value per swath sample")
+    # The search window is half an ambiguity of the largest separation in the
+    # swath, which is what the operator computes once per overlap.
+    search_peak = float(np.max(np.abs(separation)))
+    reports: list[dict[str, float | int | bool]] = []
+    master_e = np.asarray(master_early)
+    master_l = np.asarray(master_late)
+    slave_e = np.asarray(slave_early)
+    slave_l = np.asarray(slave_late)
+    for index in range(int(n_blocks)):
+        col0 = index * block_width
+        col1 = (index + 1) * block_width
+        early = master_e[:, col0:col1] * np.conj(slave_e[:, col0:col1])
+        late = master_l[:, col0:col1] * np.conj(slave_l[:, col0:col1])
+        cross = early * np.conj(late)
+        coherence = float(np.abs(np.sum(cross)) / (np.sum(np.abs(cross)) + 1e-12))
+        look = early_look_coherence(master_e[:, col0:col1], slave_e[:, col0:col1])
+        weight = np.where(look > float(coherence_threshold), np.sqrt(look), 0.0)
+        if separation.size == 1:
+            block_separation = np.full(weight.size, float(separation[0]), dtype=np.float64)
+        else:
+            # SNAP chopSpectralSeparation: column block*width, not the valid-sample origin.
+            sample = index * block_width + np.arange(block_width)
+            block_separation = np.broadcast_to(separation[sample], weight.shape).ravel().copy()
+        shift_px = esd_periodogram_shift_px(
+            np.angle(cross),
+            weight,
+            block_separation,
+            interval,
+            search_peak_hz=search_peak,
+        )
+        mean_weight = float(np.mean(weight))
+        reports.append(
+            {
+                "block": index,
+                "col0": col0,
+                "col1": col1,
+                "coherence": coherence,
+                "weight": mean_weight,
+                "shift_px": shift_px,
+                "shift_s": shift_px * interval,
+                "accepted": mean_weight > 0.0,
+            }
+        )
+    return reports
+
+
+def esd_applied_shift_px(reports: list[dict[str, float | int | bool]]) -> float:
+    """Negated weight-mean of the block periodograms, in pixels.
+
+    SNAP writes this value after the block list as the mean azimuth shift and
+    applies it to the secondary. The weight is the mean per-pixel block weight.
+    """
+    if not reports:
+        return 0.0
+    shifts = np.array([float(item["shift_px"]) for item in reports], dtype=np.float64)
+    weights = np.array([float(item["weight"]) for item in reports], dtype=np.float64)
+    total = float(np.sum(weights))
+    if total == 0.0:
+        return 0.0
+    return float(-np.sum(shifts * weights) / total)
+
+
 def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
     """Shift a complex image by ``pixels`` azimuth lines with a Fourier ramp."""
     spectrum = np.fft.fft(np.asarray(image, dtype=np.complex64), axis=0)
@@ -734,6 +1178,10 @@ def _with_orbit(model: SwathModel, orbit: Orbit) -> SwathModel:
         fm_rate=model.fm_rate,
         bursts=model.bursts,
         orbit=orbit,
+        fm_rates=model.fm_rates,
+        dc_estimates=model.dc_estimates,
+        azimuth_steering_rate_rad_s=model.azimuth_steering_rate_rad_s,
+        first_valid_pixel=model.first_valid_pixel,
     )
 
 
@@ -772,6 +1220,7 @@ def terrain_correct(
     out_cols: int = 8,
     degree: int = 3,
     resampling: str = "BILINEAR_INTERPOLATION",
+    dem_resampling: str = "BILINEAR_INTERPOLATION",
     projection: str = "geographic",
 ) -> tuple[np.ndarray, tuple[float, float, float, float], np.ndarray]:
     """Inverse range-Doppler resample using a DEM height at every output coordinate.
@@ -783,7 +1232,7 @@ def terrain_correct(
         raise ValueError("Terrain correction needs a DEM. Ellipsoid height 0 is not a substitute.")
 
     def height_of(lat_deg: float, lon_deg: float) -> tuple[float, bool]:
-        return dem.ellipsoidal_height(lat_deg, lon_deg)
+        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling)
 
     image, bounds, heights = _geocode(
         grid,
@@ -829,24 +1278,22 @@ def _geocode(
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
     if mode == "utm":
-        from ai_insar.pipeline.dem import utm_to_wgs84, wgs84_to_utm
+        from pyproj import Transformer
 
-        corners = [wgs84_to_utm(lat, lon) for lat, lon in zip(lats, lons)]
-        eastings = [item[0] for item in corners]
-        northings = [item[1] for item in corners]
-        zone = corners[0][2]
-        northern = north >= 0.0
+        zone = int((float(np.mean(lons)) + 180.0) // 6.0) + 1
+        epsg = (32600 if float(np.mean(lats)) >= 0.0 else 32700) + zone
+        to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+        to_geo = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+        eastings, northings = to_utm.transform(lons, lats)
         east_axis = np.linspace(min(eastings), max(eastings), int(out_cols))
         north_axis = np.linspace(max(northings), min(northings), int(out_rows))
         lat_axis = np.empty((int(out_rows), int(out_cols)))
         lon_axis = np.empty_like(lat_axis)
         for row_index, northing in enumerate(north_axis):
-            for col_index, easting in enumerate(east_axis):
-                lat_axis[row_index, col_index], lon_axis[row_index, col_index] = utm_to_wgs84(
-                    float(easting), float(northing), zone, northern=northern
-                )
+            lon_axis[row_index], lat_axis[row_index] = to_geo.transform(east_axis, np.full(int(out_cols), northing))
         _geocode.last_utm_zone = zone
-        _geocode.last_utm_bounds = (min(eastings), min(northings), max(eastings), max(northings))
+        _geocode.last_utm_epsg = epsg
+        _geocode.last_utm_bounds = (float(min(eastings)), float(min(northings)), float(max(eastings)), float(max(northings)))
     else:
         lat_axis = np.linspace(north, south, int(out_rows))
         lon_axis = np.linspace(west, east, int(out_cols))
@@ -927,12 +1374,11 @@ def geocode_window(
 
 
 def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, float] | None = None) -> None:
-    """Write a float32 TIFF and, when bounds exist, a world file.
+    """Write a float32 GeoTIFF. Bounds are west, south, east, north in degrees.
 
-    ``bounds`` is west, south, east, north in degrees. Complex data is stored
-    as two bands, real then imaginary. BEAM-DIMAP is not written.
+    When bounds are present the file is EPSG:4326 via rasterio. Complex data
+    is two bands, real then imaginary.
     """
-    import tifffile
     from pathlib import Path
 
     array = np.asarray(image)
@@ -944,19 +1390,34 @@ def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, fl
         stored = np.stack((array.real, array.imag), axis=0).astype(np.float32)
         height, width = array.shape[-2], array.shape[-1]
     else:
-        stored = array.astype(np.float32)
+        stored = np.asarray(array, dtype=np.float32)
+        if stored.ndim == 2:
+            stored = stored[None, ...]
         height, width = stored.shape[-2], stored.shape[-1]
-    tifffile.imwrite(destination, stored)
+    if stored.ndim == 2:
+        stored = stored[None, ...]
     if bounds is None:
+        import tifffile
+
+        tifffile.imwrite(destination, stored if stored.shape[0] > 1 else stored[0])
         return
+    import rasterio
+    from rasterio.transform import from_bounds
+
     west, south, east, north = bounds
-    pixel_x = (east - west) / max(width, 1)
-    pixel_y = (north - south) / max(height, 1)
-    world = destination.with_suffix(".tfw")
-    world.write_text(
-        f"{pixel_x:.12g}\n0\n0\n{-pixel_y:.12g}\n{west + pixel_x / 2:.12g}\n{north - pixel_y / 2:.12g}\n",
-        encoding="utf-8",
-    )
+    transform = from_bounds(west, south, east, north, width, height)
+    with rasterio.open(
+        destination,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=int(stored.shape[0]),
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dataset:
+        dataset.write(stored)
 
 
 def write_kmz(path, image: np.ndarray, bounds: tuple[float, float, float, float]) -> None:

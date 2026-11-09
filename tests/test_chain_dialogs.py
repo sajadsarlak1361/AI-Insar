@@ -57,7 +57,9 @@ def test_split_dialog_stays_empty_until_a_product_is_bound(qapp):
     assert "IW1" in names
     assert dialog.subswath.currentText() == ""
     assert dialog.pol_list.count() == len(product.polarisations)
-    assert dialog.burst_text.text() == "1 to 9999 (max number of bursts: 9999)"
+    assert "9999" not in dialog.burst_text.text()
+    assert "is bound" in dialog.notes.text()
+    assert "With no source" not in dialog.notes.text()
     assert dialog.target.text().endswith("_split")
     assert "empty" in dialog.validate().lower()
     dialog.subswath.setCurrentText("IW1")

@@ -8,6 +8,7 @@ are kept.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -36,6 +37,19 @@ def _first(element: ET.Element, name: str) -> ET.Element:
     raise ValueError(f"annotation has no {name}")
 
 
+@dataclass(frozen=True)
+class RangePolynomial:
+    """A slant-range polynomial dated by one azimuth time.
+
+    ``coefficients[k]`` multiplies ``(tau - t0_s)`` to the power ``k``.
+    ``tau`` is two-way slant-range time in seconds.
+    """
+
+    azimuth_time: np.datetime64
+    t0_s: float
+    coefficients: np.ndarray
+
+
 @dataclass
 class BurstTiming:
     azimuth_time: np.datetime64
@@ -60,6 +74,10 @@ class SwathModel:
     fm_rate: np.ndarray
     bursts: tuple[BurstTiming, ...]
     orbit: Orbit
+    fm_rates: tuple[RangePolynomial, ...] = ()
+    dc_estimates: tuple[RangePolynomial, ...] = ()
+    azimuth_steering_rate_rad_s: float = 0.0
+    first_valid_pixel: int = 0
 
     def line_time(self, absolute_line: int) -> np.datetime64:
         burst_index = int(absolute_line) // self.lines_per_burst
@@ -88,6 +106,29 @@ class SwathModel:
 
 
 WGS84_MEAN_RADIUS_M = 6371000.0
+# SNAP ProductData.UTC.getMJD is days since 2000-01-01, then burst times are
+# getMJD()*86400. 1/86400 in float64 is not a dyadic rational, so a burst
+# interval is not an integer number of azimuth lines.
+_SNAP_UTC_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_SNAP_DAY_SCALE = 1.0 / 86400.0
+
+
+def snap_utc_seconds(when: np.datetime64) -> float:
+    """Seconds since 2000-01-01 on SNAP's UTC scale.
+
+    This is the clock ``Sentinel1Utils`` stores in ``burstFirstLineTime``.
+    Subtracting two values and dividing by the azimuth interval must use
+    these doubles: a nanosecond datetime difference rounds the other way
+    and changes the deburst line count.
+    """
+    text = str(when)
+    head, fraction = text.split(".")
+    micros = int((fraction + "000000")[:6])
+    stamp = datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    days = (datetime(stamp.year, stamp.month, stamp.day, tzinfo=timezone.utc) - _SNAP_UTC_EPOCH).days
+    seconds = stamp.hour * 3600 + stamp.minute * 60 + stamp.second
+    mjd = days + (seconds + micros * 1e-6) * _SNAP_DAY_SCALE
+    return float(mjd * 86400.0)
 
 
 def read_swath_annotation(path: Path | str) -> SwathModel:
@@ -109,6 +150,11 @@ def read_swath_annotation_bytes(payload: bytes) -> SwathModel:
     samples_per_burst = int(float(_text(root, "samplesPerBurst")))
     number_of_lines = int(float(_text(image, "numberOfLines")))
     fm = np.array([float(item) for item in _text(root, "azimuthFmRatePolynomial").split()], dtype=np.float64)
+    fm_rates = _range_polynomials(root, "azimuthFmRate", "azimuthFmRatePolynomial")
+    dc_tag = "dataDcPolynomial" if "data analysis" in _optional_text(root, "dcMethod").lower() else "geometryDcPolynomial"
+    dc_estimates = _range_polynomials(root, "dcEstimate", dc_tag)
+    steering = _optional_float(root, "azimuthSteeringRate")
+    first_valid_pixel = _first_valid_pixel(root)
     times = []
     position = []
     velocity = []
@@ -152,7 +198,51 @@ def read_swath_annotation_bytes(payload: bytes) -> SwathModel:
         fm_rate=fm,
         bursts=tuple(bursts),
         orbit=Orbit(np.array(times), np.array(position), np.array(velocity)),
+        fm_rates=tuple(fm_rates),
+        dc_estimates=tuple(dc_estimates),
+        azimuth_steering_rate_rad_s=float(np.deg2rad(steering)),
+        first_valid_pixel=first_valid_pixel,
     )
+
+
+def _optional_text(root: ET.Element, name: str) -> str:
+    for element in root.iter():
+        if _local(element.tag) == name and (element.text or "").strip():
+            return (element.text or "").strip()
+    return ""
+
+
+def _optional_float(root: ET.Element, name: str) -> float:
+    text = _optional_text(root, name)
+    return float(text) if text else 0.0
+
+
+def _range_polynomials(root: ET.Element, record: str, coefficient: str) -> list[RangePolynomial]:
+    found: list[RangePolynomial] = []
+    for element in root.iter():
+        if _local(element.tag) != record:
+            continue
+        try:
+            when = parse_utc(_child_text(element, "azimuthTime"))
+            origin = float(_child_text(element, "t0"))
+            coeffs = np.array(_child_text(element, coefficient).split(), dtype=np.float64)
+        except ValueError:
+            continue
+        found.append(RangePolynomial(azimuth_time=when, t0_s=origin, coefficients=coeffs))
+    return found
+
+
+def _first_valid_pixel(root: ET.Element) -> int:
+    """Largest annotated first-valid range sample. Invalid lines are ignored."""
+    widest = 0
+    for element in root.iter():
+        if _local(element.tag) != "firstValidSample":
+            continue
+        values = np.array((element.text or "").split(), dtype=np.int32)
+        valid = values[values >= 0]
+        if valid.size:
+            widest = max(widest, int(np.max(valid)))
+    return widest
 
 
 def read_swath_from_product(product, measurement) -> SwathModel:

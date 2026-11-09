@@ -1,0 +1,95 @@
+<graph id="iw1-vv-bursts-5-6">
+  <version>1.0</version>
+  <node id="Read-ref">
+    <operator>Read</operator>
+    <parameters><file>${reference}</file></parameters>
+  </node>
+  <node id="Split-ref">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read-ref</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit-ref">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split-ref</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Read-sec">
+    <operator>Read</operator>
+    <parameters><file>${secondary}</file></parameters>
+  </node>
+  <node id="Split-sec">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read-sec</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit-sec">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split-sec</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Back-Geocoding">
+    <operator>Back-Geocoding</operator>
+    <sources>
+      <sourceProduct refid="Orbit-ref"/>
+      <sourceProduct.1 refid="Orbit-sec"/>
+    </sources>
+    <parameters>
+      <demName>SRTM 3Sec</demName>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <resamplingType>BILINEAR_INTERPOLATION</resamplingType>
+      <maskOutAreaWithoutElevation>false</maskOutAreaWithoutElevation>
+    </parameters>
+  </node>
+  <node id="Interferogram">
+    <operator>Interferogram</operator>
+    <sources><sourceProduct refid="Back-Geocoding"/></sources>
+    <parameters>
+      <subtractFlatEarthPhase>true</subtractFlatEarthPhase>
+      <subtractTopographicPhase>false</subtractTopographicPhase>
+      <includeCoherence>true</includeCoherence>
+      <squarePixel>false</squarePixel>
+      <cohWinAz>2</cohWinAz>
+      <cohWinRg>10</cohWinRg>
+    </parameters>
+  </node>
+  <node id="Deburst">
+    <operator>TOPSAR-Deburst</operator>
+    <sources><sourceProduct refid="Interferogram"/></sources>
+    <parameters/>
+  </node>
+  <node id="Multilook">
+    <operator>Multilook</operator>
+    <sources><sourceProduct refid="Deburst"/></sources>
+    <parameters>
+      <nRgLooks>20</nRgLooks>
+      <nAzLooks>4</nAzLooks>
+    </parameters>
+  </node>
+  <node id="Write-ml">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="Multilook"/></sources>
+    <parameters>
+      <file>/tmp/snap-ref/chain/multilook.dim</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+</graph>

@@ -61,18 +61,40 @@ class ElevationModel:
     geoid: GeoidGrid
     provenance: str
 
-    def ellipsoidal_height(self, lat_deg: float, lon_deg: float) -> tuple[float, bool]:
+    def ellipsoidal_height(
+        self,
+        lat_deg: float,
+        lon_deg: float,
+        *,
+        method: str = "BILINEAR_INTERPOLATION",
+    ) -> tuple[float, bool]:
         """Return ``(h_ellipsoid, valid)``. Invalid samples are no-data, not zero."""
         if not self.covers(lat_deg, lon_deg):
             return float("nan"), False
+        name = str(method).strip().upper()
+        if name not in {"BILINEAR_INTERPOLATION", "NEAREST_NEIGHBOUR"}:
+            raise ValueError(f"DEM resampling {method} is not implemented.")
         row = _bracket(self.lat_deg, float(lat_deg))
         col = _bracket(self.lon_deg, float(lon_deg))
-        samples = _corner_samples(self.orthometric_m, row, col)
-        if not np.isfinite(samples).all() or np.any(np.abs(samples - float(self.nodata)) < 1e-3):
-            return float("nan"), False
-        height = _bilinear_value(self.orthometric_m, self.lat_deg, self.lon_deg, row, col, float(lat_deg), float(lon_deg))
-        if not np.isfinite(height):
-            return float("nan"), False
+        if name == "NEAREST_NEIGHBOUR":
+            row1 = min(row + 1, self.orthometric_m.shape[0] - 1)
+            col1 = min(col + 1, self.orthometric_m.shape[1] - 1)
+            lat0, lat1 = float(self.lat_deg[row]), float(self.lat_deg[row1])
+            lon0, lon1 = float(self.lon_deg[col]), float(self.lon_deg[col1])
+            use_row = row1 if abs(float(lat_deg) - lat1) < abs(float(lat_deg) - lat0) else row
+            use_col = col1 if abs(float(lon_deg) - lon1) < abs(float(lon_deg) - lon0) else col
+            height = float(self.orthometric_m[use_row, use_col])
+            if not np.isfinite(height) or abs(height - float(self.nodata)) < 1e-3:
+                return float("nan"), False
+        else:
+            samples = _corner_samples(self.orthometric_m, row, col)
+            if not np.isfinite(samples).all() or np.any(np.abs(samples - float(self.nodata)) < 1e-3):
+                return float("nan"), False
+            height = _bilinear_value(
+                self.orthometric_m, self.lat_deg, self.lon_deg, row, col, float(lat_deg), float(lon_deg)
+            )
+            if not np.isfinite(height):
+                return float("nan"), False
         undulation = self.geoid.undulation(lat_deg, lon_deg)
         return float(height) + undulation, True
 
@@ -113,6 +135,33 @@ def read_egm96_pgm(path: Path | str) -> GeoidGrid:
     if grid.model != "EGM96":
         raise ValueError(f"{path} is {grid.model}, not EGM96")
     return grid
+
+
+def read_raster_dem(path: Path | str, geoid: GeoidGrid, orthometric_datum: str) -> ElevationModel:
+    """Read a north-up geographic GeoTIFF. The geoid model must match the datum."""
+    _require_geoid(geoid, orthometric_datum, Path(path).name)
+    import rasterio
+
+    source = Path(path)
+    with rasterio.open(source) as dataset:
+        heights = dataset.read(1).astype(np.float64)
+        transform = dataset.transform
+        nodata = -32768.0 if dataset.nodata is None else float(dataset.nodata)
+    rows, cols = heights.shape
+    lon = transform.c + (np.arange(cols, dtype=np.float64) + 0.5) * transform.a
+    lat = transform.f + (np.arange(rows, dtype=np.float64) + 0.5) * transform.e
+    if float(lat[0]) < float(lat[-1]):
+        lat = lat[::-1]
+        heights = heights[::-1]
+    return ElevationModel(
+        lat_deg=lat,
+        lon_deg=lon,
+        orthometric_m=heights,
+        nodata=nodata,
+        orthometric_datum=orthometric_datum,
+        geoid=geoid,
+        provenance=f"{source} orthometric {orthometric_datum} + {geoid.model} {geoid.source}",
+    )
 
 
 def read_srtm_hgt(path: Path | str, geoid: GeoidGrid) -> ElevationModel:

@@ -36,7 +36,7 @@ coherence measurement.
 
 ## Acceptance checklist
 
-SNAP 12.0.0 GPT is at `/home/ubuntu/esa-snap/bin/gpt`. The menu audit was SNAP 14. IW1 VV bursts 5–6, rows 6032:9048 and samples 11000:11512, match that GPT subset with a maximum absolute difference of 0. Deramp then reramp on that window leaves a complex64 residual below 0.001. The raw TIFF is not modified. On the 166×128 burst overlap the range-Doppler check residual was about 8e-5 pixels at stride 4, and the 12-day ESD coherence was 0.012.
+SNAP 12.0.0 GPT is at `/home/ubuntu/esa-snap/bin/gpt`. The menu audit was SNAP 14. `linesPerBurst` is 1508. SNAP burst numbers are 1-based: bursts 5 and 6 are absolute rows 6032:9048. The same bursts are 0-based indexes 4 and 5. Their overlap is rows 7374:7540 and 7540:7706. A GPT subset of bursts 5–6, samples 11000:11512, matches this reader with maximum absolute difference 0. That identity is only the SLC read, not Back-Geocoding or terrain correction. Deramp then reramp on that window leaves a complex64 residual below 0.001. On the 166×128 overlap the 12-day ESD coherence was 0.012 and the shift was not applied.
 
 `TOPSAR-Split` on this partial SAFE was refused: `Source product should be multi sub-swath SLC burst product`, because IW2, IW3, and VH were not downloaded. The pixel comparison uses GPT `Subset` on the IW1 VV measurement.
 

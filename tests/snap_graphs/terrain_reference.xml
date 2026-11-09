@@ -1,0 +1,54 @@
+<graph id="terrain-reference">
+  <version>1.0</version>
+  <node id="Read">
+    <operator>Read</operator>
+    <parameters><file>${source}</file></parameters>
+  </node>
+  <node id="Split">
+    <operator>TOPSAR-Split</operator>
+    <sources><source>Read</source></sources>
+    <parameters>
+      <subswath>IW1</subswath>
+      <selectedPolarisations>VV</selectedPolarisations>
+      <firstBurstIndex>5</firstBurstIndex>
+      <lastBurstIndex>6</lastBurstIndex>
+    </parameters>
+  </node>
+  <node id="Orbit">
+    <operator>Apply-Orbit-File</operator>
+    <sources><source>Split</source></sources>
+    <parameters>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
+      <polyDegree>3</polyDegree>
+      <continueOnFail>false</continueOnFail>
+    </parameters>
+  </node>
+  <node id="Deburst">
+    <operator>TOPSAR-Deburst</operator>
+    <sources><source>Orbit</source></sources>
+    <parameters/>
+  </node>
+  <node id="Terrain-Correction">
+    <operator>Terrain-Correction</operator>
+    <sources><sourceProduct refid="Deburst"/></sources>
+    <parameters>
+      <demName>SRTM 3Sec</demName>
+      <imgResamplingMethod>BILINEAR_INTERPOLATION</imgResamplingMethod>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <pixelSpacingInMeter>80</pixelSpacingInMeter>
+      <mapProjection>WGS84(DD)</mapProjection>
+      <saveDEM>true</saveDEM>
+      <saveLatLon>true</saveLatLon>
+      <outputComplex>false</outputComplex>
+      <nodataValueAtSea>false</nodataValueAtSea>
+    </parameters>
+  </node>
+  <node id="Write">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="Terrain-Correction"/></sources>
+    <parameters>
+      <file>/tmp/snap-ref/chain/terrain.dim</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+</graph>
