@@ -441,14 +441,38 @@ class EsdDialog(OperatorDialog):
         return _ESD_BLOCK
 
     def parameters(self) -> dict:
-        estimator = self.findChild(QtWidgets.QComboBox, "esdEstimator")
-        user_azimuth = self.findChild(QtWidgets.QCheckBox, "esdUserAzimuth")
-        azimuth = self.findChild(QtWidgets.QLineEdit, "esdAzimuthShift")
+        def combo(name: str) -> str:
+            box = self.findChild(QtWidgets.QComboBox, name)
+            return "" if box is None else box.currentText()
+
+        def text(name: str, default: str = "0") -> str:
+            field = self.findChild(QtWidgets.QLineEdit, name)
+            return default if field is None else field.text().strip()
+
+        def checked(name: str) -> bool:
+            box = self.findChild(QtWidgets.QCheckBox, name)
+            return False if box is None else box.isChecked()
+
         return {
             "request": self.io_request(),
-            "estimator": "" if estimator is None else estimator.currentText(),
-            "user_azimuth": False if user_azimuth is None else user_azimuth.isChecked(),
-            "azimuth_shift": 0.0 if azimuth is None else float(azimuth.text().strip() or "0"),
+            "estimator": combo("esdEstimator") or "Periodogram",
+            "weight": combo("esdWeight") or "Inv Quadratic",
+            "integration": combo("esdIntegration") or "L1 and L2",
+            "baseline_type": combo("esdBaselineType") or "Number of images",
+            "window_width": int(combo("esdWinWidth") or "512"),
+            "window_height": int(combo("esdWinHeight") or "512"),
+            "azimuth_accuracy": int(combo("esdAzAccuracy") or "16"),
+            "range_accuracy": int(combo("esdRgAccuracy") or "16"),
+            "oversample": int(combo("esdOversample") or "128"),
+            "xcorr_threshold": float(text("esdXcorr", "0.1") or "0.1"),
+            "coherence_threshold": float(text("esdCohThreshold", "0.3") or "0.3"),
+            "n_blocks": int(text("esdWindows", "10") or "10"),
+            "max_temporal_baseline": int(float(text("esdMaxBaseline", "4") or "4")),
+            "range_shift": float(text("esdRangeShift", "0") or "0"),
+            "azimuth_shift": float(text("esdAzimuthShift", "0") or "0"),
+            "user_range": checked("esdUserRange"),
+            "user_azimuth": checked("esdUserAzimuth"),
+            "do_not_write": checked("esdNoWrite"),
         }
 
 
@@ -551,11 +575,19 @@ class BackGeocodingDialog(QtWidgets.QDialog):
             return "Error: [NodeId: ProductSet-Reader] Please add a source product"
         if len(self.product_set.paths()) < 2:
             return _BACKGEO_BLOCK
-        if self.resampling.currentText() != "BILINEAR_INTERPOLATION":
-            return (
-                f"Resampling Type {self.resampling.currentText()} is not applied. "
-                "Only BILINEAR_INTERPOLATION is implemented."
-            )
+        implemented = {
+            "NEAREST_NEIGHBOUR",
+            "BILINEAR_INTERPOLATION",
+            "CUBIC_CONVOLUTION",
+            "BICUBIC_INTERPOLATION",
+            "BISINC_5_POINT_INTERPOLATION",
+            "BISINC_11_POINT_INTERPOLATION",
+            "BISINC_21_POINT_INTERPOLATION",
+        }
+        if self.resampling.currentText() not in implemented:
+            return f"Resampling Type {self.resampling.currentText()} is not implemented."
+        if self.dem_resampling.currentText() not in {"BILINEAR_INTERPOLATION", "NEAREST_NEIGHBOUR"}:
+            return f"DEM resampling {self.dem_resampling.currentText()} is not implemented."
         return ""
 
     def parameters(self) -> dict:
@@ -563,6 +595,7 @@ class BackGeocodingDialog(QtWidgets.QDialog):
             "paths": [str(path) for path in self.product_set.paths()],
             "dem": self.dem.currentText(),
             "resampling": self.resampling.currentText(),
+            "dem_resampling": self.dem_resampling.currentText(),
             "mask_elevation": self.mask_elevation.isChecked(),
             "output_deramp": self.output_deramp.isChecked(),
             "disable_reramp": self.disable_reramp.isChecked(),

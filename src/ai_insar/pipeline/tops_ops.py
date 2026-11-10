@@ -442,6 +442,7 @@ def backgeocode(
     max_residual_px: float = 0.05,
     reramp: bool = True,
     resampling: str = "BILINEAR_INTERPOLATION",
+    dem_resampling: str = "BILINEAR_INTERPOLATION",
 ) -> np.ndarray:
     """Resample ``secondary`` onto ``reference`` by range-Doppler geolocation.
 
@@ -459,6 +460,7 @@ def backgeocode(
     """
     backgeocode.last_stride = 1
     backgeocode.last_residual_px = 0.0
+    backgeocode.dem_resampling = str(dem_resampling)
     secondary_phase = tops_phase(secondary, orbit=secondary_orbit)
     secondary_deramped = (
         np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
@@ -563,11 +565,19 @@ def _one_secondary_coordinate(
     height = float(height_m)
     ground = ground_point_at_height(reference_orbit, azimuth, slant, height, degree=degree)
     if dem is not None:
-        lat, lon, _got = ecef_to_geodetic(ground)
-        sampled, valid = dem.ellipsoidal_height(float(np.rad2deg(lat)), float(np.rad2deg(lon)))
-        if not valid:
-            return float("nan"), float("nan")
-        ground = ground_point_at_height(reference_orbit, azimuth, slant, sampled, degree=degree)
+        # A few height updates, the same fixed-point idea as geo2rdr: geolocate,
+        # read the DEM, geolocate again. One sample leaves a height error that
+        # the ESD unit phasor turns into an azimuth bias.
+        for _ in range(3):
+            lat, lon, _got = ecef_to_geodetic(ground)
+            sampled, valid = dem.ellipsoidal_height(
+                float(np.rad2deg(lat)),
+                float(np.rad2deg(lon)),
+                method=str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION")),
+            )
+            if not valid:
+                return float("nan"), float("nan")
+            ground = ground_point_at_height(reference_orbit, azimuth, slant, float(sampled), degree=degree)
     burst = int(absolute) // int(reference.model.lines_per_burst)
     line, sample = radar_coordinates(
         secondary.model,
@@ -955,21 +965,25 @@ def early_look_coherence(master: np.ndarray, slave: np.ndarray) -> np.ndarray:
     )
     coherence = np.zeros((height, width), dtype=np.float64)
     half = 2
-    rows = np.arange(height)
-    row0 = np.maximum(rows - half, 0)
-    row1 = np.minimum(rows + half, height - 1) + 1
     cols = np.arange(width)
     col0 = np.maximum(cols - half, 0)
     col1 = np.minimum(cols + half, width - 1) + 1
-    for row in rows:
-        real_box = real_sum[row1[row], col1] - real_sum[row0[row], col1] - real_sum[row1[row], col0] + real_sum[row0[row], col0]
-        imag_box = imag_sum[row1[row], col1] - imag_sum[row0[row], col1] - imag_sum[row1[row], col0] + imag_sum[row0[row], col0]
-        master_box = (
-            master_sum[row1[row], col1] - master_sum[row0[row], col1] - master_sum[row1[row], col0] + master_sum[row0[row], col0]
-        )
-        slave_box = slave_sum[row1[row], col1] - slave_sum[row0[row], col1] - slave_sum[row1[row], col0] + slave_sum[row0[row], col0]
+    # Same clipped 5×5 box as the per-row sum, evaluated a few rows at a time.
+    for row_start in range(0, height, 64):
+        row_stop = min(height, row_start + 64)
+        rows = np.arange(row_start, row_stop)[:, None]
+        row0 = np.maximum(rows - half, 0)
+        row1 = np.minimum(rows + half, height - 1) + 1
+        real_box = real_sum[row1, col1] - real_sum[row0, col1] - real_sum[row1, col0] + real_sum[row0, col0]
+        imag_box = imag_sum[row1, col1] - imag_sum[row0, col1] - imag_sum[row1, col0] + imag_sum[row0, col0]
+        master_box = master_sum[row1, col1] - master_sum[row0, col1] - master_sum[row1, col0] + master_sum[row0, col0]
+        slave_box = slave_sum[row1, col1] - slave_sum[row0, col1] - slave_sum[row1, col0] + slave_sum[row0, col0]
         good = (master_box != 0.0) & (slave_box != 0.0)
-        coherence[row, good] = np.sqrt((real_box[good] ** 2 + imag_box[good] ** 2) / (master_box[good] * slave_box[good]))
+        coherence[row_start:row_stop, :] = np.where(
+            good,
+            np.sqrt((real_box**2 + imag_box**2) / np.maximum(master_box * slave_box, 1e-30)),
+            0.0,
+        )
     return coherence
 
 
@@ -1002,23 +1016,25 @@ def esd_periodogram_shift_px(
     step = (0.5 / (interval * peak)) * 2.0 / 8.0
     previous = float(np.finfo(float).tiny)
     best_index = 0
+    two_pi_dt = 2.0 * np.pi * interval
     for _ in range(40):
-        best = float(np.finfo(float).tiny)
-        best_index = -1
-        for index in range(9):
-            shift = lower + step * index
-            real = float(np.sum(np.cos(phase - 2.0 * np.pi * separation * shift * interval) * weights))
-            if real > best:
-                best = real
-                best_index = index
+        candidates = lower + step * np.arange(9, dtype=np.float64)
+        model = phase - (two_pi_dt * separation) * candidates[:, None]
+        objective = np.sum(np.cos(model) * weights, axis=1)
+        finite = np.where(np.isfinite(objective), objective, -np.inf)
+        best_index = int(np.argmax(finite))
+        best = float(finite[best_index])
+        if not np.isfinite(best):
+            best = float(np.finfo(float).tiny)
+            best_index = 0
         if abs(previous - best) < 1e-4 and step < 1e-4:
             return float(lower + step * best_index)
         previous = best
-        center = lower + step * max(best_index, 0)
+        center = lower + step * best_index
         span = step * 2.0
         lower = center - step
         step = span / 8.0
-    return float(lower + step * max(best_index, 0))
+    return float(lower + step * best_index)
 
 
 def overlap_block_shifts(

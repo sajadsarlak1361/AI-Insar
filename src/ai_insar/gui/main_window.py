@@ -1933,6 +1933,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if early is None or late is None or early_orbit is None or late_orbit is None:
             raise RuntimeError(_BACKGEO_BLOCK)
         dem = self._elevation_model(str(params.get("dem") or ""), str(params.get("dem_path") or ""), early, early_orbit)
+        pixels = int(early.shape[0]) * int(early.shape[1])
+        # A coarse map was biasing the overlap. Windows up to a few hundred
+        # thousand pixels are solved at every pixel; larger windows still
+        # tighten until the check residual is under 0.05 px.
         resampled = backgeocode(
             early,
             late,
@@ -1941,7 +1945,8 @@ class MainWindow(QtWidgets.QMainWindow):
             dem=dem,
             reramp=not bool(params.get("disable_reramp")),
             resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
-            max_solves=4096,
+            dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
+            max_solves=None if pixels <= 400_000 else 65536,
             max_residual_px=0.05,
         )
         self._log(
@@ -1957,33 +1962,31 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def apply_esd(self, params: dict) -> None:
-        from ai_insar.pipeline.tops_ops import (
-            burst_overlap_rows,
-            esd_applied_shift_px,
-            overlap_block_shifts,
-            spectral_separation_hz,
-            valid_overlap_rows,
+        from ai_insar.pipeline.spectral_diversity import (
+            apply_azimuth_phase_ramp,
+            apply_range_shift,
+            estimate_overlap,
         )
+        from ai_insar.pipeline.tops_ops import RadarGrid, burst_overlap_rows, spectral_separation_hz, valid_overlap_rows
 
         early = self.workspace.reference_grid
         late = self.workspace.secondary_grid
         if early is None or late is None or early.shape != late.shape or early.row != late.row:
             raise RuntimeError(_ESD_BLOCK)
-        estimator = str(params.get("estimator") or "Periodogram")
-        if estimator.strip().lower() != "periodogram":
-            raise RuntimeError(
-                f"ESD estimator {estimator} is not the Periodogram that writes the block azimuth shifts."
-            )
-        if params.get("user_azimuth"):
-            from ai_insar.pipeline.tops_ops import RadarGrid, apply_azimuth_pixel_shift
+        if params.get("user_azimuth") or params.get("user_range"):
+            shifted = np.array(late.data, copy=True)
+            azimuth_px = float(params.get("azimuth_shift") or 0.0) if params.get("user_azimuth") else 0.0
+            range_px = float(params.get("range_shift") or 0.0) if params.get("user_range") else 0.0
+            if range_px:
+                shifted = apply_range_shift(shifted, range_px)
+            if azimuth_px:
+                from ai_insar.pipeline.tops_ops import apply_azimuth_pixel_shift
 
-            pixels = float(params["azimuth_shift"])
-            shifted = apply_azimuth_pixel_shift(late.data, pixels, early.model.azimuth_time_interval_s)
+                shifted = apply_azimuth_pixel_shift(shifted, azimuth_px, early.model.azimuth_time_interval_s)
             self.workspace.secondary_grid = RadarGrid(late.row, late.col, shifted, late.model)
-            self.workspace.esd_azimuth_shift_s = pixels * early.model.azimuth_time_interval_s
+            self.workspace.esd_azimuth_shift_s = azimuth_px * early.model.azimuth_time_interval_s
             self._log(
-                f"ESD applied the supplied azimuth shift {pixels:.4f} lines "
-                f"({self.workspace.esd_azimuth_shift_s:.6e} s) to the secondary."
+                f"ESD applied the supplied shifts azimuth {azimuth_px:.4f} px, range {range_px:.4f} px."
             )
             return
         model = early.model
@@ -2003,25 +2006,49 @@ class MainWindow(QtWidgets.QMainWindow):
             # A split product keeps the full FM list and indexes it by the burst
             # number inside the raster, which is 0 for the first written burst.
             fm_index = index - int(early.row) // int(model.lines_per_burst)
-            separation = spectral_separation_hz(model, fm_index, overlap_lines)
-            reports = overlap_block_shifts(
+            separation = spectral_separation_hz(model, max(fm_index, 0), overlap_lines)
+            estimate = estimate_overlap(
                 _slice(early, start_a, stop_a)[:, local_x0:local_x1],
                 _slice(early, start_b, stop_b)[:, local_x0:local_x1],
                 _slice(late, start_a, stop_a)[:, local_x0:local_x1],
                 _slice(late, start_b, stop_b)[:, local_x0:local_x1],
                 separation_hz=separation,
                 azimuth_time_interval_s=model.azimuth_time_interval_s,
+                estimator=str(params.get("estimator") or "Periodogram"),
+                weight=str(params.get("weight") or "Inv Quadratic"),
                 n_blocks=int(params.get("n_blocks") or 10),
                 coherence_threshold=float(params.get("coherence_threshold") or 0.3),
+                range_oversample=int(params.get("oversample") or 128),
+                range_search_px=int(params.get("range_accuracy") or 16),
+                range_threshold=float(params.get("xcorr_threshold") or 0.1),
             )
-            applied_px = esd_applied_shift_px(reports)
-            self.workspace.esd_azimuth_shift_s = applied_px * model.azimuth_time_interval_s
-            listed = " ".join(f"{float(item['shift_px']):+.6f}" for item in reports)
+            corrected = np.array(late.data, copy=True)
+            # The ramp uses the periodogram mean. It is applied to the later
+            # burst only, so the double difference sees 2π Δf Δt · shift.
+            local_b0 = start_b - int(late.row)
+            local_b1 = stop_b - int(late.row)
+            block = corrected[local_b0:local_b1, local_x0:local_x1]
+            column_separation = np.asarray(separation, dtype=np.float64).reshape(-1)
+            if column_separation.size not in (1, block.shape[1]):
+                column_separation = column_separation[: block.shape[1]]
+            corrected[local_b0:local_b1, local_x0:local_x1] = apply_azimuth_phase_ramp(
+                block,
+                column_separation,
+                estimate.periodogram_mean_px,
+                model.azimuth_time_interval_s,
+            )
+            if estimate.range_shift_px:
+                corrected = apply_range_shift(corrected, estimate.range_shift_px)
+            self.workspace.secondary_grid = RadarGrid(late.row, late.col, corrected, late.model)
+            self.workspace.esd_azimuth_shift_s = estimate.applied_shift_px * model.azimuth_time_interval_s
+            listed = " ".join(f"{value:+.6f}" for value in estimate.block_shifts_px)
             self._log(
-                f"ESD {estimator} overlap {index + 1}: block shifts (px) {listed}. "
-                f"Applied azimuth shift {applied_px:.6f} px "
+                f"ESD {estimate.estimator} overlap {index + 1}: block shifts (px) {listed}. "
+                f"Applied azimuth shift {estimate.applied_shift_px:.6f} px "
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
-                "The secondary was not resampled."
+                f"Range correlation shift {estimate.range_shift_px:.4f} px "
+                f"(coefficient {estimate.range_correlation:.3f}). "
+                "The later burst was multiplied by exp(-j 2π Δf shift Δt)."
             )
             return
         raise RuntimeError(
