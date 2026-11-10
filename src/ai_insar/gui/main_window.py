@@ -1105,6 +1105,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 output_intensity=False,
             )
             self.workspace.mean_coherence = np.mean(self.workspace.coherence, axis=0).astype(np.float32)
+        mask = self.workspace.common_overlap_mask
+        if mask is not None:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            used_h = (mask.shape[0] // azimuth_looks) * azimuth_looks
+            used_w = (mask.shape[1] // range_looks) * range_looks
+            view = mask[:used_h, :used_w].reshape(
+                used_h // azimuth_looks, azimuth_looks, used_w // range_looks, range_looks
+            )
+            reduced = np.all(view, axis=(1, 3))
+            self.workspace.common_overlap_mask = reduced
+            self.workspace.common_overlap_extent = overlap_extent(reduced)
+            self.workspace.common_overlap_meta = overlap_metadata(reduced)
         shape = self.workspace.interferograms.shape if self.workspace.interferograms is not None else self.workspace.coherence.shape
         self._log(
             f"Multilook independent looks: {azimuth_looks} azimuth × {range_looks} range. "
@@ -1125,9 +1138,13 @@ class MainWindow(QtWidgets.QMainWindow):
             raise RuntimeError("Snaphu export needs an interferogram and a coherence image. Zeros were not written.")
         if self.workspace.interferograms.shape != self.workspace.coherence.shape:
             raise RuntimeError("Interferogram and coherence shapes differ.")
+        from ai_insar.pipeline.engine import restrict_array
+
         pair_count = int(self.workspace.interferograms.shape[0])
         phase = np.angle(self.workspace.interferograms[0]).astype(np.float64)
         coherence = np.asarray(self.workspace.coherence[0], dtype=np.float64)
+        phase = restrict_array(phase, self.workspace.common_overlap_mask)
+        coherence = restrict_array(coherence, self.workspace.common_overlap_mask)
         wavelength = None if self.workspace.stack is None else float(self.workspace.stack.wavelength_m)
         conf = export_snaphu(
             params["folder"],
@@ -1912,7 +1929,19 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = self.workspace.reference_grid
         if grid is None:
             raise RuntimeError(_DEBURST_BLOCK)
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
+        mask = self.workspace.common_overlap_mask
         result = deburst_window(grid.data, grid.model, grid.row, grid.col)
+        if mask is not None and mask.shape == grid.data.shape:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            carried = deburst_window(mask.astype(np.float32), grid.model, grid.row, grid.col)
+            new_mask = carried.data > 0.5
+            self.workspace.common_overlap_mask = new_mask
+            self.workspace.common_overlap_extent = overlap_extent(new_mask)
+            self.workspace.common_overlap_meta = overlap_metadata(new_mask)
         self.workspace.reference_grid = result
         if self.workspace.stack is not None and self.workspace.stack.data.shape[0] == 1:
             self.workspace.stack.data = result.data[None, ...]
@@ -1949,11 +1978,24 @@ class MainWindow(QtWidgets.QMainWindow):
             resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
             dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
             max_solves=None if pixels <= 400_000 else fine,
-            max_residual_px=0.00043,
+            tolerance_mm=10.0,
         )
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+        from ai_insar.pipeline.tops_ops import overlap_metadata
+
+        mask = backgeocode.last_overlap_mask
+        self.workspace.common_overlap_mask = mask
+        self.workspace.common_overlap_extent = backgeocode.last_overlap_extent
+        self.workspace.common_overlap_meta = overlap_metadata(mask)
+        apply_overlap_to_workspace(self.workspace)
+        meta = self.workspace.common_overlap_meta
         self._log(
             f"Back-geocoding map stride {backgeocode.last_stride}, "
-            f"check residual {backgeocode.last_residual_px:.4f} pixels."
+            f"check residual {backgeocode.last_residual_px:.4f} pixels. "
+            f"Common overlap rows {meta['row_start']}:{meta['row_end']}, "
+            f"samples {meta['col_start']}:{meta['col_end']}, "
+            f"{meta['count']} pixels ({meta['rows']}×{meta['cols']}). "
+            "Outside that intersection is no-data and was not resampled."
         )
         self.workspace.secondary_grid = RadarGrid(early.row, early.col, resampled, early.model)
         self.workspace.crop_without_coregistration = False
@@ -1964,11 +2006,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def apply_esd(self, params: dict) -> None:
-        from ai_insar.pipeline.spectral_diversity import (
-            apply_global_shift,
-            estimate_overlap,
-            range_cross_correlation_shift,
-        )
+        from ai_insar.pipeline.spectral_diversity import estimate_overlap, range_cross_correlation_shift
         from ai_insar.pipeline.tops_ops import RadarGrid, burst_overlap_rows, spectral_separation_hz, valid_overlap_rows
 
         early = self.workspace.reference_grid
@@ -1976,16 +2014,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if early is None or late is None or early.shape != late.shape or early.row != late.row:
             raise RuntimeError(_ESD_BLOCK)
         if params.get("user_azimuth") or params.get("user_range"):
-            shifted = np.array(late.data, copy=True)
+            from ai_insar.pipeline.tops_ops import shift_secondary_in_overlap
+
             azimuth_px = float(params.get("azimuth_shift") or 0.0) if params.get("user_azimuth") else 0.0
             range_px = float(params.get("range_shift") or 0.0) if params.get("user_range") else 0.0
-            if range_px or azimuth_px:
-                shifted = apply_global_shift(
-                    shifted,
-                    azimuth_px,
-                    range_px,
-                    early.model.azimuth_time_interval_s,
-                )
+            shifted = shift_secondary_in_overlap(
+                late,
+                azimuth_px,
+                range_px,
+                getattr(self.workspace, "common_overlap_mask", None),
+            )
             self.workspace.secondary_grid = RadarGrid(late.row, late.col, shifted, late.model)
             self.workspace.esd_azimuth_shift_s = azimuth_px * early.model.azimuth_time_interval_s
             self._log(
@@ -2034,11 +2072,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 threshold=float(params.get("xcorr_threshold") or 0.1),
                 window=int(params.get("window_width") or 512),
             )
-            corrected = apply_global_shift(
-                late.data,
+            from ai_insar.pipeline.tops_ops import shift_secondary_in_overlap
+
+            corrected = shift_secondary_in_overlap(
+                late,
                 estimate.applied_shift_px,
                 range_shift,
-                model.azimuth_time_interval_s,
+                getattr(self.workspace, "common_overlap_mask", None),
             )
             self.workspace.secondary_grid = RadarGrid(late.row, late.col, corrected, late.model)
             self.workspace.esd_azimuth_shift_s = estimate.applied_shift_px * model.azimuth_time_interval_s
@@ -2049,7 +2089,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
                 f"Range correlation shift {range_shift:.4f} px "
                 f"(coefficient {range_coef:.3f}). "
-                "The whole secondary was Fourier-shifted by those azimuth and range amounts."
+                "Inside the common overlap the secondary was deramped, Fourier-shifted, and reramped. "
+                "Outside it the result is no-data."
             )
             return
         raise RuntimeError(
@@ -2057,6 +2098,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def apply_phase_to_displacement(self, params: dict) -> None:
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
         if self.workspace.unwrapped is None:
             raise RuntimeError(
                 "Phase to Displacement needs unwrapped phase in radians. "
@@ -2076,6 +2120,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_request(request, displacement, PRODUCT_SUFFIX["displacement"])
 
     def apply_terrain_correction(self, params: dict) -> None:
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
         from ai_insar.pipeline.tops_ops import ellipsoid_geocode, terrain_correct
 
         grid = self.workspace.reference_grid
@@ -2238,6 +2285,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     grid.model,
                 ),
             )
+            changed = True
+        mask = self.workspace.common_overlap_mask
+        if mask is not None and mask.shape[0] >= row1 and mask.shape[1] >= col1:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            cropped_mask = mask[row0:row1, col0:col1]
+            self.workspace.common_overlap_mask = cropped_mask
+            self.workspace.common_overlap_extent = overlap_extent(cropped_mask)
+            self.workspace.common_overlap_meta = overlap_metadata(cropped_mask)
             changed = True
         if not changed:
             raise RuntimeError("Subset found no raster of that size.")

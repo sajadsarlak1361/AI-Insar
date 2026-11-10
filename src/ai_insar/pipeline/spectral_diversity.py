@@ -110,8 +110,8 @@ def range_cross_correlation_shift(
     Windows below ``threshold`` are ignored. If none pass, the shift is 0
     and the coefficient is the best one seen.
     """
-    reference = np.abs(np.asarray(master, dtype=np.complex64))
-    repeat = np.abs(np.asarray(slave, dtype=np.complex64))
+    reference = np.asarray(master)
+    repeat = np.asarray(slave)
     if reference.shape != repeat.shape or reference.ndim != 2:
         raise ValueError("range correlation looks must share one 2-D shape")
     height, width = reference.shape
@@ -138,8 +138,9 @@ def range_cross_correlation_shift(
                 weights.append(coef)
     if not shifts:
         return 0.0, best_coef
-    total = float(sum(weights))
-    return float(sum(s * w for s, w in zip(shifts, weights)) / total), float(total / len(weights))
+    # The oversampled peak sits on a 1/oversample grid. The median of those
+    # peaks stays on that grid; a weighted mean would not.
+    return float(np.median(np.asarray(shifts, dtype=np.float64))), float(np.median(np.asarray(weights, dtype=np.float64)))
 
 
 def _normalised_range_peak(master: np.ndarray, slave: np.ndarray, *, search_px: int, oversample: int) -> tuple[float, float]:
@@ -149,18 +150,16 @@ def _normalised_range_peak(master: np.ndarray, slave: np.ndarray, *, search_px: 
     correlation sum under NumPy's backward normalisation. Dividing by the
     two energies makes that peak a correlation coefficient.
     """
-    reference = np.asarray(master, dtype=np.float64)
-    repeat = np.asarray(slave, dtype=np.float64)
+    reference = np.asarray(master)
+    repeat = np.asarray(slave)
     reference = reference - np.mean(reference)
     repeat = repeat - np.mean(repeat)
-    energy = float(np.sqrt(np.sum(reference * reference) * np.sum(repeat * repeat)))
+    energy = float(np.sqrt(np.sum(np.abs(reference) ** 2) * np.sum(np.abs(repeat) ** 2)))
     if energy == 0.0:
         return 0.0, 0.0
     spectrum = np.fft.fft2(reference) * np.conj(np.fft.fft2(repeat))
-    coarse = np.real(np.fft.ifft2(spectrum))
-    count = float(reference.size)
-    # With NumPy's backward norm, ifft2(fft(a)·conj(fft(b))) is already the
-    # circular correlation sum, not that sum divided by the pixel count.
+    # Backward-normalised ifft2 is already the circular correlation sum.
+    coarse = np.abs(np.fft.ifft2(spectrum))
     coef_map = coarse / energy
     rows, cols = coef_map.shape
     limit = max(1, int(search_px))
@@ -175,18 +174,33 @@ def _normalised_range_peak(master: np.ndarray, slave: np.ndarray, *, search_px: 
     peak_col = int(col_ids[col_i])
     signed_row = peak_row - rows if peak_row > rows // 2 else peak_row
     signed_col = peak_col - cols if peak_col > cols // 2 else peak_col
-    step = 1.0 / max(int(oversample), 1)
-    lags = signed_col + np.arange(-oversample, oversample + 1, dtype=np.float64) * step
-    ky = np.fft.fftfreq(rows)
-    kx = np.fft.fftfreq(cols)
-    phase = np.exp(
-        2j
-        * np.pi
-        * (ky[None, :, None] * float(signed_row) + kx[None, None, :] * lags[:, None, None])
-    )
-    refined = np.real(np.sum(spectrum[None, :, :] * phase, axis=(1, 2))) / count / energy
-    best = int(np.argmax(refined))
-    return float(lags[best]), float(refined[best])
+    shift, _surface = _upsample_peak(coef_map, signed_row, signed_col, int(oversample))
+    return shift, float(coef_map[peak_row, peak_col])
+
+
+def _upsample_peak(coef_map: np.ndarray, row: int, col: int, oversample: int) -> tuple[float, float]:
+    """Peak of a small correlation chip, quantized to ``1/oversample`` pixels."""
+    radius = 4
+    size = radius * 2 + 1
+    chip = np.empty((size, size), dtype=np.float64)
+    rows, cols = coef_map.shape
+    for i, dy in enumerate(range(-radius, radius + 1)):
+        for j, dx in enumerate(range(-radius, radius + 1)):
+            chip[i, j] = coef_map[(row + dy) % rows, (col + dx) % cols]
+    zoom = size * max(int(oversample), 1)
+    spectrum = np.fft.fft2(np.fft.ifftshift(chip))
+    padded = np.zeros((zoom, zoom), dtype=np.complex128)
+    half_y = size // 2
+    half_x = size // 2
+    padded[: half_y + 1, : half_x + 1] = spectrum[: half_y + 1, : half_x + 1]
+    padded[: half_y + 1, -half_x:] = spectrum[: half_y + 1, -half_x:]
+    padded[-half_y:, : half_x + 1] = spectrum[-half_y:, : half_x + 1]
+    padded[-half_y:, -half_x:] = spectrum[-half_y:, -half_x:]
+    surface = np.abs(np.fft.fftshift(np.fft.ifft2(padded)))
+    peak = np.unravel_index(int(np.argmax(surface)), surface.shape)
+    delta_row = (peak[0] - (zoom // 2)) / oversample
+    delta_col = (peak[1] - (zoom // 2)) / oversample
+    return float(col + delta_col), float(surface[peak])
 
 
 def apply_range_shift(image: np.ndarray, shift_px: float, method: str = "FOURIER") -> np.ndarray:

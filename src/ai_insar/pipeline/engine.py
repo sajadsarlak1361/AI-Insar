@@ -126,6 +126,9 @@ class Workspace:
     elevation: object | None = None
     esd_azimuth_shift_s: float | None = None
     crop_without_coregistration: bool = False
+    common_overlap_mask: np.ndarray | None = None
+    common_overlap_extent: tuple[int, int, int, int] | None = None
+    common_overlap_meta: dict | None = None
 
     def clear_products(self) -> None:
         self.pairs = None
@@ -148,6 +151,54 @@ def _require_stack(workspace: Workspace) -> SLCStack:
     if workspace.stack is None:
         raise PipelineError("Load or generate an SLC stack first.")
     return workspace.stack
+
+
+def restrict_array(array: np.ndarray | None, mask: np.ndarray | None) -> np.ndarray | None:
+    """Zero every sample outside the common overlap. Other shapes are unchanged."""
+    if array is None or mask is None or array.shape[-2:] != mask.shape:
+        return array
+    return np.where(mask, array, 0)
+
+
+def apply_overlap_to_workspace(workspace: Workspace) -> None:
+    """Keep rasters that share the overlap grid inside that mask."""
+    mask = workspace.common_overlap_mask
+    if mask is None:
+        return
+    stack = workspace.stack
+    if stack is not None and stack.data.shape[-2:] == mask.shape:
+        stack.data = np.where(mask, stack.data, 0).astype(stack.data.dtype, copy=False)
+    for name in ("interferograms", "filtered", "coherence", "unwrapped", "los_m", "mean_coherence"):
+        setattr(workspace, name, restrict_array(getattr(workspace, name), mask))
+    for name in ("reference_grid", "secondary_grid"):
+        grid = getattr(workspace, name, None)
+        if grid is not None and getattr(grid, "data", None) is not None and grid.data.shape == mask.shape:
+            grid.data = np.where(mask, grid.data, 0).astype(grid.data.dtype, copy=False)
+
+
+def _overlap_crop(array: np.ndarray, workspace: Workspace) -> tuple[np.ndarray, tuple[int, int, int, int] | None]:
+    meta = workspace.common_overlap_meta
+    mask = workspace.common_overlap_mask
+    if not meta or mask is None or array.shape[-2:] != mask.shape or int(meta.get("count", 0)) == 0:
+        return array, None
+    row0, row1 = int(meta["row_start"]), int(meta["row_end"])
+    col0, col1 = int(meta["col_start"]), int(meta["col_end"])
+    tile_mask = mask[row0:row1, col0:col1]
+    if array.ndim == 2:
+        tile = np.where(tile_mask, array[row0:row1, col0:col1], 0)
+    else:
+        tile = np.where(tile_mask, array[..., row0:row1, col0:col1], 0)
+    return tile, (row0, row1, col0, col1)
+
+
+def _overlap_paste(shape: tuple[int, ...], tile: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+    out = np.zeros(shape, dtype=tile.dtype)
+    row0, row1, col0, col1 = box
+    if tile.ndim == 2:
+        out[row0:row1, col0:col1] = tile
+    else:
+        out[..., row0:row1, col0:col1] = tile
+    return out
 
 
 def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> None:
@@ -185,6 +236,7 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
                 f"Each is reference date index {reference} × conjugate(secondary). "
                 "The selected reference is not the later date, so this is not later × conjugate(earlier)."
             )
+    workspace.interferograms = restrict_array(workspace.interferograms, workspace.common_overlap_mask)
     backend = getattr(form_interferograms, "last_backend", "numpy")
     backend_label = {"insardev": "InSARdev", "numba": "Numba", "numpy": "NumPy"}.get(backend, backend)
     workspace.filtered = None
@@ -212,13 +264,16 @@ def compute_filter(workspace: Workspace, log: LogFn | None = None) -> None:
     if workspace.interferograms is None:
         raise PipelineError("Form interferograms before filtering.")
     cfg = workspace.config
+    tile, box = _overlap_crop(workspace.interferograms, workspace)
     workspace.filtered = filter_stack(
-        workspace.interferograms,
+        tile,
         alpha=cfg.goldstein_alpha,
         window=cfg.goldstein_window,
         overlap=cfg.goldstein_overlap,
         spectrum_smooth=cfg.goldstein_spectrum_smooth,
     )
+    if box is not None:
+        workspace.filtered = _overlap_paste(workspace.interferograms.shape, workspace.filtered, box)
     workspace.unwrapped = None
     workspace.los_m = None
     workspace.velocity_m_yr = None
@@ -244,13 +299,21 @@ def compute_coherence(workspace: Workspace, log: LogFn | None = None) -> None:
         raise PipelineError("Form interferograms before estimating coherence.")
     cfg = workspace.config
     azimuth = cfg.coherence_azimuth_window
+    slc, box = _overlap_crop(stack.data, workspace)
     workspace.coherence = coherence_stack(
-        stack.data,
+        slc,
         workspace.pairs,
         cfg.coherence_window,
         azimuth_window=azimuth,
     )
+    if box is not None:
+        workspace.coherence = _overlap_paste(
+            (workspace.coherence.shape[0], stack.data.shape[-2], stack.data.shape[-1]),
+            workspace.coherence,
+            box,
+        )
     workspace.mean_coherence = np.mean(workspace.coherence, axis=0).astype(np.float32)
+    workspace.mean_coherence = restrict_array(workspace.mean_coherence, workspace.common_overlap_mask)
     workspace.unwrapped = None
     workspace.los_m = None
     workspace.velocity_m_yr = None

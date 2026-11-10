@@ -114,3 +114,23 @@ def test_batched_lattice_matches_the_scalar_solver_with_and_without_dem():
                 )
                 worst = max(worst, abs(scalar_line - lines[i, j]), abs(scalar_sample - samples[i, j]))
         assert worst < 1e-9
+
+
+def test_common_overlap_is_the_valid_sample_intersection_and_resample_skips_the_rest():
+    from ai_insar.pipeline.tops_ops import common_overlap_mask, resample_complex
+
+    orbit = _orbit()
+    reference_model, _secondary_model = _models(orbit)
+    reference_model.bursts[0].last_valid_sample = 4
+    rows, cols = 6, 8
+    line = np.broadcast_to(np.arange(rows, dtype=np.float64)[:, None], (rows, cols)).copy()
+    sample = np.broadcast_to(np.arange(cols, dtype=np.float64)[None, :], (rows, cols)).copy()
+    reference = RadarGrid(0, 0, np.zeros((rows, cols)), reference_model)
+    secondary = RadarGrid(0, 0, np.ones((rows, cols)), reference_model)
+    mask = common_overlap_mask(reference, secondary, line, sample)
+    assert mask[:, :5].all()
+    assert not mask[:, 5:].any()
+    image = np.ones((rows, cols), dtype=np.complex64)
+    resampled = resample_complex(image, line, sample, "BILINEAR_INTERPOLATION", mask=mask)
+    assert resampled[0, 0] != 0
+    assert resampled[0, 6] == 0

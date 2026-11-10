@@ -87,8 +87,12 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
         local_stop = min(burst_stop, grid.row + rows)
         if local_start >= local_stop:
             continue
-        fm = model.fm_rates[min(burst_index, len(model.fm_rates) - 1)]
-        dc = model.dc_estimates[min(burst_index, len(model.dc_estimates) - 1)]
+        # A split raster addresses the first written burst as record 0.
+        # The absolute SAFE burst number is not that index.
+        local_burst = burst_index - int(grid.row) // int(model.lines_per_burst)
+        record = local_burst if 0 <= local_burst < len(model.fm_rates) else burst_index
+        fm = model.fm_rates[min(max(record, 0), len(model.fm_rates) - 1)]
+        dc = model.dc_estimates[min(max(record, 0), len(model.dc_estimates) - 1)]
         ka = _polynomial(fm.coefficients, tau - fm.t0_s)
         fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
         ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
@@ -441,6 +445,7 @@ def backgeocode(
     dem: object | None = None,
     max_solves: int | None = None,
     max_residual_px: float = 0.05,
+    tolerance_mm: float | None = None,
     reramp: bool = True,
     resampling: str = "BILINEAR_INTERPOLATION",
     dem_resampling: str = "BILINEAR_INTERPOLATION",
@@ -485,7 +490,7 @@ def backgeocode(
         if not dense:
             full_line = _interpolate_grid(row_index, col_index, line_s, rows, cols)
             full_sample = _interpolate_grid(row_index, col_index, sample_s, rows, cols)
-            residual = _map_residual(
+            line_err, sample_err = _map_residual(
                 reference,
                 secondary,
                 full_line,
@@ -497,8 +502,17 @@ def backgeocode(
                 dem=dem,
                 row_index=row_index,
                 col_index=col_index,
+                lattice_line=line_s,
+                lattice_sample=sample_s,
             )
-            if residual <= float(max_residual_px) or stride == 1:
+            residual = max(line_err, sample_err)
+            if tolerance_mm is None:
+                accept = residual <= float(max_residual_px)
+            else:
+                azimuth_mm = line_err * reference.model.azimuth_ground_spacing_m() * 1000.0
+                range_mm = sample_err * reference.model.range_pixel_spacing_m * 1000.0
+                accept = azimuth_mm <= float(tolerance_mm) and range_mm <= float(tolerance_mm)
+            if accept or stride == 1:
                 line_s, sample_s = full_line, full_sample
                 break
             stride = max(1, stride // 2)
@@ -507,13 +521,111 @@ def backgeocode(
         break
     backgeocode.last_stride = int(stride)
     backgeocode.last_residual_px = float(residual)
-    sampled = resample_complex(secondary_deramped, line_s, sample_s, resampling)
-    if not reramp:
+    overlap = common_overlap_mask(reference, secondary, line_s, sample_s)
+    backgeocode.last_overlap_mask = overlap
+    extent = overlap_extent(overlap)
+    backgeocode.last_overlap_extent = extent
+    sampled = np.zeros(reference.shape, dtype=np.complex64)
+    if extent is None:
         return sampled
-    # Same kernel and source coordinate as the baseband samples. This is the
-    # secondary deramp/demod phase, not the reference phase.
-    phase_at_source = resample_real(secondary_phase, line_s, sample_s, resampling)
-    return (sampled * np.exp(-1j * phase_at_source)).astype(np.complex64)
+    r0, r1, c0, c1 = extent
+    box = overlap[r0:r1, c0:c1]
+    sampled_box = resample_complex(
+        secondary_deramped,
+        line_s[r0:r1, c0:c1],
+        sample_s[r0:r1, c0:c1],
+        resampling,
+        mask=box,
+    )
+    if reramp:
+        phase_at_source = resample_real(
+            secondary_phase,
+            line_s[r0:r1, c0:c1],
+            sample_s[r0:r1, c0:c1],
+            resampling,
+            mask=box,
+        )
+        sampled_box = (sampled_box * np.exp(-1j * phase_at_source)).astype(np.complex64)
+        sampled_box[~box] = 0
+    sampled[r0:r1, c0:c1] = sampled_box
+    return sampled
+
+
+def common_overlap_mask(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    source_line: np.ndarray,
+    source_sample: np.ndarray,
+) -> np.ndarray:
+    """Pixels whose reference sample and secondary source both lie in a burst's valid window.
+
+    ``source_line`` and ``source_sample`` are coordinates in the secondary
+    raster. Outside this mask nothing is resampled.
+    """
+    rows, cols = reference.shape
+    row = reference.row + np.arange(rows, dtype=np.int64)[:, None]
+    col = reference.col + np.arange(cols, dtype=np.int64)[None, :]
+    reference_ok = _inside_valid_footprint(reference.model, np.broadcast_to(row, (rows, cols)), np.broadcast_to(col, (rows, cols)))
+    line = np.asarray(source_line, dtype=np.float64)
+    sample = np.asarray(source_sample, dtype=np.float64)
+    finite = np.isfinite(line) & np.isfinite(sample)
+    inside_raster = (
+        (line >= 0.0)
+        & (line <= secondary.data.shape[0] - 1)
+        & (sample >= 0.0)
+        & (sample <= secondary.data.shape[1] - 1)
+    )
+    absolute_line = secondary.row + np.rint(line).astype(np.int64)
+    absolute_sample = secondary.col + np.rint(sample).astype(np.int64)
+    secondary_ok = finite & inside_raster & _inside_valid_footprint(secondary.model, absolute_line, absolute_sample)
+    return reference_ok & secondary_ok
+
+
+def overlap_extent(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Half-open bounding box ``(row0, row1, col0, col1)`` of a boolean mask."""
+    rows, cols = np.nonzero(mask)
+    if rows.size == 0:
+        return None
+    return int(rows.min()), int(rows.max()) + 1, int(cols.min()), int(cols.max()) + 1
+
+
+def overlap_metadata(mask: np.ndarray) -> dict[str, int]:
+    """Counts and the bounding box stored with the coregistered product."""
+    extent = overlap_extent(mask)
+    if extent is None:
+        return {"count": 0, "rows": 0, "cols": 0, "row_start": 0, "row_end": 0, "col_start": 0, "col_end": 0}
+    row0, row1, col0, col1 = extent
+    return {
+        "count": int(np.count_nonzero(mask)),
+        "rows": row1 - row0,
+        "cols": col1 - col0,
+        "row_start": row0,
+        "row_end": row1,
+        "col_start": col0,
+        "col_end": col1,
+    }
+
+
+def _inside_valid_footprint(model: SwathModel, absolute_line: np.ndarray, absolute_sample: np.ndarray) -> np.ndarray:
+    """True where the absolute line and sample sit in that burst's valid window."""
+    lines = int(model.lines_per_burst)
+    burst = np.asarray(absolute_line, dtype=np.int64) // lines
+    local = np.asarray(absolute_line, dtype=np.int64) - burst * lines
+    count = len(model.bursts)
+    known = (burst >= 0) & (burst < count)
+    index = np.clip(burst, 0, max(count - 1, 0))
+    first_line = np.array([item.first_valid_line for item in model.bursts], dtype=np.int64)
+    last_line = np.array([item.last_valid_line for item in model.bursts], dtype=np.int64)
+    first_sample = np.array([item.first_valid_sample for item in model.bursts], dtype=np.int64)
+    last_sample = np.array([item.last_valid_sample for item in model.bursts], dtype=np.int64)
+    sample = np.asarray(absolute_sample, dtype=np.int64)
+    return (
+        known
+        & (local >= first_line[index])
+        & (local <= last_line[index])
+        & (sample >= first_sample[index])
+        & (sample <= last_sample[index])
+    )
 
 
 def _locate_grid(
@@ -706,18 +818,31 @@ def _map_residual(
     dem: object | None,
     row_index: np.ndarray,
     col_index: np.ndarray,
-) -> float:
-    """Largest line or sample error of the interpolated map at off-lattice pixels."""
+    lattice_line: np.ndarray | None = None,
+    lattice_sample: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """Largest line error and sample error, in pixels.
+
+    Knots are compared with the solved lattice, including the border knots.
+    A few edge and interior pixels are compared with a fresh solve. The two
+    axes are kept separate so a millimetre in azimuth is not the same pixel
+    count as a millimetre in range.
+    """
+    line_err = 0.0
+    sample_err = 0.0
+    if lattice_line is not None and lattice_sample is not None:
+        predicted_line = line_s[np.ix_(row_index, col_index)]
+        predicted_sample = sample_s[np.ix_(row_index, col_index)]
+        finite = np.isfinite(lattice_line) & np.isfinite(predicted_line)
+        if np.any(finite):
+            line_err = float(np.max(np.abs(predicted_line[finite] - lattice_line[finite])))
+            sample_err = float(np.max(np.abs(predicted_sample[finite] - lattice_sample[finite])))
     rows, cols = reference.shape
+    checks = [(0, 0), (0, cols - 1), (rows - 1, 0), (rows - 1, cols - 1), (rows // 2, 0), (rows // 2, cols - 1)]
     rng = np.random.default_rng(1)
-    errors = []
-    lattice_rows = set(int(item) for item in row_index)
-    lattice_cols = set(int(item) for item in col_index)
-    for _ in range(48):
-        row = int(rng.integers(0, rows))
-        col = int(rng.integers(0, cols))
-        if row in lattice_rows and col in lattice_cols:
-            continue
+    for _ in range(16):
+        checks.append((int(rng.integers(0, rows)), int(rng.integers(0, cols))))
+    for row, col in checks:
         true_line, true_sample = _one_secondary_coordinate(
             reference,
             secondary,
@@ -731,11 +856,18 @@ def _map_residual(
         )
         if not np.isfinite(true_line) or not np.isfinite(line_s[row, col]):
             continue
-        errors.append(max(abs(true_line - line_s[row, col]), abs(true_sample - sample_s[row, col])))
-    return 0.0 if not errors else float(max(errors))
+        line_err = max(line_err, abs(true_line - line_s[row, col]))
+        sample_err = max(sample_err, abs(true_sample - sample_s[row, col]))
+    return line_err, sample_err
 
 
-def resample_real(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
+def resample_real(
+    image: np.ndarray,
+    line: np.ndarray,
+    sample: np.ndarray,
+    method: str,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
     """Resample one real array with the same kernel as :func:`resample_complex`.
 
     Polynomial kernels stay in float64. The deramp phase is thousands of
@@ -754,21 +886,28 @@ def resample_real(image: np.ndarray, line: np.ndarray, sample: np.ndarray, metho
     line = np.asarray(line, dtype=np.float64)
     sample = np.asarray(sample, dtype=np.float64)
     valid = np.isfinite(line) & np.isfinite(sample)
+    keep = valid if mask is None else valid & np.asarray(mask, dtype=bool)
     if name in orders:
-        coords = np.stack((np.where(valid, line, 0.0), np.where(valid, sample, 0.0)))
-        out = map_coordinates(values, coords, order=orders[name], mode="constant", cval=0.0)
-        out = np.asarray(out, dtype=np.float64)
-        out[~valid] = 0.0
+        out = np.zeros(line.shape, dtype=np.float64)
+        if np.any(keep):
+            coords = np.stack((line[keep], sample[keep]))
+            out[keep] = map_coordinates(values, coords, order=orders[name], mode="constant", cval=0.0)
         return out
     if name.startswith("BISINC_"):
         # The chirp phase is thousands of radians. Keep it in float64; a
         # complex64 round trip quantises it before the reramp.
-        return _hann_sinc_resample(values, line, sample, name, real=True)
+        return _hann_sinc_resample(values, line, sample, name, real=True, mask=keep)
     sampled = resample_complex(values + 0j, line, sample, method)
     return np.asarray(sampled.real, dtype=np.float64)
 
 
-def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str) -> np.ndarray:
+def resample_complex(
+    image: np.ndarray,
+    line: np.ndarray,
+    sample: np.ndarray,
+    method: str,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
     """Resample a complex image. Unsupported names raise instead of changing kernel."""
     from scipy.ndimage import map_coordinates
 
@@ -784,18 +923,19 @@ def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, me
         "CUBIC_CONVOLUTION": 3,
         "BICUBIC_INTERPOLATION": 3,
     }
-    rows, cols = image.shape
+    keep = valid if mask is None else valid & np.asarray(mask, dtype=bool)
     if name in orders:
-        coords = np.stack((np.asarray(line, dtype=np.float64), np.asarray(sample, dtype=np.float64)))
-        real = map_coordinates(np.asarray(image.real), coords, order=orders[name], mode="constant", cval=0.0)
-        imag = map_coordinates(np.asarray(image.imag), coords, order=orders[name], mode="constant", cval=0.0)
-        out = (real + 1j * imag).astype(np.complex64)
-        out[~valid] = 0
+        out = np.zeros(line.shape, dtype=np.complex64)
+        if np.any(keep):
+            coords = np.stack((line[keep], sample[keep]))
+            real = map_coordinates(np.asarray(image.real), coords, order=orders[name], mode="constant", cval=0.0)
+            imag = map_coordinates(np.asarray(image.imag), coords, order=orders[name], mode="constant", cval=0.0)
+            out[keep] = (real + 1j * imag).astype(np.complex64)
         return out
     if name not in _BISINC_HALF:
         raise ValueError(f"{method} is not an implemented resampling kernel.")
-    out = _hann_sinc_resample(image, line, sample, name, real=False)
-    out[~valid] = 0
+    out = _hann_sinc_resample(image, line, sample, name, real=False, mask=keep)
+    out[~keep] = 0
     return out
 
 
@@ -831,13 +971,25 @@ def _hann_sinc_lut(half: int) -> np.ndarray:
     return cached
 
 
-def _hann_sinc_resample(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str, *, real: bool) -> np.ndarray:
+def _hann_sinc_resample(
+    image: np.ndarray,
+    line: np.ndarray,
+    sample: np.ndarray,
+    method: str,
+    *,
+    real: bool,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
     """Separable Hann-windowed sinc. Each axis is normalised on its own."""
     half = _BISINC_HALF[str(method).strip().upper()]
     lut = _hann_sinc_lut(half)
     values = np.asarray(image)
-    line = np.ascontiguousarray(line, dtype=np.float64)
-    sample = np.ascontiguousarray(sample, dtype=np.float64)
+    line = np.array(line, dtype=np.float64, copy=True)
+    sample = np.array(sample, dtype=np.float64, copy=True)
+    if mask is not None:
+        dropped = ~np.asarray(mask, dtype=bool)
+        line[dropped] = np.nan
+        sample[dropped] = np.nan
     if real:
         real_part = np.ascontiguousarray(values, dtype=np.float64)
         imag_part = np.zeros((1, 1), dtype=np.float64)
@@ -1013,6 +1165,11 @@ def _interpolate_grid(
         method=method,
         bounds_error=False,
         fill_value=None,
+        **(
+            {"solver_args": {"rtol": 1e-12, "atol": 1e-11}}
+            if method == "cubic"
+            else {}
+        ),
     )
     full_rows, full_cols = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
     points = np.stack((full_rows, full_cols), axis=-1)
@@ -1404,6 +1561,54 @@ def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_int
     seconds = float(pixels) * float(azimuth_time_interval_s)
     spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[:, None] * seconds)
     return np.fft.ifft(spectrum, axis=0).astype(np.complex64)
+
+
+def shift_secondary_in_overlap(
+    grid: RadarGrid,
+    azimuth_px: float,
+    range_px: float,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Deramp, Fourier-shift the baseband and the phase, then reramp.
+
+    Only the common-overlap bounding box is transformed. Pixels outside the
+    mask, and pixels that were zero before the shift, stay zero.
+    """
+    data = np.asarray(grid.data)
+    valid = (np.real(data) != 0) | (np.imag(data) != 0)
+    if mask is not None and mask.shape == data.shape:
+        valid = valid & np.asarray(mask, dtype=bool)
+    out = np.zeros(data.shape, dtype=np.complex64)
+    extent = overlap_extent(valid)
+    if extent is None or (azimuth_px == 0.0 and range_px == 0.0):
+        if extent is None:
+            return out
+        r0, r1, c0, c1 = extent
+        out[r0:r1, c0:c1] = np.where(valid[r0:r1, c0:c1], data[r0:r1, c0:c1], 0)
+        return out
+    r0, r1, c0, c1 = extent
+    phase = tops_phase(grid)[r0:r1, c0:c1]
+    tile = np.asarray(data[r0:r1, c0:c1], dtype=np.complex64)
+    baseband = tile * np.exp(1j * phase)
+    baseband = _fourier_shift(baseband, azimuth_px, range_px, grid.model.azimuth_time_interval_s)
+    phase = _fourier_shift(phase.astype(np.complex64), azimuth_px, range_px, grid.model.azimuth_time_interval_s).real
+    corrected = (baseband * np.exp(-1j * phase)).astype(np.complex64)
+    tile_valid = valid[r0:r1, c0:c1]
+    corrected[~tile_valid] = 0
+    out[r0:r1, c0:c1] = corrected
+    return out
+
+
+def _fourier_shift(image: np.ndarray, azimuth_px: float, range_px: float, azimuth_time_interval_s: float) -> np.ndarray:
+    data = np.asarray(image, dtype=np.complex64)
+    if azimuth_px:
+        data = apply_azimuth_pixel_shift(data, float(azimuth_px), float(azimuth_time_interval_s))
+    if range_px:
+        spectrum = np.fft.fft(data, axis=1)
+        frequency = np.fft.fftfreq(data.shape[1])
+        spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[None, :] * float(range_px))
+        data = np.fft.ifft(spectrum, axis=1).astype(np.complex64)
+    return data
 
 
 def deburst_window(data: np.ndarray, model: SwathModel, row: int, col: int) -> RadarGrid:
