@@ -295,9 +295,7 @@ def network_shifts(
 
 
 def active_backend() -> str:
-    """Name the optional accelerator. The arithmetic stays in this module."""
-    if importlib.util.find_spec("numba") is not None:
-        return "numpy+numba"
+    """Vectorized NumPy and ``scipy.fft``. Numba is not on this path."""
     return "numpy"
 
 
