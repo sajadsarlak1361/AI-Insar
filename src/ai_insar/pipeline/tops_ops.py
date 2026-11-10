@@ -610,7 +610,7 @@ def _map_residual(
     errors = []
     lattice_rows = set(int(item) for item in row_index)
     lattice_cols = set(int(item) for item in col_index)
-    for _ in range(16):
+    for _ in range(48):
         row = int(rng.integers(0, rows))
         col = int(rng.integers(0, cols))
         if row in lattice_rows and col in lattice_cols:
@@ -657,6 +657,10 @@ def resample_real(image: np.ndarray, line: np.ndarray, sample: np.ndarray, metho
         out = np.asarray(out, dtype=np.float64)
         out[~valid] = 0.0
         return out
+    if name.startswith("BISINC_"):
+        # The chirp phase is thousands of radians. Keep it in float64; a
+        # complex64 round trip quantises it before the reramp.
+        return _hann_sinc_resample(values, line, sample, name, real=True)
     sampled = resample_complex(values + 0j, line, sample, method)
     return np.asarray(sampled.real, dtype=np.float64)
 
@@ -685,44 +689,186 @@ def resample_complex(image: np.ndarray, line: np.ndarray, sample: np.ndarray, me
         out = (real + 1j * imag).astype(np.complex64)
         out[~valid] = 0
         return out
-    radius = {"BISINC_5_POINT_INTERPOLATION": 2, "BISINC_11_POINT_INTERPOLATION": 5, "BISINC_21_POINT_INTERPOLATION": 10}
-    if name not in radius:
+    if name not in _BISINC_HALF:
         raise ValueError(f"{method} is not an implemented resampling kernel.")
-    out = _sinc_resample(image, line, sample, radius[name])
+    out = _hann_sinc_resample(image, line, sample, name, real=False)
     out[~valid] = 0
     return out
 
 
-def _sinc_resample(image: np.ndarray, line: np.ndarray, sample: np.ndarray, radius: int) -> np.ndarray:
-    rows, cols = image.shape
-    out = np.zeros(line.shape, dtype=np.complex64)
-    line = np.asarray(line, dtype=np.float64)
-    sample = np.asarray(sample, dtype=np.float64)
-    for row in range(line.shape[0]):
-        for col in range(line.shape[1]):
-            yy = line[row, col]
-            xx = sample[row, col]
-            if not np.isfinite(yy) or not np.isfinite(xx):
+# Half-width of the raised-cosine window. Five taps span ±2 samples.
+_BISINC_HALF = {
+    "BISINC_5_POINT_INTERPOLATION": 2,
+    "BISINC_11_POINT_INTERPOLATION": 5,
+    "BISINC_21_POINT_INTERPOLATION": 10,
+}
+_HANN_BINS = 4096
+_HANN_LUT: dict[int, np.ndarray] = {}
+
+
+def _hann_sinc_lut(half: int) -> np.ndarray:
+    """Weights for fractional offsets in ``[0, 1)``.
+
+    ``w(u) = sinc(u) · 0.5 · (1 + cos(π u / half))`` for ``|u| <= half``,
+    else 0. Taps are ``floor(x) + offset`` with ``offset`` from ``-half``
+    to ``+half``. A tap past the window is already zero, including the
+    extra fractional tap an unwindowed sinc would keep.
+    """
+    cached = _HANN_LUT.get(half)
+    if cached is not None:
+        return cached
+    frac = np.arange(_HANN_BINS, dtype=np.float64) / _HANN_BINS
+    offsets = np.arange(-half, half + 1, dtype=np.float64)
+    delta = frac[:, None] - offsets[None, :]
+    window = 0.5 * (1.0 + np.cos(np.pi * np.clip(delta / half, -1.0, 1.0)))
+    weights = np.sinc(delta) * window
+    weights[np.abs(delta) > half] = 0.0
+    cached = np.ascontiguousarray(weights, dtype=np.float64)
+    _HANN_LUT[half] = cached
+    return cached
+
+
+def _hann_sinc_resample(image: np.ndarray, line: np.ndarray, sample: np.ndarray, method: str, *, real: bool) -> np.ndarray:
+    """Separable Hann-windowed sinc. Each axis is normalised on its own."""
+    half = _BISINC_HALF[str(method).strip().upper()]
+    lut = _hann_sinc_lut(half)
+    values = np.asarray(image)
+    line = np.ascontiguousarray(line, dtype=np.float64)
+    sample = np.ascontiguousarray(sample, dtype=np.float64)
+    if real:
+        real_part = np.ascontiguousarray(values, dtype=np.float64)
+        imag_part = np.zeros((1, 1), dtype=np.float64)
+    else:
+        real_part = np.ascontiguousarray(np.real(values), dtype=np.float64)
+        imag_part = np.ascontiguousarray(np.imag(values), dtype=np.float64)
+    out_real, out_imag = _hann_apply(real_part, imag_part, line, sample, lut, half, 0 if real else 1)
+    if real:
+        return out_real
+    return (out_real + 1j * out_imag).astype(np.complex64)
+
+
+def _hann_apply(real_part, imag_part, line, sample, lut, half, complex_flag):
+    try:
+        return _hann_apply_numba(real_part, imag_part, line, sample, lut, int(half), int(complex_flag))
+    except Exception:
+        return _hann_apply_numpy(real_part, imag_part, line, sample, lut, int(half), int(complex_flag))
+
+
+def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_flag):
+    bins = lut.shape[0]
+    taps = lut.shape[1]
+    height, width = real_part.shape
+    rows, cols = line.shape
+    out_real = np.zeros((rows, cols), dtype=np.float64)
+    out_imag = np.zeros((rows, cols), dtype=np.float64)
+    offsets = np.arange(-half, half + 1)
+    for row in range(rows):
+        for col in range(cols):
+            y = line[row, col]
+            x = sample[row, col]
+            if not np.isfinite(y) or not np.isfinite(x):
                 continue
-            y0 = int(np.floor(yy))
-            x0 = int(np.floor(xx))
-            value = 0j
-            norm = 0.0
-            for dy in range(-radius, radius + 1):
-                iy = y0 + dy
-                if iy < 0 or iy >= rows:
+            y0 = int(np.floor(y))
+            x0 = int(np.floor(x))
+            wy = lut[min(int((y - y0) * bins), bins - 1)].copy()
+            wx = lut[min(int((x - x0) * bins), bins - 1)].copy()
+            for index, offset in enumerate(offsets):
+                if y0 + offset < 0 or y0 + offset >= height:
+                    wy[index] = 0.0
+                if x0 + offset < 0 or x0 + offset >= width:
+                    wx[index] = 0.0
+            sy = float(np.sum(wy))
+            sx = float(np.sum(wx))
+            if sy == 0.0 or sx == 0.0:
+                continue
+            wy /= sy
+            wx /= sx
+            acc_r = 0.0
+            acc_i = 0.0
+            for iy, oy in enumerate(offsets):
+                if wy[iy] == 0.0:
                     continue
-                wy = float(np.sinc(yy - iy))
-                for dx in range(-radius, radius + 1):
-                    ix = x0 + dx
-                    if ix < 0 or ix >= cols:
+                yy = y0 + int(oy)
+                for ix, ox in enumerate(offsets):
+                    if wx[ix] == 0.0:
                         continue
-                    weight = wy * float(np.sinc(xx - ix))
-                    value += weight * image[iy, ix]
-                    norm += weight
-            if norm != 0.0:
-                out[row, col] = value / norm
-    return out
+                    xx = x0 + int(ox)
+                    weight = wy[iy] * wx[ix]
+                    acc_r += weight * real_part[yy, xx]
+                    if complex_flag:
+                        acc_i += weight * imag_part[yy, xx]
+            out_real[row, col] = acc_r
+            out_imag[row, col] = acc_i
+    return out_real, out_imag
+
+
+def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_flag):
+    import numba
+
+    if not hasattr(_hann_apply_numba, "compiled"):
+
+        @numba.njit(parallel=True, cache=True)
+        def _kernel(real_part, imag_part, line, sample, lut, half, complex_flag):
+            bins = lut.shape[0]
+            height = real_part.shape[0]
+            width = real_part.shape[1]
+            rows = line.shape[0]
+            cols = line.shape[1]
+            out_real = np.zeros((rows, cols), dtype=np.float64)
+            out_imag = np.zeros((rows, cols), dtype=np.float64)
+            for row in numba.prange(rows):
+                for col in range(cols):
+                    y = line[row, col]
+                    x = sample[row, col]
+                    if not np.isfinite(y) or not np.isfinite(x):
+                        continue
+                    y0 = int(np.floor(y))
+                    x0 = int(np.floor(x))
+                    iy = int((y - y0) * bins)
+                    ix = int((x - x0) * bins)
+                    if iy < 0:
+                        iy = 0
+                    if ix < 0:
+                        ix = 0
+                    if iy >= bins:
+                        iy = bins - 1
+                    if ix >= bins:
+                        ix = bins - 1
+                    sy = 0.0
+                    sx = 0.0
+                    for tap in range(lut.shape[1]):
+                        offset = tap - half
+                        yy = y0 + offset
+                        xx = x0 + offset
+                        if 0 <= yy < height:
+                            sy += lut[iy, tap]
+                        if 0 <= xx < width:
+                            sx += lut[ix, tap]
+                    if sy == 0.0 or sx == 0.0:
+                        continue
+                    acc_r = 0.0
+                    acc_i = 0.0
+                    for ty in range(lut.shape[1]):
+                        yy = y0 + ty - half
+                        if yy < 0 or yy >= height:
+                            continue
+                        wy = lut[iy, ty] / sy
+                        if wy == 0.0:
+                            continue
+                        for tx in range(lut.shape[1]):
+                            xx = x0 + tx - half
+                            if xx < 0 or xx >= width:
+                                continue
+                            weight = wy * (lut[ix, tx] / sx)
+                            acc_r += weight * real_part[yy, xx]
+                            if complex_flag != 0:
+                                acc_i += weight * imag_part[yy, xx]
+                    out_real[row, col] = acc_r
+                    out_imag[row, col] = acc_i
+            return out_real, out_imag
+
+        _hann_apply_numba.compiled = _kernel
+    return _hann_apply_numba.compiled(real_part, imag_part, line, sample, lut, half, complex_flag)
 
 
 def _solve_stride(rows: int, cols: int, max_solves: int) -> int:
@@ -749,12 +895,19 @@ def _interpolate_grid(
     rows: int,
     cols: int,
 ) -> np.ndarray:
-    """Bilinear resample of a solved lattice onto every pixel."""
+    """Cubic resample of a solved lattice onto every pixel.
+
+    A smooth range-Doppler field is poorly served by bilinear steps of tens
+    of pixels: those steps were several millimetres. Cubic needs four knots
+    on each axis; a smaller lattice stays linear.
+    """
     from scipy.interpolate import RegularGridInterpolator
 
+    method = "cubic" if row_index.size >= 4 and col_index.size >= 4 else "linear"
     interpolator = RegularGridInterpolator(
         (row_index.astype(np.float64), col_index.astype(np.float64)),
         np.asarray(values, dtype=np.float64),
+        method=method,
         bounds_error=False,
         fill_value=None,
     )

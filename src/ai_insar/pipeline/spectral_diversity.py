@@ -20,11 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ai_insar.pipeline.tops_ops import (
-    esd_applied_shift_px,
-    overlap_block_shifts,
-    resample_complex,
-)
+from ai_insar.pipeline.tops_ops import esd_applied_shift_px, overlap_block_shifts
 
 
 @dataclass(frozen=True)
@@ -103,62 +99,121 @@ def range_cross_correlation_shift(
     oversample: int = 128,
     search_px: int = 16,
     threshold: float = 0.1,
+    window: int = 512,
 ) -> tuple[float, float]:
-    """Constant range shift, in pixels, from an FFT amplitude correlation.
+    """Range shift in pixels from normalised 512×512 amplitude correlations.
 
-    The coarse peak uses ``scipy.fft.rfft``. A short DFT oversamples a
-    ``±search_px`` neighbourhood by ``oversample``. The return is
-    ``(shift, correlation)``. A correlation below ``threshold`` yields a
-    shift of 0 and the measured correlation.
+    Each window is the SNAP fine-window size, clipped to the array. The
+    coefficient is the normalised cross-correlation, in ``[-1, 1]``, not the
+    raw FFT sum. The returned shift is the Fourier delay to apply to the
+    secondary: content that sits one sample to the right needs ``-1``.
+    Windows below ``threshold`` are ignored. If none pass, the shift is 0
+    and the coefficient is the best one seen.
     """
-    from scipy.fft import irfft, next_fast_len, rfft
-
-    reference = np.abs(np.asarray(master, dtype=np.complex64)).astype(np.float64)
-    repeat = np.abs(np.asarray(slave, dtype=np.complex64)).astype(np.float64)
+    reference = np.abs(np.asarray(master, dtype=np.complex64))
+    repeat = np.abs(np.asarray(slave, dtype=np.complex64))
     if reference.shape != repeat.shape or reference.ndim != 2:
         raise ValueError("range correlation looks must share one 2-D shape")
-    reference = reference - np.mean(reference, axis=1, keepdims=True)
-    repeat = repeat - np.mean(repeat, axis=1, keepdims=True)
-    length = next_fast_len(reference.shape[1] * 2)
-    workers = -1
-    try:
-        spec_ref = rfft(reference, n=length, axis=1, workers=workers)
-        spec_rep = rfft(repeat, n=length, axis=1, workers=workers)
-        coarse = irfft(spec_ref * np.conj(spec_rep), n=length, axis=1, workers=workers)
-    except TypeError:
-        spec_ref = rfft(reference, n=length, axis=1)
-        spec_rep = rfft(repeat, n=length, axis=1)
-        coarse = irfft(spec_ref * np.conj(spec_rep), n=length, axis=1)
-    profile = np.sum(coarse, axis=0)
-    # Zero lag sits at index 0. Negative lags are wrapped to the end.
-    center = int(np.argmax(profile))
-    if center > length // 2:
-        center -= length
-    half = max(1, int(search_px))
-    lags = np.linspace(center - half, center + half, half * 2 * max(int(oversample), 1) + 1)
-    # Matrix DFT at the refined lags, summed over azimuth and the coarse bins.
-    frequency = 2.0 * np.pi * np.arange(spec_ref.shape[1]) / length
-    phase = np.exp(1j * frequency[:, None] * lags[None, :])
-    refined = np.sum(np.real(np.sum(spec_ref * np.conj(spec_rep), axis=0)[:, None] * phase), axis=0)
+    height, width = reference.shape
+    win_y = min(int(window), height)
+    win_x = min(int(window), width)
+    if win_y < 8 or win_x < 8:
+        raise ValueError("range correlation window is smaller than 8 pixels")
+    shifts: list[float] = []
+    weights: list[float] = []
+    best_coef = 0.0
+    row_starts = range(0, max(height - win_y, 0) + 1, win_y)
+    col_starts = range(0, max(width - win_x, 0) + 1, win_x)
+    for row0 in row_starts:
+        for col0 in col_starts:
+            shift, coef = _normalised_range_peak(
+                reference[row0 : row0 + win_y, col0 : col0 + win_x],
+                repeat[row0 : row0 + win_y, col0 : col0 + win_x],
+                search_px=int(search_px),
+                oversample=int(oversample),
+            )
+            best_coef = max(best_coef, coef)
+            if coef >= float(threshold):
+                shifts.append(shift)
+                weights.append(coef)
+    if not shifts:
+        return 0.0, best_coef
+    total = float(sum(weights))
+    return float(sum(s * w for s, w in zip(shifts, weights)) / total), float(total / len(weights))
+
+
+def _normalised_range_peak(master: np.ndarray, slave: np.ndarray, *, search_px: int, oversample: int) -> tuple[float, float]:
+    """Fourier delay and normalised coefficient of one amplitude window.
+
+    ``ifft2(fft(master) · conj(fft(slave)))`` is already the circular
+    correlation sum under NumPy's backward normalisation. Dividing by the
+    two energies makes that peak a correlation coefficient.
+    """
+    reference = np.asarray(master, dtype=np.float64)
+    repeat = np.asarray(slave, dtype=np.float64)
+    reference = reference - np.mean(reference)
+    repeat = repeat - np.mean(repeat)
+    energy = float(np.sqrt(np.sum(reference * reference) * np.sum(repeat * repeat)))
+    if energy == 0.0:
+        return 0.0, 0.0
+    spectrum = np.fft.fft2(reference) * np.conj(np.fft.fft2(repeat))
+    coarse = np.real(np.fft.ifft2(spectrum))
+    count = float(reference.size)
+    # With NumPy's backward norm, ifft2(fft(a)·conj(fft(b))) is already the
+    # circular correlation sum, not that sum divided by the pixel count.
+    coef_map = coarse / energy
+    rows, cols = coef_map.shape
+    limit = max(1, int(search_px))
+    row_band = np.concatenate((np.arange(0, min(limit, rows)), np.arange(max(rows - limit, 0), rows)))
+    col_band = np.concatenate((np.arange(0, min(limit, cols)), np.arange(max(cols - limit, 0), cols)))
+    view = coef_map[np.ix_(np.unique(row_band), np.unique(col_band))]
+    row_ids = np.unique(row_band)
+    col_ids = np.unique(col_band)
+    flat = int(np.argmax(view))
+    row_i, col_i = np.unravel_index(flat, view.shape)
+    peak_row = int(row_ids[row_i])
+    peak_col = int(col_ids[col_i])
+    signed_row = peak_row - rows if peak_row > rows // 2 else peak_row
+    signed_col = peak_col - cols if peak_col > cols // 2 else peak_col
+    step = 1.0 / max(int(oversample), 1)
+    lags = signed_col + np.arange(-oversample, oversample + 1, dtype=np.float64) * step
+    ky = np.fft.fftfreq(rows)
+    kx = np.fft.fftfreq(cols)
+    phase = np.exp(
+        2j
+        * np.pi
+        * (ky[None, :, None] * float(signed_row) + kx[None, None, :] * lags[:, None, None])
+    )
+    refined = np.real(np.sum(spectrum[None, :, :] * phase, axis=(1, 2))) / count / energy
     best = int(np.argmax(refined))
-    # Positive means the secondary content sits at a higher range sample, so
-    # resampling adds this many pixels to the source sample.
-    shift = float(-lags[best])
-    energy = float(np.sqrt(np.sum(reference**2) * np.sum(repeat**2)))
-    correlation = 0.0 if energy == 0.0 else float(refined[best] / energy)
-    if correlation < float(threshold):
-        return 0.0, correlation
-    return shift, correlation
+    return float(lags[best]), float(refined[best])
 
 
-def apply_range_shift(image: np.ndarray, shift_px: float, method: str = "BICUBIC_INTERPOLATION") -> np.ndarray:
-    """Resample so a positive ``shift_px`` reads the slave from the right."""
-    data = np.asarray(image)
-    rows, cols = data.shape
-    line = np.broadcast_to(np.arange(rows, dtype=np.float64)[:, None], (rows, cols)).copy()
-    sample = np.broadcast_to(np.arange(cols, dtype=np.float64)[None, :], (rows, cols)).copy()
-    sample += float(shift_px)
-    return resample_complex(data, line, sample, method)
+def apply_range_shift(image: np.ndarray, shift_px: float, method: str = "FOURIER") -> np.ndarray:
+    """Move the secondary by ``shift_px`` range samples with a Fourier ramp.
+
+    ``method`` is accepted for older callers and does not change the ramp.
+    """
+    del method
+    data = np.asarray(image, dtype=np.complex64)
+    if shift_px == 0.0:
+        return data
+    spectrum = np.fft.fft(data, axis=1)
+    frequency = np.fft.fftfreq(data.shape[1])
+    spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[None, :] * float(shift_px))
+    return np.fft.ifft(spectrum, axis=1).astype(np.complex64)
+
+
+def apply_global_shift(image: np.ndarray, azimuth_px: float, range_px: float, azimuth_time_interval_s: float) -> np.ndarray:
+    """Fourier-shift the whole secondary in azimuth and range."""
+    from ai_insar.pipeline.tops_ops import apply_azimuth_pixel_shift
+
+    shifted = np.asarray(image, dtype=np.complex64)
+    if azimuth_px:
+        shifted = apply_azimuth_pixel_shift(shifted, float(azimuth_px), float(azimuth_time_interval_s))
+    if range_px:
+        shifted = apply_range_shift(shifted, float(range_px))
+    return shifted
 
 
 def estimate_overlap(
