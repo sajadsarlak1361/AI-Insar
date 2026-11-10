@@ -701,7 +701,7 @@ def _extra_abstracted_xml(
         mds[index] = value
     if polarisation and mds[0] not in ("-", polarisation):
         mds[0] = polarisation
-    centre = _scene_centre(product, polarisation)
+    centre = _scene_centre(product)
     lines = [
         _attr("BEAMS", "-"),
         _attr("PROC_TIME", manifest["proc_time"], kind="utc", unit="utc", desc="Processing time"),
@@ -726,7 +726,7 @@ def _extra_abstracted_xml(
         _attr("algorithm", "-"),
         _attr("range_window_type", window["range_window"]),
         _attr("range_window_coefficient", _num(window["range_coefficient"]), kind="float64"),
-        _attr("total_size", str(_product_storage_bytes(product, height, width)), kind="uint32", unit="MB", desc="Total product size"),
+        _attr("total_size", str(_product_storage_bytes(product, height, width, tie_grids)), kind="uint32", unit="MB", desc="Total product size"),
         _attr("avg_scene_height", _num(_mean_terrain_height(product)), kind="float64", unit="m"),
         _attr("map_projection", "-"),
         _attr("is_terrain_corrected", "0", kind="uint8", unit="flag"),
@@ -904,109 +904,197 @@ def _ordered_polarisations(product) -> list[str]:
 
 
 def _mean_terrain_height(product) -> float:
+    """Mean of each annotation's terrain-height mean, in filename order."""
     root = Path(getattr(product, "root", ""))
     folder = root / "annotation"
-    values: list[float] = []
     paths = sorted(folder.glob("s1*-iw*.xml")) if folder.is_dir() else []
+    means: list[float] = []
     for path in paths:
-        tree = ET.parse(path)
-        for element in tree.getroot().iter():
-            if _local(element.tag) == "terrainHeight":
-                for child in list(element):
-                    if _local(child.tag) == "value" and (child.text or "").strip():
-                        values.append(float(child.text))
-    if not values:
+        values: list[float] = []
+        for element in ET.parse(path).getroot().iter():
+            if _local(element.tag) != "terrainHeight":
+                continue
+            for child in list(element):
+                if _local(child.tag) == "value" and (child.text or "").strip():
+                    values.append(float(child.text))
+        if values:
+            means.append(float(sum(values) / len(values)))
+    if not means:
         return 0.0
-    return float(sum(values) / len(values))
+    return float(sum(means) / len(means))
 
 
-def _product_storage_bytes(product, height: int, width: int) -> int:
-    """Byte count SNAP stores in ``total_size``.
+def _product_storage_bytes(product, height: int, width: int, tie_grids: tuple) -> int:
+    """Byte count stored in ``total_size``.
 
-    The unit label is MB. The number is the subset product's raw storage:
-    separate int16 i and q rasters, a 256-byte node header on each band, the
-    five tie-point grids, and the SAFE metadata files SNAP keeps on the product.
+    The label says megabytes. The number is the split product's raw storage:
+    int16 ``i`` and ``q``, the virtual intensity band's header, the swath
+    tie-point grids, and the metadata tree loaded from the SAFE (manifest,
+    annotations, calibration, and noise). Each metadata value costs 256 bytes
+    plus its text.
     """
-    bands = 2 * (256 + 2 * int(height) * int(width))
-    ties = 5 * (256 + 4 * 4 * 21)
+    raster = 2 * (256 + 2 * int(height) * int(width)) + 256
+    ties = 0
+    for _name, _unit, values, *_rest in tie_grids:
+        rows, cols = np.asarray(values).shape
+        ties += 256 + 4 * int(rows) * int(cols)
+    return int(raster + ties + _safe_metadata_bytes(product))
+
+
+def _safe_metadata_bytes(product) -> int:
     root = Path(getattr(product, "root", ""))
-    meta = 0
-    if root.is_dir():
-        meta = sum(path.stat().st_size for path in root.rglob("*") if path.is_file() and path.suffix.lower() in {".xml", ".safe", ".png"})
-    return int(bands + ties + meta)
+    if not root.is_dir():
+        return 0
+    total = 0
+    manifest = root / "manifest.safe"
+    if manifest.is_file():
+        total += _xml_tree_bytes(manifest)
+    annotation = root / "annotation"
+    if annotation.is_dir():
+        for path in sorted(p for p in annotation.iterdir() if p.is_file() and p.suffix.lower() == ".xml"):
+            total += _xml_tree_bytes(path)
+        calibration = annotation / "calibration"
+        if calibration.is_dir():
+            for path in sorted(calibration.glob("*.xml")):
+                name = path.name.lower()
+                if name.startswith("calibration-") or name.startswith("noise-"):
+                    total += _xml_tree_bytes(path)
+        rfi = annotation / "rfi"
+        if rfi.is_dir():
+            for path in sorted(rfi.glob("*.xml")):
+                total += _xml_tree_bytes(path)
+    return total
 
 
-def _scene_centre(product, polarisation: str) -> tuple[float, float, float, float]:
-    """Latitude, longitude, and the two headings at the scene centre.
+def _xml_tree_bytes(path: Path) -> int:
+    """Storage of one XML document after it is expanded into metadata attributes."""
+    return _element_bytes(ET.parse(path).getroot())
 
-    The centre is the mean of the near and far geolocation corners of the
-    first and last subswath. Heading is the azimuth from the centre toward
-    the next burst along the near-range side, and the second heading is that
-    azimuth turned through 180 degrees.
+
+def _element_bytes(element: ET.Element) -> int:
+    children = [child for child in list(element) if isinstance(child.tag, str)]
+    attributes = [(key, value) for key, value in element.attrib.items() if not key.startswith("{")]
+    text = element.text or ""
+    if not children and not attributes:
+        if text.strip() or text:
+            return _ascii_bytes(text if text else " ")
+        return 0
+    total = 0
+    if not children and text.strip():
+        total += _ascii_bytes(text)
+    for child in children:
+        total += _element_bytes(child)
+    for _key, value in attributes:
+        total += _ascii_bytes(value if value else " ")
+    return total
+
+
+def _ascii_bytes(value: str) -> int:
+    text = value if value else " "
+    return 256 + len(text.encode("utf-8"))
+
+
+def _scene_centre(product) -> tuple[float, float, float, float]:
+    """Latitude, longitude, and both headings at the scene centre.
+
+    The full product's scene raster is the sum of one polarisation's subswath
+    widths and the tallest subswath. Its geocoding is the 10-by-10 refinement
+    of the four raster corners (near swath at x=0, far swath at x=width-1).
+    The centre pixel is ``(width // 2, height // 2)``. The headings are the
+    forward and reverse azimuths from there to the pixel 100 lines later, on
+    a sphere (flattening zero) with the same iteration stop used for this field.
     """
-    root = Path(getattr(product, "root", ""))
-    folder = root / "annotation"
-    paths = sorted(folder.glob("s1*-iw*.xml")) if folder.is_dir() else []
-    pol = polarisation.lower()
-    chosen = [path for path in paths if f"-{pol}-" in path.name.lower()] or paths
-    if not chosen:
+    swaths = _scene_swaths(product)
+    if not swaths:
         return (0.0, 0.0, 0.0, 0.0)
-    first = _corner_pair(chosen[0])
-    last = _corner_pair(chosen[-1] if len(chosen) > 2 else chosen[min(1, len(chosen) - 1)])
-    # first/last swath in range order, not file order. IW1 is the near swath.
-    ordered = sorted(chosen, key=lambda path: path.name)
-    iw = [path for path in ordered if "-iw1-" in path.name or "-iw2-" in path.name or "-iw3-" in path.name]
-    if iw:
-        first = _corner_pair(iw[0])
-        last = _corner_pair(iw[-1])
-    lats = (first[0], last[2], first[4], last[6])
-    lons = (first[1], last[3], first[5], last[7])
-    lat = float(sum(lats) / 4.0)
-    lon = float(sum(lons) / 4.0)
-    heading = _centre_heading(iw or ordered)
-    other = heading - 180.0 if heading >= 180.0 else heading + 180.0
-    return lat, lon, heading, other
+    scene_w = sum(item["width"] for item in swaths)
+    scene_h = max(item["height"] for item in swaths)
+    near = swaths[0]
+    far = swaths[-1]
+    ul_lat, ul_lon = _swath_geo(near, 0.0, 0.0)
+    ll_lat, ll_lon = _swath_geo(near, 0.0, float(near["height"] - 1))
+    ur_lat, ur_lon = _swath_geo(far, float(far["width"] - 1), 0.0)
+    lr_lat, lr_lon = _swath_geo(far, float(far["width"] - 1), float(far["height"] - 1))
+    lat_corners = np.array([ul_lat, ur_lat, ll_lat, lr_lat], dtype=np.float32)
+    lon_corners = np.array([ul_lon, ur_lon, ll_lon, lr_lon], dtype=np.float32)
+    fine_lat = _refine_corners(lat_corners, 10, 10)
+    fine_lon = _refine_corners(lon_corners, 10, 10)
+    step_x = scene_w / 9.0
+    step_y = scene_h / 9.0
+    cx = float(scene_w // 2)
+    cy = float(scene_h // 2)
+    lat = _sample_plain(fine_lat, cx, cy, step_x, step_y)
+    lon = _sample_lon(fine_lon, cx, cy, step_x, step_y)
+    lat2 = _sample_plain(fine_lat, cx, cy + 100.0, step_x, step_y)
+    lon2 = _sample_lon(fine_lon, cx, cy + 100.0, step_x, step_y)
+    heading, heading2 = _spherical_azimuths(lat, lon, lat2, lon2)
+    return lat, lon, heading, heading2
 
 
-def _centre_heading(paths: list[Path]) -> float:
-    """Azimuth from the scene-centre pixel to the pixel 100 lines later.
+def _scene_swaths(product) -> list[dict]:
+    """Subswaths of the first polarisation, in measurement-name order."""
+    root = Path(getattr(product, "root", ""))
+    measurement = root / "measurement"
+    annotation = root / "annotation"
+    if not measurement.is_dir() or not annotation.is_dir():
+        return []
+    names = sorted(path.name.lower() for path in measurement.iterdir() if path.suffix.lower() in {".tiff", ".tif"})
+    if not names:
+        return []
+    first_pol = _pol_from_name(names[0])
+    swaths: list[dict] = []
+    seen: set[str] = set()
+    for name in names:
+        if _pol_from_name(name) != first_pol:
+            continue
+        swath = _swath_from_name(name)
+        if swath in seen:
+            continue
+        seen.add(swath)
+        ann = _annotation_for(annotation, swath, first_pol)
+        if ann is None:
+            continue
+        grid = _annotation_tie_grid(ann)
+        swaths.append(grid)
+    return swaths
 
-    Scene width is the sum of one polarisation's subswaths and the centre
-    falls in the middle subswath. That is the direction SNAP stores.
-    """
-    loaded = [_swath_grid(path) for path in paths]
-    if not loaded:
-        return 0.0
-    scene_w = sum(item[0] for item in loaded)
-    scene_h = max(item[1] for item in loaded)
-    x = scene_w // 2
-    y = scene_h // 2
-    origin = 0
-    for width, _height, lat, lon, step_x, step_y in loaded:
-        if origin <= x < origin + width:
-            local_x = x - origin
-            return _azimuth_deg(
-                _sample_grid(lat, local_x, y, step_x, step_y),
-                _sample_grid(lon, local_x, y, step_x, step_y),
-                _sample_grid(lat, local_x, y + 100, step_x, step_y),
-                _sample_grid(lon, local_x, y + 100, step_x, step_y),
-            )
-        origin += width
-    return 0.0
+
+def _pol_from_name(name: str) -> str:
+    for candidate in ("vh", "vv", "hh", "hv"):
+        if f"-{candidate}-" in name:
+            return candidate
+    return ""
 
 
-def _swath_grid(path: Path):
-    tree = ET.parse(path)
-    root = tree.getroot()
+def _swath_from_name(name: str) -> str:
+    for candidate in ("iw1", "iw2", "iw3", "ew1", "ew2", "ew3", "ew4", "ew5"):
+        if f"-{candidate}-" in name:
+            return candidate.upper()
+    return ""
+
+
+def _annotation_for(folder: Path, swath: str, pol: str) -> Path | None:
+    matches = sorted(folder.glob(f"*-{swath.lower()}-*-{pol}-*.xml"))
+    return matches[0] if matches else None
+
+
+def _annotation_tie_grid(path: Path) -> dict:
+    root = ET.parse(path).getroot()
     width = int(float(_text(root, "numberOfSamples")))
     height = int(float(_text(root, "numberOfLines")))
-    by_line: dict[int, list[tuple[int, float, float]]] = {}
+    by_line: dict[int, list[tuple[int, float, float, float, float]]] = {}
     for element in root.iter():
         if _local(element.tag) != "geolocationGridPoint":
             continue
         line = int(float(_text(element, "line")))
         by_line.setdefault(line, []).append(
-            (int(float(_text(element, "pixel"))), float(_text(element, "latitude")), float(_text(element, "longitude")))
+            (
+                int(float(_text(element, "pixel"))),
+                float(_text(element, "latitude")),
+                float(_text(element, "longitude")),
+                float(_text(element, "incidenceAngle")),
+                float(_text(element, "elevationAngle")),
+            )
         )
     lines = sorted(by_line)
     for line in lines:
@@ -1015,64 +1103,110 @@ def _swath_grid(path: Path):
     lat = np.empty((len(lines), ncols))
     lon = np.empty_like(lat)
     pixels = np.array([item[0] for item in by_line[lines[0]]], dtype=np.float64)
-    for j, line in enumerate(lines):
-        for i, (_pix, latitude, longitude) in enumerate(by_line[line]):
-            lat[j, i] = latitude
-            lon[j, i] = longitude
+    for row, line in enumerate(lines):
+        for col, (_pixel, latitude, longitude, _inc, _elev) in enumerate(by_line[line]):
+            lat[row, col] = latitude
+            lon[row, col] = longitude
     step_x = width / (ncols - 1)
     step_y = height / (len(lines) - 1)
-    even_lat = _even_range_grid(lat, pixels, step_x, width).astype(np.float64)
-    even_lon = _even_range_grid(lon, pixels, step_x, width).astype(np.float64)
-    return width, height, even_lat, even_lon, step_x, step_y
+    return {
+        "width": width,
+        "height": height,
+        "lat": _even_range_grid(lat, pixels, step_x, float(width)),
+        "lon": _even_range_grid(lon, pixels, step_x, float(width)),
+        "step_x": step_x,
+        "step_y": step_y,
+    }
 
 
-def _sample_grid(grid, x, y, step_x, step_y) -> float:
-    rows, cols = grid.shape
+def _swath_geo(swath: dict, x: float, y: float) -> tuple[float, float]:
+    return (
+        _sample_plain(swath["lat"], x, y, swath["step_x"], swath["step_y"]),
+        _sample_lon(swath["lon"], x, y, swath["step_x"], swath["step_y"]),
+    )
+
+
+def _refine_corners(corners: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    """Bilinear refinement of a 2-by-2 corner array into ``rows`` by ``cols``."""
+    coarse = np.asarray(corners, dtype=np.float64).reshape(2, 2)
+    fine = np.empty((rows, cols), dtype=np.float32)
+    for row in range(rows):
+        beta_r = row / (rows - 1)
+        j0 = int(beta_r)
+        j1 = min(j0 + 1, 1)
+        weight_j = beta_r - j0
+        for col in range(cols):
+            beta_c = col / (cols - 1)
+            i0 = int(beta_c)
+            i1 = min(i0 + 1, 1)
+            weight_i = beta_c - i0
+            fine[row, col] = (
+                coarse[j0, i0]
+                + weight_i * (coarse[j0, i1] - coarse[j0, i0])
+                + weight_j * (coarse[j1, i0] - coarse[j0, i0])
+                + weight_i * weight_j * (coarse[j1, i1] + coarse[j0, i0] - coarse[j0, i1] - coarse[j1, i0])
+            )
+    return fine
+
+
+def _sample_plain(grid: np.ndarray, x: float, y: float, step_x: float, step_y: float) -> float:
+    values = np.asarray(grid, dtype=np.float32)
+    return _bilinear(values.astype(np.float64), x, y, step_x, step_y)
+
+
+def _sample_lon(grid: np.ndarray, x: float, y: float, step_x: float, step_y: float) -> float:
+    """Longitude sample through float32 sine and cosine, then atan2."""
+    degrees = np.asarray(grid, dtype=np.float32).astype(np.float64)
+    radians = np.deg2rad(degrees)
+    sine = np.sin(radians).astype(np.float32).astype(np.float64)
+    cosine = np.cos(radians).astype(np.float32).astype(np.float64)
+    return float(np.rad2deg(np.arctan2(_bilinear(sine, x, y, step_x, step_y), _bilinear(cosine, x, y, step_x, step_y))))
+
+
+def _bilinear(values: np.ndarray, x: float, y: float, step_x: float, step_y: float) -> float:
+    rows, cols = values.shape
     fi = (float(x) - 0.5) / float(step_x)
     fj = (float(y) - 0.5) / float(step_y)
     i = min(max(int(np.floor(fi)), 0), cols - 2)
     j = min(max(int(np.floor(fj)), 0), rows - 2)
-    wx = fi - i
-    wy = fj - j
-    return float(
-        grid[j, i]
-        + wx * (grid[j, i + 1] - grid[j, i])
-        + wy * (grid[j + 1, i] - grid[j, i])
-        + wx * wy * (grid[j + 1, i + 1] - grid[j, i + 1] - grid[j + 1, i] + grid[j, i])
-    )
+    wi = fi - i
+    wj = fj - j
+    v00 = float(values[j, i])
+    v10 = float(values[j, i + 1])
+    v01 = float(values[j + 1, i])
+    v11 = float(values[j + 1, i + 1])
+    return v00 + wi * (v10 - v00) + wj * (v01 - v00) + wi * wj * (v11 + v00 - v10 - v01)
 
 
-def _corner_pair(path: Path) -> tuple[float, ...]:
-    tree = ET.parse(path)
-    by_line: dict[int, list[tuple[int, float, float]]] = {}
-    for element in tree.getroot().iter():
-        if _local(element.tag) != "geolocationGridPoint":
-            continue
-        line = int(float(_text(element, "line")))
-        by_line.setdefault(line, []).append(
-            (int(float(_text(element, "pixel"))), float(_text(element, "latitude")), float(_text(element, "longitude")))
-        )
-    lines = sorted(by_line)
-    for line in lines:
-        by_line[line].sort()
-    def ends(line: int) -> tuple[float, float, float, float]:
-        row = by_line[line]
-        return row[0][1], row[0][2], row[-1][1], row[-1][2]
-    a = ends(lines[0])
-    b = ends(lines[-1])
-    return (*a, *b)
+def _spherical_azimuths(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
+    """Forward and reverse azimuth on the unit sphere.
 
-
-def _azimuth_deg(lat0: float, lon0: float, lat1: float, lon1: float) -> float:
-    lat0_r = np.deg2rad(lat0)
+    Flattening is zero, so the longitude correction does not move and the
+    iteration stops after one pass. The reverse azimuth is still not exactly
+    180 degrees from the forward azimuth.
+    """
+    if abs(lon1 - lon2) < 1e-5 and abs(lat1 - lat2) < 1e-5:
+        return -1.0, -1.0
     lat1_r = np.deg2rad(lat1)
-    dlon = np.deg2rad(lon1 - lon0)
-    y = np.sin(dlon) * np.cos(lat1_r)
-    x = np.cos(lat0_r) * np.sin(lat1_r) - np.sin(lat0_r) * np.cos(lat1_r) * np.cos(dlon)
-    heading = float(np.rad2deg(np.arctan2(y, x)))
-    if heading < 0.0:
-        heading += 360.0
-    return heading
+    lat2_r = np.deg2rad(lat2)
+    reduced_1 = np.tan(lat1_r)
+    reduced_2 = np.tan(lat2_r)
+    cos_u1 = 1.0 / np.sqrt(reduced_1 * reduced_1 + 1.0)
+    sin_u1 = cos_u1 * reduced_1
+    cos_u2 = 1.0 / np.sqrt(reduced_2 * reduced_2 + 1.0)
+    baseline = cos_u1 * cos_u2 * reduced_2
+    delta = np.deg2rad(lon2 - lon1)
+    sine_x = np.sin(delta)
+    cosine_x = np.cos(delta)
+    east = cos_u2 * sine_x
+    north = baseline - sin_u1 * cos_u2 * cosine_x
+    forward = float(np.rad2deg(np.arctan2(east, north)))
+    reverse = float(np.rad2deg(np.arctan2(cos_u1 * sine_x, baseline * cosine_x - sin_u1 * cos_u2) + np.pi))
+    while forward < 0.0:
+        forward += 360.0
+    while reverse < 0.0:
+        reverse += 360.0
+    return forward, reverse
 
 
 def _doppler_xml(root: ET.Element) -> str:
@@ -1340,8 +1474,20 @@ def _local(tag: str) -> str:
 
 
 def _num(value: float) -> str:
-    text = format(float(value), ".16g")
+    """Decimal text that round-trips like Java's ``Double.toString``.
+
+    Sixteen significant digits match the header fields that already agree.
+    When that rounding does not land back on the same double, one more digit
+    is kept so a float32 sample such as July ``incidence_near`` is unchanged.
+    """
+    number = float(value)
+    text = format(number, ".16g")
     if "e" not in text.lower() and "." not in text:
-        return text + ".0"
-    return text
+        text += ".0"
+    if float(text) == number:
+        return text
+    longer = format(number, ".17g")
+    if "e" not in longer.lower() and "." not in longer:
+        longer += ".0"
+    return longer
 

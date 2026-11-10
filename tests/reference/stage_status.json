@@ -56,7 +56,7 @@
       "state_vector_max_position_difference_m": 0.0008825566446900676,
       "vector_count": 25,
       "matched": true,
-      "note": "SLC pixels are unchanged. Against the SNAP 12 June Apply-Orbit-File DIMAP, the stored table is 25 vectors at 1 s from first_line_time-10 s, positions within 0.0009 m and velocities within 1e-6 m/s, and orbit_state_vector_file is 'Sentinel Precise  <EOF name>'. Split tie-point grids match that SNAP product byte for byte (the previous stage-1 tie-point claim was shape and units, not samples). Abstracted_Metadata now carries the SNAP keys (corners, Doppler coefficients, processing graph TOPSAR-Split/Write/Apply-Orbit-File/Write). centre_* is still the four-corner mean (about 1.7e-4 deg and 0.055 deg of heading off SNAP's scene geocoding) and total_size is the raster plus SAFE metadata files, 308828 bytes off SNAP's in-memory raw-storage count. Not a desktop run of this wheel."
+      "note": "fe301de matched samples, tie points, the 1 s orbit table, the orbit-file string, and the processing graph on the desktop. The remaining abstracted fields are redefined here: centre is the 10-by-10 corner geocoding sampled at (scene width/2, scene height/2), headings are the spherical forward and reverse azimuth to the pixel 100 lines later, total_size is the split rasters plus the SAFE metadata attribute storage, and incidence text keeps a float32 value that .16g had rounded. This environment does not have the June SAFE, so those four numbers were not recompared to SNAP 14 here. ESD is unchanged."
     },
     {
       "order": 3,
