@@ -941,19 +941,7 @@ def _secondary_coordinates(
     ground = ground_points_at_height(reference_orbit, azimuth, slant, height, degree=degree)
     valid = np.ones(count, dtype=bool)
     if dem is not None:
-        method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
-        for _ in range(3):
-            lat, lon, _got = ecef_to_geodetic(ground)
-            sampled, inside = dem.ellipsoidal_heights(np.rad2deg(lat), np.rad2deg(lon), method=method)
-            valid = valid & inside
-            updated = ground_points_at_height(
-                reference_orbit,
-                azimuth,
-                slant,
-                np.where(valid, sampled, 0.0),
-                degree=degree,
-            )
-            ground = np.where(valid[:, None], updated, ground)
+        ground, valid = _ground_on_dem(ground, azimuth, slant, reference_orbit, dem, degree, valid)
     line = np.full(count, np.nan, dtype=np.float64)
     sample = np.full(count, np.nan, dtype=np.float64)
     if not np.any(valid):
@@ -967,6 +955,55 @@ def _secondary_coordinates(
     sample[chosen] = (slant_m - secondary.model.slant_range_m(0)) / secondary.model.range_pixel_spacing_m
     line[chosen] = _lines_from_times(secondary.model, when, burst)
     return line - secondary.row, sample - secondary.col
+
+
+_DEM_HEIGHT_TOLERANCE_M = 1e-3
+_DEM_HEIGHT_MAX_UPDATES = 30
+
+
+def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid):
+    """Put each ground point on the DEM and stop when the height settles.
+
+    A point is finished when the DEM sample moved by less than 1 mm and the
+    point's own ellipsoidal height already matches that sample. The same rule
+    is used for one pixel and for a batch, so the two solvers stay together.
+    """
+    method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
+    count = int(ground.shape[0])
+    previous = np.full(count, np.nan, dtype=np.float64)
+    azimuth = np.asarray(azimuth)
+    slant = np.asarray(slant, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool).reshape(count)
+    for _ in range(_DEM_HEIGHT_MAX_UPDATES):
+        lat, lon, got = ecef_to_geodetic(ground)
+        sampled, inside = dem.ellipsoidal_heights(
+            np.rad2deg(np.asarray(lat, dtype=np.float64)).reshape(count),
+            np.rad2deg(np.asarray(lon, dtype=np.float64)).reshape(count),
+            method=method,
+        )
+        sampled = np.asarray(sampled, dtype=np.float64).reshape(count)
+        inside = np.asarray(inside, dtype=bool).reshape(count)
+        got = np.asarray(got, dtype=np.float64).reshape(count)
+        valid = valid & inside & np.isfinite(sampled)
+        settled = (
+            valid
+            & np.isfinite(previous)
+            & (np.abs(sampled - previous) < _DEM_HEIGHT_TOLERANCE_M)
+            & (np.abs(got - sampled) < _DEM_HEIGHT_TOLERANCE_M)
+        )
+        moving = valid & ~settled
+        if not np.any(moving):
+            break
+        updated = ground_points_at_height(
+            orbit,
+            azimuth,
+            slant,
+            np.where(moving, sampled, 0.0),
+            degree=degree,
+        )
+        ground = np.where(moving[:, None], updated, ground)
+        previous = np.where(moving, sampled, previous)
+    return ground, valid
 
 
 def _line_times(model: SwathModel, absolute: np.ndarray) -> np.ndarray:
@@ -1029,19 +1066,20 @@ def _one_secondary_coordinate(
     height = float(height_m)
     ground = ground_point_at_height(reference_orbit, azimuth, slant, height, degree=degree)
     if dem is not None:
-        # A few height updates, the same fixed-point idea as geo2rdr: geolocate,
-        # read the DEM, geolocate again. One sample leaves a height error that
-        # the ESD unit phasor turns into an azimuth bias.
-        for _ in range(3):
-            lat, lon, _got = ecef_to_geodetic(ground)
-            sampled, valid = dem.ellipsoidal_height(
-                float(np.rad2deg(lat)),
-                float(np.rad2deg(lon)),
-                method=str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION")),
-            )
-            if not valid:
-                return float("nan"), float("nan")
-            ground = ground_point_at_height(reference_orbit, azimuth, slant, float(sampled), degree=degree)
+        # Same stopping rule as the batched solver: keep reading the DEM until
+        # the sample and the point's ellipsoidal height agree to 1 mm.
+        settled, alive = _ground_on_dem(
+            np.asarray(ground, dtype=np.float64).reshape(1, 3),
+            np.asarray([azimuth]),
+            np.asarray([slant], dtype=np.float64),
+            reference_orbit,
+            dem,
+            degree,
+            np.ones(1, dtype=bool),
+        )
+        if not bool(alive[0]):
+            return float("nan"), float("nan")
+        ground = settled[0]
     burst = int(absolute) // int(reference.model.lines_per_burst)
     line, sample = radar_coordinates(
         secondary.model,

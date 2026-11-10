@@ -175,6 +175,25 @@ def test_dem_posts_triangulate_onto_the_reference_and_stay_inside_the_overlap():
     assert not np.any(image[~mask])
 
 
+def test_dem_height_settles_within_a_millimetre_of_the_sample():
+    from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_points_at_height
+    from ai_insar.pipeline.tops_ops import _ground_on_dem, _line_times, _slant_ranges
+
+    orbit = _orbit()
+    reference_model, _secondary_model = _models(orbit)
+    azimuth = _line_times(reference_model, np.array([4, 12]))
+    slant = _slant_ranges(reference_model, np.array([2.0, 8.0]))
+    dem = _dem()
+    dem.orthometric_m = 200.0 + 40.0 * np.linspace(0.0, 1.0, dem.orthometric_m.size).reshape(dem.orthometric_m.shape)
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(2))
+    settled, valid = _ground_on_dem(ground, azimuth, slant, orbit, dem, 3, np.ones(2, dtype=bool))
+    assert valid.all()
+    lat, lon, got = ecef_to_geodetic(settled)
+    sampled, inside = dem.ellipsoidal_heights(np.rad2deg(lat), np.rad2deg(lon))
+    assert inside.all()
+    assert np.max(np.abs(got - sampled)) < 1e-3
+
+
 def test_common_overlap_is_the_valid_sample_intersection_and_resample_skips_the_rest():
     from ai_insar.pipeline.tops_ops import common_overlap_mask, resample_complex
 
