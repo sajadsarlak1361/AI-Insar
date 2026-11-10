@@ -116,6 +116,65 @@ def test_batched_lattice_matches_the_scalar_solver_with_and_without_dem():
         assert worst < 1e-9
 
 
+def test_dem_posts_triangulate_onto_the_reference_and_stay_inside_the_overlap():
+    from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_points_at_height
+    from ai_insar.pipeline.tops_ops import _coordinates_from_dem_posts, _line_times, _slant_ranges, backgeocode
+
+    orbit = _orbit()
+    reference_model, secondary_model = _models(orbit)
+    later = Orbit(
+        orbit.time + np.timedelta64(12, "D"),
+        orbit.position_m + np.array([0.0, 0.0, 30.0]),
+        orbit.velocity_m_s,
+    )
+    reference = RadarGrid(0, 0, np.zeros((24, 16), dtype=np.complex64), reference_model)
+    secondary = RadarGrid(0, 0, np.ones((24, 16), dtype=np.complex64), secondary_model)
+    azimuth = _line_times(reference_model, np.array([0, 23]))
+    slant = _slant_ranges(reference_model, np.array([0.0, 15.0]))
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(2))
+    lat, lon, _height = ecef_to_geodetic(ground)
+    lat_deg = np.rad2deg(lat)
+    lon_deg = np.rad2deg(lon)
+    dem = ElevationModel(
+        lat_deg=np.linspace(float(lat_deg.mean()) + 0.02, float(lat_deg.mean()) - 0.02, 21),
+        lon_deg=np.linspace(float(lon_deg.mean()) - 0.01, float(lon_deg.mean()) + 0.01, 9),
+        orthometric_m=np.full((21, 9), 40.0),
+        nodata=-32768.0,
+        orthometric_datum="EGM2008",
+        geoid=GeoidGrid(
+            lat_deg=np.array([float(lat_deg.max()) + 1.0, float(lat_deg.min()) - 1.0]),
+            lon_deg=np.array([float(lon_deg.min()) - 1.0, float(lon_deg.max()) + 1.0]),
+            undulation_m=np.zeros((2, 2)),
+            source="test",
+            model="EGM2008",
+        ),
+        provenance="test",
+    )
+    line, sample, reproduction = _coordinates_from_dem_posts(
+        reference,
+        secondary,
+        reference_orbit=orbit,
+        secondary_orbit=later,
+        degree=3,
+        dem=dem,
+    )
+    assert np.isfinite(line).any()
+    assert reproduction < 1e-6
+    image = backgeocode(
+        reference,
+        secondary,
+        reference_orbit=orbit,
+        secondary_orbit=later,
+        dem=dem,
+        resampling="BILINEAR_INTERPOLATION",
+    )
+    assert image.shape == reference.shape
+    assert backgeocode.last_geometry == "dem-triangulation"
+    mask = backgeocode.last_overlap_mask
+    assert mask.shape == reference.shape
+    assert not np.any(image[~mask])
+
+
 def test_common_overlap_is_the_valid_sample_intersection_and_resample_skips_the_rest():
     from ai_insar.pipeline.tops_ops import common_overlap_mask, resample_complex
 

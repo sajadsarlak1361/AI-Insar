@@ -102,13 +102,33 @@ def test_phase_ramp_on_the_late_look_removes_the_tone():
 
 def test_range_correlation_finds_a_one_pixel_shift():
     rng = np.random.default_rng(4)
-    master = rng.normal(size=(48, 256)) + 1j * rng.normal(size=(48, 256))
+    master = rng.normal(size=(64, 128)) + 1j * rng.normal(size=(64, 128))
     slave = np.zeros_like(master)
     slave[:, 1:] = master[:, :-1]
     shift, correlation = range_cross_correlation_shift(master, slave, oversample=32, search_px=4, threshold=0.1)
     # Content moved one sample to the right, so the Fourier correction is -1.
     assert 0.5 < correlation <= 1.0
-    assert abs(shift - (-1.0)) < 0.05
+    assert abs(shift - (-1.0)) < 1.0 / 32
+
+
+def test_range_correlation_averages_one_window_per_burst():
+    rng = np.random.default_rng(5)
+    master = rng.normal(size=(128, 64)) + 1j * rng.normal(size=(128, 64))
+    slave = master.copy()
+    slave[64:, 1:] = master[64:, :-1]
+    slave[64:, 0] = 0
+    shift, correlation = range_cross_correlation_shift(
+        master,
+        slave,
+        oversample=16,
+        search_px=4,
+        threshold=0.1,
+        window=32,
+        lines_per_burst=64,
+    )
+    # Burst 0 is aligned and burst 1 is one sample late, so the mean is -0.5.
+    assert correlation > 0.5
+    assert abs(shift - (-0.5)) < 1.0 / 16
 
 
 def test_network_fixes_the_reference_and_rejects_a_long_baseline():

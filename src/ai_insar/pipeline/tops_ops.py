@@ -472,6 +472,28 @@ def backgeocode(
         np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
     ).astype(np.complex64)
     rows, cols = reference.shape
+    if dem is not None:
+        posted_line, posted_sample, reproduction = _coordinates_from_dem_posts(
+            reference,
+            secondary,
+            reference_orbit=reference_orbit,
+            secondary_orbit=secondary_orbit,
+            degree=degree,
+            dem=dem,
+        )
+        if np.isfinite(posted_line).any():
+            line_s, sample_s = posted_line, posted_sample
+            backgeocode.last_stride = 1
+            backgeocode.last_residual_px = float(reproduction)
+            backgeocode.last_geometry = "dem-triangulation"
+            overlap = common_overlap_mask(reference, secondary, line_s, sample_s)
+            backgeocode.last_overlap_mask = overlap
+            extent = overlap_extent(overlap)
+            backgeocode.last_overlap_extent = extent
+            return _resample_overlap(
+                secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+            )
+    backgeocode.last_geometry = "radar-lattice"
     limit = rows * cols if max_solves is None else int(max_solves)
     stride = _solve_stride(rows, cols, limit)
     residual = 0.0
@@ -525,7 +547,23 @@ def backgeocode(
     backgeocode.last_overlap_mask = overlap
     extent = overlap_extent(overlap)
     backgeocode.last_overlap_extent = extent
-    sampled = np.zeros(reference.shape, dtype=np.complex64)
+    return _resample_overlap(
+        secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+    )
+
+
+def _resample_overlap(
+    secondary_deramped: np.ndarray,
+    secondary_phase: np.ndarray,
+    line_s: np.ndarray,
+    sample_s: np.ndarray,
+    overlap: np.ndarray,
+    extent: tuple[int, int, int, int] | None,
+    resampling: str,
+    reramp: bool,
+) -> np.ndarray:
+    """Resample only the common-overlap box. Everywhere else stays zero."""
+    sampled = np.zeros(line_s.shape, dtype=np.complex64)
     if extent is None:
         return sampled
     r0, r1, c0, c1 = extent
@@ -549,6 +587,215 @@ def backgeocode(
         sampled_box[~box] = 0
     sampled[r0:r1, c0:c1] = sampled_box
     return sampled
+
+
+def _coordinates_from_dem_posts(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    *,
+    reference_orbit: Orbit,
+    secondary_orbit: Orbit,
+    degree: int,
+    dem: object,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Secondary line and sample by triangulating DEM posts.
+
+    Each post is turned into an ECEF point at its own ellipsoidal height and
+    located in both images by zero Doppler and slant range. Those scattered
+    radar coordinates are linearly interpolated onto the reference grid, with
+    range and azimuth scaled by their pixel spacing so the triangles follow
+    the ground. Pixels outside the posts stay NaN and are left out of the
+    common overlap.
+    """
+    rows, cols = reference.shape
+    empty_line = np.full((rows, cols), np.nan, dtype=np.float64)
+    empty_sample = np.full((rows, cols), np.nan, dtype=np.float64)
+    lat_deg, lon_deg, height = _dem_posts_covering(reference, reference_orbit, degree, dem)
+    if height.size < 3:
+        return empty_line, empty_sample, 0.0
+    xyz = geodetic_to_ecef(np.deg2rad(lat_deg), np.deg2rad(lon_deg), height)
+    lines = int(reference.model.lines_per_burst)
+    first_burst = int(reference.row) // lines
+    last_burst = (int(reference.row) + rows - 1) // lines
+    ref_line, ref_sample, sec_line, sec_sample = _paired_radar_index(
+        reference.model,
+        reference_orbit,
+        secondary.model,
+        secondary_orbit,
+        xyz,
+        degree,
+        first_burst=first_burst,
+        last_burst=last_burst,
+    )
+    finite = (
+        np.isfinite(ref_line)
+        & np.isfinite(ref_sample)
+        & np.isfinite(sec_line)
+        & np.isfinite(sec_sample)
+        & (np.abs(ref_line) < 1.0e7)
+        & (np.abs(ref_sample) < 1.0e7)
+    )
+    if int(np.count_nonzero(finite)) < 3:
+        return empty_line, empty_sample, 0.0
+    ref_line = ref_line[finite]
+    ref_sample = ref_sample[finite]
+    sec_line = sec_line[finite]
+    sec_sample = sec_sample[finite]
+    key = np.round(np.column_stack((ref_line, ref_sample)), 5)
+    _unique, index = np.unique(key, axis=0, return_index=True)
+    ref_line = ref_line[index]
+    ref_sample = ref_sample[index]
+    sec_line = sec_line[index]
+    sec_sample = sec_sample[index]
+    if ref_line.size < 3:
+        return empty_line, empty_sample, 0.0
+    azimuth_scale = float(reference.model.azimuth_ground_spacing_m(degree))
+    range_scale = float(reference.model.range_pixel_spacing_m)
+    points = np.column_stack((ref_line * azimuth_scale, ref_sample * range_scale))
+    from scipy.interpolate import LinearNDInterpolator
+    from scipy.spatial import QhullError
+
+    try:
+        line_of = LinearNDInterpolator(points, sec_line - secondary.row, fill_value=np.nan)
+        sample_of = LinearNDInterpolator(points, sec_sample - secondary.col, fill_value=np.nan)
+    except QhullError:
+        return empty_line, empty_sample, 0.0
+    line_s = np.full((rows, cols), np.nan, dtype=np.float64)
+    sample_s = np.full((rows, cols), np.nan, dtype=np.float64)
+    for row0 in range(0, rows, 128):
+        row1 = min(rows, row0 + 128)
+        yy, xx = np.mgrid[row0:row1, 0:cols]
+        query = np.column_stack(
+            (
+                (reference.row + yy.ravel()) * azimuth_scale,
+                (reference.col + xx.ravel()) * range_scale,
+            )
+        )
+        line_s[row0:row1] = np.asarray(line_of(query), dtype=np.float64).reshape(row1 - row0, cols)
+        sample_s[row0:row1] = np.asarray(sample_of(query), dtype=np.float64).reshape(row1 - row0, cols)
+    reproduced_line = np.asarray(line_of(points), dtype=np.float64)
+    reproduced_sample = np.asarray(sample_of(points), dtype=np.float64)
+    truth_line = sec_line - secondary.row
+    truth_sample = sec_sample - secondary.col
+    ok = np.isfinite(reproduced_line) & np.isfinite(reproduced_sample)
+    if not np.any(ok):
+        return line_s, sample_s, 0.0
+    reproduction = float(
+        max(
+            np.max(np.abs(reproduced_line[ok] - truth_line[ok])),
+            np.max(np.abs(reproduced_sample[ok] - truth_sample[ok])),
+        )
+    )
+    return line_s, sample_s, reproduction
+
+
+def _dem_posts_covering(reference: RadarGrid, orbit: Orbit, degree: int, dem: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Latitude, longitude, and ellipsoidal height of the DEM posts around the window."""
+    rows, cols = reference.shape
+    corner_row = np.array([0, 0, rows - 1, rows - 1, rows // 2], dtype=np.int64)
+    corner_col = np.array([0, cols - 1, 0, cols - 1, cols // 2], dtype=np.int64)
+    azimuth = _line_times(reference.model, reference.row + corner_row)
+    slant = _slant_ranges(reference.model, reference.col + corner_col.astype(np.float64))
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(corner_row.size), degree=degree)
+    lat, lon, _height = ecef_to_geodetic(ground)
+    lat_deg = np.rad2deg(lat)
+    lon_deg = np.rad2deg(lon)
+    dem_lat = np.asarray(dem.lat_deg, dtype=np.float64)
+    dem_lon = np.asarray(dem.lon_deg, dtype=np.float64)
+    lat_step = float(np.max(np.abs(np.diff(dem_lat)))) if dem_lat.size > 1 else 0.01
+    lon_step = float(np.max(np.abs(np.diff(dem_lon)))) if dem_lon.size > 1 else 0.01
+    lat_min = float(np.min(lat_deg)) - 20.0 * lat_step
+    lat_max = float(np.max(lat_deg)) + 20.0 * lat_step
+    lon_min = float(np.min(lon_deg)) - 20.0 * lon_step
+    lon_max = float(np.max(lon_deg)) + 20.0 * lon_step
+    lat_index = np.flatnonzero((dem_lat >= lat_min) & (dem_lat <= lat_max))
+    lon_index = np.flatnonzero((dem_lon >= lon_min) & (dem_lon <= lon_max))
+    if lat_index.size == 0 or lon_index.size == 0:
+        return np.empty(0), np.empty(0), np.empty(0)
+    post_lat = dem_lat[lat_index]
+    post_lon = dem_lon[lon_index]
+    mesh_lat, mesh_lon = np.meshgrid(post_lat, post_lon, indexing="ij")
+    method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
+    height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method)
+    keep = np.asarray(valid, dtype=bool) & np.isfinite(height)
+    if not np.any(keep):
+        return np.empty(0), np.empty(0), np.empty(0)
+    return mesh_lat[keep], mesh_lon[keep], height[keep]
+
+
+def _paired_radar_index(
+    reference: SwathModel,
+    reference_orbit: Orbit,
+    secondary: SwathModel,
+    secondary_orbit: Orbit,
+    xyz: np.ndarray,
+    degree: int,
+    first_burst: int = 0,
+    last_burst: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Absolute line and sample in both images.
+
+    A post that falls in a burst overlap is kept once for each burst, because
+    each burst has its own azimuth time. The two images use the same burst index.
+    """
+    empty = np.empty(0, dtype=np.float64)
+    count = int(xyz.shape[0])
+    if count == 0 or not reference.bursts:
+        return empty, empty, empty, empty
+    ref_lines: list[np.ndarray] = []
+    ref_samples: list[np.ndarray] = []
+    sec_lines: list[np.ndarray] = []
+    sec_samples: list[np.ndarray] = []
+    bursts = min(len(reference.bursts), len(secondary.bursts))
+    start_burst = max(0, int(first_burst))
+    stop_burst = bursts - 1 if last_burst is None else min(bursts - 1, int(last_burst))
+    for burst in range(start_burst, stop_burst + 1):
+        ref_guess = _burst_guess(reference, burst, count)
+        sec_guess = _burst_guess(secondary, burst, count)
+        try:
+            ref_when = reference_orbit.zero_doppler_times(xyz, ref_guess, degree)
+            sec_when = secondary_orbit.zero_doppler_times(xyz, sec_guess, degree)
+        except ValueError:
+            continue
+        ref_position, _ref_velocity = reference_orbit.interpolate(ref_when, degree)
+        sec_position, _sec_velocity = secondary_orbit.interpolate(sec_when, degree)
+        ref_slant = np.linalg.norm(xyz - ref_position, axis=1)
+        sec_slant = np.linalg.norm(xyz - sec_position, axis=1)
+        burst_index = np.full(count, burst, dtype=np.int64)
+        ref_line = _lines_from_times(reference, ref_when, burst_index)
+        sec_line = _lines_from_times(secondary, sec_when, burst_index)
+        ref_sample = (ref_slant - reference.slant_range_m(0)) / reference.range_pixel_spacing_m
+        sec_sample = (sec_slant - secondary.slant_range_m(0)) / secondary.range_pixel_spacing_m
+        start_line = burst * reference.lines_per_burst
+        stop_line = start_line + reference.lines_per_burst
+        sec_start = burst * secondary.lines_per_burst
+        sec_stop = sec_start + secondary.lines_per_burst
+        inside = (
+            (ref_line >= start_line - 2)
+            & (ref_line <= stop_line + 2)
+            & (sec_line >= sec_start - 2)
+            & (sec_line <= sec_stop + 2)
+        )
+        if not np.any(inside):
+            continue
+        ref_lines.append(ref_line[inside])
+        ref_samples.append(ref_sample[inside])
+        sec_lines.append(sec_line[inside])
+        sec_samples.append(sec_sample[inside])
+    if not ref_lines:
+        return empty, empty, empty, empty
+    return (
+        np.concatenate(ref_lines),
+        np.concatenate(ref_samples),
+        np.concatenate(sec_lines),
+        np.concatenate(sec_samples),
+    )
+
+
+def _burst_guess(model: SwathModel, burst: int, count: int) -> np.ndarray:
+    start = model.bursts[burst].azimuth_time
+    mid_ticks = int(round((model.lines_per_burst // 2) * model.azimuth_time_interval_s * 1e9))
+    return np.full(count, start + np.timedelta64(mid_ticks, "ns"), dtype="datetime64[ns]")
 
 
 def common_overlap_mask(
@@ -575,8 +822,10 @@ def common_overlap_mask(
         & (sample >= 0.0)
         & (sample <= secondary.data.shape[1] - 1)
     )
-    absolute_line = secondary.row + np.rint(line).astype(np.int64)
-    absolute_sample = secondary.col + np.rint(sample).astype(np.int64)
+    absolute_line = np.zeros(line.shape, dtype=np.int64)
+    absolute_sample = np.zeros(sample.shape, dtype=np.int64)
+    absolute_line[finite] = secondary.row + np.rint(line[finite]).astype(np.int64)
+    absolute_sample[finite] = secondary.col + np.rint(sample[finite]).astype(np.int64)
     secondary_ok = finite & inside_raster & _inside_valid_footprint(secondary.model, absolute_line, absolute_sample)
     return reference_ok & secondary_ok
 
@@ -1569,10 +1818,14 @@ def shift_secondary_in_overlap(
     range_px: float,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Deramp, Fourier-shift the baseband and the phase, then reramp.
+    """Range-shift, deramp, azimuth-shift the baseband and the phase, then reramp.
 
-    Only the common-overlap bounding box is transformed. Pixels outside the
-    mask, and pixels that were zero before the shift, stay zero.
+    The range ramp is applied to the still-chirped lines. Deramp uses that
+    burst's phase, and the azimuth ramp is applied to the baseband and to the
+    phase before the phase is put back. Each burst is transformed on its own
+    so the ramp does not cross a burst boundary. Only the common-overlap box
+    is touched. Pixels outside the mask, and pixels that were zero before the
+    shift, stay zero.
     """
     data = np.asarray(grid.data)
     valid = (np.real(data) != 0) | (np.imag(data) != 0)
@@ -1580,35 +1833,48 @@ def shift_secondary_in_overlap(
         valid = valid & np.asarray(mask, dtype=bool)
     out = np.zeros(data.shape, dtype=np.complex64)
     extent = overlap_extent(valid)
-    if extent is None or (azimuth_px == 0.0 and range_px == 0.0):
-        if extent is None:
-            return out
-        r0, r1, c0, c1 = extent
-        out[r0:r1, c0:c1] = np.where(valid[r0:r1, c0:c1], data[r0:r1, c0:c1], 0)
+    if extent is None:
         return out
     r0, r1, c0, c1 = extent
-    phase = tops_phase(grid)[r0:r1, c0:c1]
-    tile = np.asarray(data[r0:r1, c0:c1], dtype=np.complex64)
-    baseband = tile * np.exp(1j * phase)
-    baseband = _fourier_shift(baseband, azimuth_px, range_px, grid.model.azimuth_time_interval_s)
-    phase = _fourier_shift(phase.astype(np.complex64), azimuth_px, range_px, grid.model.azimuth_time_interval_s).real
-    corrected = (baseband * np.exp(-1j * phase)).astype(np.complex64)
-    tile_valid = valid[r0:r1, c0:c1]
-    corrected[~tile_valid] = 0
-    out[r0:r1, c0:c1] = corrected
+    if azimuth_px == 0.0 and range_px == 0.0:
+        out[r0:r1, c0:c1] = np.where(valid[r0:r1, c0:c1], data[r0:r1, c0:c1], 0)
+        return out
+    phase_full = tops_phase(grid)
+    lines = int(grid.model.lines_per_burst)
+    interval = float(grid.model.azimuth_time_interval_s)
+    burst0 = (grid.row + r0) // lines
+    burst1 = (grid.row + r1 - 1) // lines
+    for burst in range(int(burst0), int(burst1) + 1):
+        row_a = max(r0, burst * lines - grid.row)
+        row_b = min(r1, (burst + 1) * lines - grid.row)
+        if row_b <= row_a:
+            continue
+        tile = np.asarray(data[row_a:row_b, c0:c1], dtype=np.complex64)
+        tile = _range_shift(tile, float(range_px))
+        phase = phase_full[row_a:row_b, c0:c1]
+        baseband = tile * np.exp(1j * phase)
+        baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
+        shifted_phase = _azimuth_shift(phase.astype(np.complex64), float(azimuth_px), interval).real
+        corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
+        tile_valid = valid[row_a:row_b, c0:c1]
+        corrected[~tile_valid] = 0
+        out[row_a:row_b, c0:c1] = corrected
     return out
 
 
-def _fourier_shift(image: np.ndarray, azimuth_px: float, range_px: float, azimuth_time_interval_s: float) -> np.ndarray:
-    data = np.asarray(image, dtype=np.complex64)
-    if azimuth_px:
-        data = apply_azimuth_pixel_shift(data, float(azimuth_px), float(azimuth_time_interval_s))
-    if range_px:
-        spectrum = np.fft.fft(data, axis=1)
-        frequency = np.fft.fftfreq(data.shape[1])
-        spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[None, :] * float(range_px))
-        data = np.fft.ifft(spectrum, axis=1).astype(np.complex64)
-    return data
+def _range_shift(image: np.ndarray, pixels: float) -> np.ndarray:
+    if not pixels:
+        return np.asarray(image, dtype=np.complex64)
+    spectrum = np.fft.fft(np.asarray(image, dtype=np.complex64), axis=1)
+    frequency = np.fft.fftfreq(image.shape[1])
+    spectrum *= np.exp(-1j * 2.0 * np.pi * frequency[None, :] * float(pixels))
+    return np.fft.ifft(spectrum, axis=1).astype(np.complex64)
+
+
+def _azimuth_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
+    if not pixels:
+        return np.asarray(image, dtype=np.complex64)
+    return apply_azimuth_pixel_shift(image, float(pixels), float(azimuth_time_interval_s))
 
 
 def deburst_window(data: np.ndarray, model: SwathModel, row: int, col: int) -> RadarGrid:

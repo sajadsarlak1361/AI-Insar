@@ -100,107 +100,190 @@ def range_cross_correlation_shift(
     search_px: int = 16,
     threshold: float = 0.1,
     window: int = 512,
+    lines_per_burst: int | None = None,
+    samples_per_burst: int | None = None,
+    array_row0: int = 0,
+    array_col0: int = 0,
+    mask: np.ndarray | None = None,
+    max_shift_px: float = 1.0,
 ) -> tuple[float, float]:
-    """Range shift in pixels from normalised 512×512 amplitude correlations.
+    """Constant range shift, one power-of-two window at the centre of each burst.
 
-    Each window is the SNAP fine-window size, clipped to the array. The
-    coefficient is the normalised cross-correlation, in ``[-1, 1]``, not the
-    raw FFT sum. The returned shift is the Fourier delay to apply to the
-    secondary: content that sits one sample to the right needs ``-1``.
-    Windows below ``threshold`` are ignored. If none pass, the shift is 0
-    and the coefficient is the best one seen.
+    The window is 512 by 512 unless the array is smaller. Magnitude images are
+    de-meaned, cross-correlated without wrap-around, and the peak is read on a
+    grid spaced by ``1/oversample`` inside the accuracy box. Bursts below the
+    coherence threshold or farther than one pixel are left out. The returned
+    shift is the mean of the remaining bursts, the same aggregate a two-image
+    pair uses. A positive value is the Fourier delay applied to the secondary.
     """
     reference = np.asarray(master)
     repeat = np.asarray(slave)
     if reference.shape != repeat.shape or reference.ndim != 2:
         raise ValueError("range correlation looks must share one 2-D shape")
-    height, width = reference.shape
-    win_y = min(int(window), height)
-    win_x = min(int(window), width)
-    if win_y < 8 or win_x < 8:
-        raise ValueError("range correlation window is smaller than 8 pixels")
+    windows = _burst_windows(
+        reference.shape,
+        window=int(window),
+        lines_per_burst=lines_per_burst,
+        samples_per_burst=samples_per_burst,
+        array_row0=int(array_row0),
+        array_col0=int(array_col0),
+    )
     shifts: list[float] = []
-    weights: list[float] = []
+    coefficients: list[float] = []
     best_coef = 0.0
-    row_starts = range(0, max(height - win_y, 0) + 1, win_y)
-    col_starts = range(0, max(width - win_x, 0) + 1, win_x)
-    for row0 in row_starts:
-        for col0 in col_starts:
-            shift, coef = _normalised_range_peak(
-                reference[row0 : row0 + win_y, col0 : col0 + win_x],
-                repeat[row0 : row0 + win_y, col0 : col0 + win_x],
-                search_px=int(search_px),
-                oversample=int(oversample),
-            )
-            best_coef = max(best_coef, coef)
-            if coef >= float(threshold):
-                shifts.append(shift)
-                weights.append(coef)
+    for row0, row1, col0, col1 in windows:
+        if mask is not None and not np.all(mask[row0:row1, col0:col1]):
+            continue
+        chip_m = reference[row0:row1, col0:col1]
+        chip_s = repeat[row0:row1, col0:col1]
+        azimuth, rng, coef = fine_magnitude_offset(
+            chip_m, chip_s, oversample=int(oversample), accuracy=int(search_px)
+        )
+        best_coef = max(best_coef, coef)
+        if coef < float(threshold) or abs(rng) > float(max_shift_px):
+            continue
+        shifts.append(rng)
+        coefficients.append(coef)
+        del azimuth
     if not shifts:
         return 0.0, best_coef
-    # The oversampled peak sits on a 1/oversample grid. The median of those
-    # peaks stays on that grid; a weighted mean would not.
-    return float(np.median(np.asarray(shifts, dtype=np.float64))), float(np.median(np.asarray(weights, dtype=np.float64)))
+    return float(np.mean(shifts)), float(np.mean(coefficients))
 
 
-def _normalised_range_peak(master: np.ndarray, slave: np.ndarray, *, search_px: int, oversample: int) -> tuple[float, float]:
-    """Fourier delay and normalised coefficient of one amplitude window.
+def _burst_windows(
+    shape: tuple[int, int],
+    *,
+    window: int,
+    lines_per_burst: int | None,
+    samples_per_burst: int | None,
+    array_row0: int,
+    array_col0: int,
+) -> list[tuple[int, int, int, int]]:
+    """Power-of-two rectangles centred on each burst. A window that does not fit is skipped."""
+    height, width = shape
+    side_y = _power_of_two_at_most(min(window, height))
+    side_x = _power_of_two_at_most(min(window, width))
+    if side_y < 8 or side_x < 8:
+        return []
+    burst_width = int(samples_per_burst) if samples_per_burst else width + array_col0
+    centre_col = burst_width // 2 - array_col0
+    if lines_per_burst is None or lines_per_burst <= 0:
+        box = _centred_window(height // 2, width // 2, side_y, side_x, height, width)
+        return [box] if box is not None else []
+    windows = []
+    burst0 = max(array_row0 // int(lines_per_burst), 0)
+    last = (array_row0 + height - 1) // int(lines_per_burst)
+    for burst in range(burst0, last + 1):
+        centre_row = burst * int(lines_per_burst) + int(lines_per_burst) // 2 - array_row0
+        box = _centred_window(centre_row, centre_col, side_y, side_x, height, width)
+        if box is not None:
+            windows.append(box)
+    return windows
 
-    ``ifft2(fft(master) · conj(fft(slave)))`` is already the circular
-    correlation sum under NumPy's backward normalisation. Dividing by the
-    two energies makes that peak a correlation coefficient.
+
+def _power_of_two_at_most(value: int) -> int:
+    size = 1
+    while size * 2 <= int(value):
+        size *= 2
+    return size
+
+
+def _centred_window(centre_row: int, centre_col: int, height: int, width: int, limit_row: int, limit_col: int):
+    row0 = int(centre_row) - height // 2
+    col0 = int(centre_col) - width // 2
+    row1 = row0 + height
+    col1 = col0 + width
+    if row0 < 0 or col0 < 0 or row1 > limit_row or col1 > limit_col:
+        return None
+    return row0, row1, col0, col1
+
+
+def fine_magnitude_offset(
+    master: np.ndarray,
+    slave: np.ndarray,
+    *,
+    oversample: int = 128,
+    accuracy: int = 16,
+) -> tuple[float, float, float]:
+    """Azimuth and range offset of one window, plus its normalised peak.
+
+    Both looks are converted to zero-mean magnitude. The master sits in the
+    corner of a doubled array and the secondary sits in the centre, so the
+    correlation does not wrap. The integer peak of the normalised surface is
+    then refined by Fourier upsampling of the ``2·accuracy`` box around it.
+    The returned offsets are negated, which is the delay that recentres the
+    secondary on the reference. ``-0.0625`` is eight bins of a 128× grid.
     """
-    reference = np.asarray(master)
-    repeat = np.asarray(slave)
-    reference = reference - np.mean(reference)
-    repeat = repeat - np.mean(repeat)
-    energy = float(np.sqrt(np.sum(np.abs(reference) ** 2) * np.sum(np.abs(repeat) ** 2)))
-    if energy == 0.0:
-        return 0.0, 0.0
-    spectrum = np.fft.fft2(reference) * np.conj(np.fft.fft2(repeat))
-    # Backward-normalised ifft2 is already the circular correlation sum.
-    coarse = np.abs(np.fft.ifft2(spectrum))
-    coef_map = coarse / energy
-    rows, cols = coef_map.shape
-    limit = max(1, int(search_px))
-    row_band = np.concatenate((np.arange(0, min(limit, rows)), np.arange(max(rows - limit, 0), rows)))
-    col_band = np.concatenate((np.arange(0, min(limit, cols)), np.arange(max(cols - limit, 0), cols)))
-    view = coef_map[np.ix_(np.unique(row_band), np.unique(col_band))]
-    row_ids = np.unique(row_band)
-    col_ids = np.unique(col_band)
-    flat = int(np.argmax(view))
-    row_i, col_i = np.unravel_index(flat, view.shape)
-    peak_row = int(row_ids[row_i])
-    peak_col = int(col_ids[col_i])
-    signed_row = peak_row - rows if peak_row > rows // 2 else peak_row
-    signed_col = peak_col - cols if peak_col > cols // 2 else peak_col
-    shift, _surface = _upsample_peak(coef_map, signed_row, signed_col, int(oversample))
-    return shift, float(coef_map[peak_row, peak_col])
-
-
-def _upsample_peak(coef_map: np.ndarray, row: int, col: int, oversample: int) -> tuple[float, float]:
-    """Peak of a small correlation chip, quantized to ``1/oversample`` pixels."""
-    radius = 4
-    size = radius * 2 + 1
-    chip = np.empty((size, size), dtype=np.float64)
-    rows, cols = coef_map.shape
-    for i, dy in enumerate(range(-radius, radius + 1)):
-        for j, dx in enumerate(range(-radius, radius + 1)):
-            chip[i, j] = coef_map[(row + dy) % rows, (col + dx) % cols]
-    zoom = size * max(int(oversample), 1)
-    spectrum = np.fft.fft2(np.fft.ifftshift(chip))
-    padded = np.zeros((zoom, zoom), dtype=np.complex128)
-    half_y = size // 2
-    half_x = size // 2
-    padded[: half_y + 1, : half_x + 1] = spectrum[: half_y + 1, : half_x + 1]
-    padded[: half_y + 1, -half_x:] = spectrum[: half_y + 1, -half_x:]
-    padded[-half_y:, : half_x + 1] = spectrum[-half_y:, : half_x + 1]
-    padded[-half_y:, -half_x:] = spectrum[-half_y:, -half_x:]
-    surface = np.abs(np.fft.fftshift(np.fft.ifft2(padded)))
+    reference = np.abs(np.asarray(master)).astype(np.float64, copy=False)
+    repeat = np.abs(np.asarray(slave)).astype(np.float64, copy=False)
+    if reference.shape != repeat.shape or reference.ndim != 2:
+        raise ValueError("a correlation window must be one shared 2-D rectangle")
+    lines, pixels = reference.shape
+    if lines < 8 or pixels < 8 or (lines & (lines - 1)) or (pixels & (pixels - 1)):
+        raise ValueError("a correlation window must be a power of two on both axes")
+    reference = reference - float(np.mean(reference))
+    repeat = repeat - float(np.mean(repeat))
+    surface = _normalised_covariance(reference, repeat)
     peak = np.unravel_index(int(np.argmax(surface)), surface.shape)
-    delta_row = (peak[0] - (zoom // 2)) / oversample
-    delta_col = (peak[1] - (zoom // 2)) / oversample
-    return float(col + delta_col), float(surface[peak])
+    peak_line = int(peak[0])
+    peak_pixel = int(peak[1])
+    half_line = lines // 2
+    half_pixel = pixels // 2
+    acc_line = min(int(accuracy), half_line // 2)
+    acc_pixel = min(int(accuracy), half_pixel // 2)
+    line0 = int(np.clip(peak_line, acc_line, lines - acc_line))
+    pixel0 = int(np.clip(peak_pixel, acc_pixel, pixels - acc_pixel))
+    chip = surface[line0 - acc_line : line0 + acc_line, pixel0 - acc_pixel : pixel0 + acc_pixel]
+    zoom = _oversample_real(chip, int(oversample))
+    fine = np.unravel_index(int(np.argmax(zoom)), zoom.shape)
+    offset_line = -half_line + line0 - acc_line + fine[0] / float(oversample)
+    offset_pixel = -half_pixel + pixel0 - acc_pixel + fine[1] / float(oversample)
+    coefficient = float(surface[peak_line, peak_pixel])
+    return -float(offset_line), -float(offset_pixel), coefficient
+
+
+def _normalised_covariance(master: np.ndarray, slave: np.ndarray) -> np.ndarray:
+    """Normalised covariance on the unwrapped lag grid, size ``(lines+1, pixels+1)``."""
+    lines, pixels = master.shape
+    padded_lines = lines * 2
+    padded_pixels = pixels * 2
+    master_pad = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
+    slave_pad = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
+    master_pad[:lines, :pixels] = master
+    slave_pad[lines // 2 : lines // 2 + lines, pixels // 2 : pixels // 2 + pixels] = slave
+    cross = np.fft.ifft2(np.conj(np.fft.fft2(master_pad)) * np.fft.fft2(slave_pad))
+    power = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
+    power[lines:, pixels:] = master[::-1, ::-1] ** 2 + 1j * slave**2
+    ones = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
+    ones[lines // 2 : lines // 2 + lines, pixels // 2 : pixels // 2 + pixels] = 1.0
+    norm = np.fft.ifft2(np.fft.fft2(power) * np.conj(np.fft.fft2(ones)))
+    denom = np.sqrt(np.maximum(norm.real, 0.0) * np.maximum(norm.imag, 0.0))
+    covar = np.zeros((lines + 1, pixels + 1), dtype=np.float64)
+    usable = denom[: lines + 1, : pixels + 1] > 0
+    covar[usable] = cross.real[: lines + 1, : pixels + 1][usable] / denom[: lines + 1, : pixels + 1][usable]
+    return covar
+
+
+def _oversample_real(image: np.ndarray, factor: int) -> np.ndarray:
+    """Harmonic interpolation of a real chip by an integer factor on each axis."""
+    factor = max(int(factor), 1)
+    if factor == 1:
+        return np.asarray(image, dtype=np.float64)
+    lines, pixels = image.shape
+    spectrum = np.fft.fft2(image)
+    spectrum = spectrum.copy()
+    spectrum[:, pixels // 2] *= 0.5
+    spectrum[lines // 2, :] *= 0.5
+    out_lines = lines * factor
+    out_pixels = pixels * factor
+    placed = np.zeros((out_lines, out_pixels), dtype=np.complex128)
+    half_line = lines // 2
+    half_pixel = pixels // 2
+    placed[: half_line + 1, : half_pixel + 1] = spectrum[: half_line + 1, : half_pixel + 1]
+    placed[: half_line + 1, -half_pixel:] = spectrum[: half_line + 1, half_pixel:]
+    placed[-half_line:, : half_pixel + 1] = spectrum[half_line:, : half_pixel + 1]
+    placed[-half_line:, -half_pixel:] = spectrum[half_line:, half_pixel:]
+    return np.real(np.fft.ifft2(placed)) * float(factor * factor)
 
 
 def apply_range_shift(image: np.ndarray, shift_px: float, method: str = "FOURIER") -> np.ndarray:

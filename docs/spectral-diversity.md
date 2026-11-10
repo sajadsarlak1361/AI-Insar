@@ -60,11 +60,15 @@ was not replaced by a fitted tone.
 
 ## Applying the shift
 
-The whole secondary, not only the overlap rows, is moved by a Fourier ramp
-of the applied azimuth shift and of the range shift. The azimuth amount is
-the negated weight-mean. The range amount is the normalised cross-correlation
-of 512×512 amplitude windows (clipped to the array), oversampled by 128
-inside ±16 pixels, and kept only when the coefficient is at least 0.1.
+Inside the common overlap, and separately in each burst, the secondary is
+range-shifted while it is still chirped, then deramped. The azimuth ramp is
+applied to that baseband and to the deramp phase, and the shifted phase is
+put back. Pixels outside the overlap stay zero. The azimuth amount is the
+negated weight-mean. The range amount is one 512×512 window at the centre of
+each burst: zero-mean magnitude, a doubled FFT so the correlation does not
+wrap, then a 32×32 box around the integer peak oversampled by 128. Bursts
+below the coherence threshold or farther than one pixel are left out, and the
+rest are averaged. A shift of −0.0625 px is eight bins of that 128× grid.
 
 ## Back-geocoding kernel
 
@@ -82,11 +86,14 @@ phase was about ±10 rad and about 229 mm of azimuth bias. Eleven- and
 4096 fractional offsets are tabulated. The loop is Numba `prange` when Numba
 imports, and the same arithmetic otherwise.
 
-The coordinate lattice for a large scene starts at an 8-pixel spacing and is
-refined until check pixels agree to about 1 mm in slant range. The lattice is
-filled with a cubic interpolant. A dense control against SNAP still had a few
-range samples above 1 mm (maximum about 4.5 mm) after float32 rounding; that
-remainder is not claimed closed. Azimuth time stays on the burst
+With a DEM, the secondary line and sample come from the DEM posts. Each post
+is converted to ECEF at its ellipsoidal height, located in both images by
+zero Doppler and slant range, and linearly interpolated onto the reference
+grid. Range and azimuth are scaled by their pixel spacing before the
+triangles are built. Pixels outside those posts are NaN and stay outside the
+common overlap. Without a DEM the coordinate lattice still starts at an
+8-pixel spacing and is kept when both axes are within the requested ground
+tolerance (10 mm in the GUI). Azimuth time stays on the burst
 `azimuthTime`.
 
 ## Network

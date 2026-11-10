@@ -1990,7 +1990,8 @@ class MainWindow(QtWidgets.QMainWindow):
         apply_overlap_to_workspace(self.workspace)
         meta = self.workspace.common_overlap_meta
         self._log(
-            f"Back-geocoding map stride {backgeocode.last_stride}, "
+            f"Back-geocoding {getattr(backgeocode, 'last_geometry', 'radar-lattice')}, "
+            f"map stride {backgeocode.last_stride}, "
             f"check residual {backgeocode.last_residual_px:.4f} pixels. "
             f"Common overlap rows {meta['row_start']}:{meta['row_end']}, "
             f"samples {meta['col_start']}:{meta['col_end']}, "
@@ -2071,6 +2072,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 search_px=int(params.get("range_accuracy") or 16),
                 threshold=float(params.get("xcorr_threshold") or 0.1),
                 window=int(params.get("window_width") or 512),
+                lines_per_burst=int(model.lines_per_burst),
+                samples_per_burst=int(model.samples_per_burst),
+                array_row0=int(early.row),
+                array_col0=int(early.col),
+                mask=getattr(self.workspace, "common_overlap_mask", None),
             )
             from ai_insar.pipeline.tops_ops import shift_secondary_in_overlap
 
@@ -2089,7 +2095,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
                 f"Range correlation shift {range_shift:.4f} px "
                 f"(coefficient {range_coef:.3f}). "
-                "Inside the common overlap the secondary was deramped, Fourier-shifted, and reramped. "
+                "Inside the common overlap the secondary was range-shifted, deramped, azimuth-shifted, and reramped. "
                 "Outside it the result is no-data."
             )
             return
