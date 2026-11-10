@@ -106,8 +106,9 @@ def test_range_correlation_finds_a_one_pixel_shift():
     slave = np.zeros_like(master)
     slave[:, 1:] = master[:, :-1]
     shift, correlation = range_cross_correlation_shift(master, slave, oversample=32, search_px=4, threshold=0.1)
-    assert correlation > 0.1
-    assert abs(shift - 1.0) < 0.05
+    # Content moved one sample to the right, so the Fourier correction is -1.
+    assert 0.5 < correlation <= 1.0
+    assert abs(shift - (-1.0)) < 0.05
 
 
 def test_network_fixes_the_reference_and_rejects_a_long_baseline():
@@ -122,6 +123,29 @@ def test_network_fixes_the_reference_and_rejects_a_long_baseline():
     assert abs(shifts[1] - (-0.001511)) < 1e-6
     assert shifts[6] == 0.0
     assert abs(shifts[2] - (shifts[1] - 0.001000)) < 5e-4
+
+
+def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():
+    from ai_insar.pipeline.tops_ops import resample_complex, resample_real
+
+    image = np.zeros((9, 9), dtype=np.complex64)
+    image[4, 4] = 1
+    on_pixel = resample_complex(image, np.array([[4.0]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
+    assert abs(on_pixel[0, 0] - 1) < 1e-5
+    half = resample_complex(image, np.array([[4.5]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
+
+    def weight(offset: float) -> float:
+        if abs(offset) > 2.0:
+            return 0.0
+        return float(np.sinc(offset) * 0.5 * (1.0 + np.cos(np.pi * offset / 2.0)))
+
+    taps = np.array([weight(4.5 - index) for index in range(2, 7)])
+    taps /= np.sum(taps)
+    assert abs(float(half[0, 0].real) - float(taps[2])) < 1e-4
+    phase = np.full((9, 9), 1000.0)
+    restored = resample_real(phase, np.array([[4.25]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
+    assert restored.dtype == np.float64
+    assert abs(float(restored[0, 0]) - 1000.0) < 1e-6
 
 
 def test_coherence_box_matches_a_direct_five_by_five():

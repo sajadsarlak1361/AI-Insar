@@ -40,13 +40,13 @@ class GeoidGrid:
     model: str
 
     def undulation(self, lat_deg: float, lon_deg: float) -> float:
-        lon = float(lon_deg) % 360.0
-        lat = float(lat_deg)
-        lats = self.lat_deg
-        lons = self.lon_deg
-        row = _bracket(lats, lat)
-        col = _bracket(lons, lon)
-        return float(_bilinear_value(self.undulation_m, lats, lons, row, col, lat, lon))
+        values = self.undulations(np.asarray(lat_deg, dtype=np.float64), np.asarray(lon_deg, dtype=np.float64))
+        return float(values)
+
+    def undulations(self, lat_deg: np.ndarray, lon_deg: np.ndarray) -> np.ndarray:
+        lon = np.asarray(lon_deg, dtype=np.float64) % 360.0
+        lat = np.asarray(lat_deg, dtype=np.float64)
+        return _bilinear_many(self.undulation_m, self.lat_deg, self.lon_deg, lat, lon)
 
 
 @dataclass
@@ -97,6 +97,69 @@ class ElevationModel:
                 return float("nan"), False
         undulation = self.geoid.undulation(lat_deg, lon_deg)
         return float(height) + undulation, True
+
+    def ellipsoidal_heights(
+        self,
+        lat_deg: np.ndarray,
+        lon_deg: np.ndarray,
+        *,
+        method: str = "BILINEAR_INTERPOLATION",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Ellipsoidal heights for many locations. Invalid samples are NaN."""
+        lat = np.asarray(lat_deg, dtype=np.float64)
+        lon = np.asarray(lon_deg, dtype=np.float64)
+        name = str(method).strip().upper()
+        if name not in {"BILINEAR_INTERPOLATION", "NEAREST_NEIGHBOUR"}:
+            raise ValueError(f"DEM resampling {method} is not implemented.")
+        valid = (
+            (float(self.lat_deg.min()) <= lat)
+            & (lat <= float(self.lat_deg.max()))
+            & (float(self.lon_deg.min()) <= lon)
+            & (lon <= float(self.lon_deg.max()))
+        )
+        height = np.full(lat.shape, np.nan, dtype=np.float64)
+        if not np.any(valid):
+            return height, valid
+        rows = _bracket_many(self.lat_deg, lat)
+        cols = _bracket_many(self.lon_deg, lon)
+        row1 = np.minimum(rows + 1, self.orthometric_m.shape[0] - 1)
+        col1 = np.minimum(cols + 1, self.orthometric_m.shape[1] - 1)
+        h00 = self.orthometric_m[rows, cols]
+        h10 = self.orthometric_m[rows, col1]
+        h01 = self.orthometric_m[row1, cols]
+        h11 = self.orthometric_m[row1, col1]
+        nodata = float(self.nodata)
+        finite = np.isfinite(h00) & np.isfinite(h10) & np.isfinite(h01) & np.isfinite(h11)
+        clean = (
+            finite
+            & (np.abs(h00 - nodata) >= 1e-3)
+            & (np.abs(h10 - nodata) >= 1e-3)
+            & (np.abs(h01 - nodata) >= 1e-3)
+            & (np.abs(h11 - nodata) >= 1e-3)
+        )
+        if name == "NEAREST_NEIGHBOUR":
+            lat0 = self.lat_deg[rows]
+            lat1 = self.lat_deg[row1]
+            lon0 = self.lon_deg[cols]
+            lon1 = self.lon_deg[col1]
+            use_row = np.where(np.abs(lat - lat1) < np.abs(lat - lat0), row1, rows)
+            use_col = np.where(np.abs(lon - lon1) < np.abs(lon - lon0), col1, cols)
+            nearest = self.orthometric_m[use_row, use_col]
+            clean = np.isfinite(nearest) & (np.abs(nearest - nodata) >= 1e-3)
+            sampled = nearest
+        else:
+            lat0 = self.lat_deg[rows]
+            lat1 = self.lat_deg[row1]
+            lon0 = self.lon_deg[cols]
+            lon1 = self.lon_deg[col1]
+            wy = np.where(lat1 == lat0, 0.0, (lat - lat0) / (lat1 - lat0))
+            wx = np.where(lon1 == lon0, 0.0, (lon - lon0) / (lon1 - lon0))
+            sampled = (1 - wy) * (1 - wx) * h00 + (1 - wy) * wx * h10 + wy * (1 - wx) * h01 + wy * wx * h11
+            clean = clean & np.isfinite(sampled)
+        valid = valid & clean
+        undulation = self.geoid.undulations(lat, lon)
+        height = np.where(valid, sampled + undulation, np.nan)
+        return height, valid
 
     def covers(self, lat_deg: float, lon_deg: float) -> bool:
         lat = float(lat_deg)
@@ -395,12 +458,46 @@ def _pgm_header(payload: bytes) -> tuple[dict, int]:
 
 def _bracket(axis: np.ndarray, value: float) -> int:
     """Index of the sample at or just before ``value`` along a monotonic axis."""
+    return int(_bracket_many(axis, np.asarray(value, dtype=np.float64)))
+
+
+def _bracket_many(axis: np.ndarray, value: np.ndarray) -> np.ndarray:
+    """``_bracket`` for an array of locations."""
     increasing = float(axis[0]) <= float(axis[-1])
     if increasing:
-        index = int(np.searchsorted(axis, value, side="right") - 1)
+        index = np.searchsorted(axis, value, side="right") - 1
     else:
-        index = int(np.searchsorted(-axis, -value, side="right") - 1)
-    return int(np.clip(index, 0, axis.shape[0] - 2))
+        index = np.searchsorted(-axis, -np.asarray(value, dtype=np.float64), side="right") - 1
+    return np.clip(index, 0, axis.shape[0] - 2).astype(np.int64)
+
+
+def _bilinear_many(
+    grid: np.ndarray,
+    y_axis: np.ndarray,
+    x_axis: np.ndarray,
+    y: np.ndarray,
+    x: np.ndarray,
+) -> np.ndarray:
+    """Bilinear sample. The arithmetic matches :func:`_bilinear_value`."""
+    row = _bracket_many(y_axis, y)
+    col = _bracket_many(x_axis, x)
+    row1 = np.minimum(row + 1, grid.shape[0] - 1)
+    col1 = np.minimum(col + 1, grid.shape[1] - 1)
+    y0 = y_axis[row]
+    y1 = y_axis[row1]
+    x0 = x_axis[col]
+    x1 = x_axis[col1]
+    wy = np.where(y1 == y0, 0.0, (np.asarray(y, dtype=np.float64) - y0) / (y1 - y0))
+    wx = np.where(x1 == x0, 0.0, (np.asarray(x, dtype=np.float64) - x0) / (x1 - x0))
+    samples = [
+        grid[row, col],
+        grid[row, col1],
+        grid[row1, col],
+        grid[row1, col1],
+    ]
+    finite = np.isfinite(samples[0]) & np.isfinite(samples[1]) & np.isfinite(samples[2]) & np.isfinite(samples[3])
+    value = (1 - wy) * (1 - wx) * samples[0] + (1 - wy) * wx * samples[1] + wy * (1 - wx) * samples[2] + wy * wx * samples[3]
+    return np.where(finite, value, np.nan)
 
 
 def _require_geoid(geoid: GeoidGrid, model: str, dem_name: str) -> None:

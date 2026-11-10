@@ -58,17 +58,36 @@ reconstruction matches all ten block values to 3.3e-7 px and the applied value
 reproduce block 2 (−0.000497 px here, −0.000727 px in the file). The secondary
 was not replaced by a fitted tone.
 
-## Phase ramp
+## Applying the shift
 
-The periodogram shift is removed from the later burst by
+The whole secondary, not only the overlap rows, is moved by a Fourier ramp
+of the applied azimuth shift and of the range shift. The azimuth amount is
+the negated weight-mean. The range amount is the normalised cross-correlation
+of 512×512 amplitude windows (clipped to the array), oversampled by 128
+inside ±16 pixels, and kept only when the coefficient is at least 0.1.
+
+## Back-geocoding kernel
+
+`BISINC_5_POINT_INTERPOLATION` is a separable 5-tap sinc with the raised-cosine
+window
 
 ```
-s ← s · exp(−j 2π Δf_DC · shift_px · Δt_az)
+w(u) = sinc(u) · 0.5 · (1 + cos(π u / 2))    for |u| ≤ 2, else 0
 ```
 
-`shift_px` in that exponential is the periodogram mean, not the negated
-applied value. A positive range shift from the amplitude cross-correlation,
-when its coefficient is at least 0.1, resamples the secondary in range.
+Each axis is normalised after taps outside the image are dropped. The same
+kernel, in float64, interpolates the deramp phase. An unwindowed sinc on that
+phase was about ±10 rad and about 229 mm of azimuth bias. Eleven- and
+21-point kernels use the same window with half-widths 5 and 10. Weights for
+4096 fractional offsets are tabulated. The loop is Numba `prange` when Numba
+imports, and the same arithmetic otherwise.
+
+The coordinate lattice for a large scene starts at an 8-pixel spacing and is
+refined until check pixels agree to about 1 mm in slant range. The lattice is
+filled with a cubic interpolant. A dense control against SNAP still had a few
+range samples above 1 mm (maximum about 4.5 mm) after float32 rounding; that
+remainder is not claimed closed. Azimuth time stays on the burst
+`azimuthTime`.
 
 ## Network
 
