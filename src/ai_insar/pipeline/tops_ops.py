@@ -18,6 +18,7 @@ from ai_insar.pipeline.geometry import (
     ecef_to_geodetic,
     geodetic_to_ecef,
     ground_point_at_height,
+    ground_points_at_height,
 )
 from ai_insar.pipeline.s1_annotation import SwathModel, snap_utc_seconds
 
@@ -529,22 +530,124 @@ def _locate_grid(
     rows, cols = reference.shape
     row_index = _sample_index(rows, stride)
     col_index = _sample_index(cols, stride)
-    line_s = np.empty((row_index.size, col_index.size), dtype=np.float64)
-    sample_s = np.empty_like(line_s)
-    for i, row in enumerate(row_index):
-        for j, col in enumerate(col_index):
-            line_s[i, j], sample_s[i, j] = _one_secondary_coordinate(
-                reference,
-                secondary,
-                int(row),
-                int(col),
-                reference_orbit=reference_orbit,
-                secondary_orbit=secondary_orbit,
+    # One batched zero-Doppler solve for the whole lattice. A Python call per
+    # node was about 10 ms, which is hours at an 8-pixel spacing.
+    mesh_row, mesh_col = np.meshgrid(row_index, col_index, indexing="ij")
+    line_flat, sample_flat = _secondary_coordinates(
+        reference,
+        secondary,
+        mesh_row.ravel(),
+        mesh_col.ravel(),
+        reference_orbit=reference_orbit,
+        secondary_orbit=secondary_orbit,
+        degree=degree,
+        height_m=height_m,
+        dem=dem,
+    )
+    return (
+        line_flat.reshape(mesh_row.shape),
+        sample_flat.reshape(mesh_row.shape),
+        row_index,
+        col_index,
+    )
+
+
+def _secondary_coordinates(
+    reference: RadarGrid,
+    secondary: RadarGrid,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    *,
+    reference_orbit: Orbit,
+    secondary_orbit: Orbit,
+    degree: int,
+    height_m: float,
+    dem: object | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Secondary line and sample for many reference pixels.
+
+    This is :func:`_one_secondary_coordinate` with the orbit polynomial, the
+    ellipsoid intersection, and the zero-Doppler Newton step evaluated for
+    every pixel at once.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    count = rows.shape[0]
+    absolute = int(reference.row) + rows
+    azimuth = _line_times(reference.model, absolute)
+    slant = _slant_ranges(reference.model, int(reference.col) + cols.astype(np.float64))
+    height = np.full(count, float(height_m), dtype=np.float64)
+    ground = ground_points_at_height(reference_orbit, azimuth, slant, height, degree=degree)
+    valid = np.ones(count, dtype=bool)
+    if dem is not None:
+        method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
+        for _ in range(3):
+            lat, lon, _got = ecef_to_geodetic(ground)
+            sampled, inside = dem.ellipsoidal_heights(np.rad2deg(lat), np.rad2deg(lon), method=method)
+            valid = valid & inside
+            updated = ground_points_at_height(
+                reference_orbit,
+                azimuth,
+                slant,
+                np.where(valid, sampled, 0.0),
                 degree=degree,
-                height_m=height_m,
-                dem=dem,
             )
-    return line_s, sample_s, row_index, col_index
+            ground = np.where(valid[:, None], updated, ground)
+    line = np.full(count, np.nan, dtype=np.float64)
+    sample = np.full(count, np.nan, dtype=np.float64)
+    if not np.any(valid):
+        return line, sample
+    chosen = np.flatnonzero(valid)
+    burst = absolute[chosen] // int(reference.model.lines_per_burst)
+    guess = _repeat_times(reference.model, absolute[chosen], secondary.model)
+    when = secondary_orbit.zero_doppler_times(ground[chosen], guess, degree)
+    position, _velocity = secondary_orbit.interpolate(when, degree)
+    slant_m = np.linalg.norm(ground[chosen] - position, axis=1)
+    sample[chosen] = (slant_m - secondary.model.slant_range_m(0)) / secondary.model.range_pixel_spacing_m
+    line[chosen] = _lines_from_times(secondary.model, when, burst)
+    return line - secondary.row, sample - secondary.col
+
+
+def _line_times(model: SwathModel, absolute: np.ndarray) -> np.ndarray:
+    """Azimuth time of many absolute lines, using the scalar nanosecond rounding."""
+    lines = np.asarray(absolute, dtype=np.int64)
+    burst_index = lines // int(model.lines_per_burst)
+    if np.any(burst_index < 0) or np.any(burst_index >= len(model.bursts)):
+        raise ValueError("line is outside the swath")
+    inside = lines % int(model.lines_per_burst)
+    starts = np.array(
+        [np.datetime64(item.azimuth_time, "ns").astype(np.int64) for item in model.bursts],
+        dtype=np.int64,
+    )
+    ticks = np.rint(inside.astype(np.float64) * float(model.azimuth_time_interval_s) * 1e9).astype(np.int64)
+    return (starts[burst_index] + ticks).astype("datetime64[ns]")
+
+
+def _slant_ranges(model: SwathModel, sample: np.ndarray) -> np.ndarray:
+    sample = np.asarray(sample, dtype=np.float64)
+    delay = float(model.slant_range_time_s) + 2.0 * sample * float(model.range_pixel_spacing_m) / 299_792_458.0
+    return 299_792_458.0 * delay / 2.0
+
+
+def _repeat_times(reference: SwathModel, absolute: np.ndarray, secondary: SwathModel) -> np.ndarray:
+    burst = np.asarray(absolute, dtype=np.int64) // int(reference.lines_per_burst)
+    offset = np.asarray(absolute, dtype=np.int64) % int(reference.lines_per_burst)
+    burst = np.clip(burst, 0, len(secondary.bursts) - 1)
+    offset = np.clip(offset, 0, int(secondary.lines_per_burst) - 1)
+    return _line_times(secondary, burst * int(secondary.lines_per_burst) + offset)
+
+
+def _lines_from_times(model: SwathModel, when: np.ndarray, burst_index: np.ndarray) -> np.ndarray:
+    burst_index = np.asarray(burst_index, dtype=np.int64)
+    if np.any(burst_index < 0) or np.any(burst_index >= len(model.bursts)):
+        raise ValueError(f"burst index is outside 0..{len(model.bursts) - 1}")
+    starts = np.array(
+        [np.datetime64(item.azimuth_time, "ns").astype(np.int64) for item in model.bursts],
+        dtype=np.int64,
+    )
+    elapsed_ns = np.asarray(when, dtype="datetime64[ns]").astype(np.int64) - starts[burst_index]
+    elapsed = elapsed_ns.astype(np.float64) * 1e-9
+    return burst_index * int(model.lines_per_burst) + elapsed / float(model.azimuth_time_interval_s)
 
 
 def _one_secondary_coordinate(
