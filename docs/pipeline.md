@@ -10,6 +10,9 @@ velocity and positive unwrapped interferogram phase. See the README for the
 phase equation. The code constants are `C_BAND_WAVELENGTH_M` and
 `phase_from_los` / `los_from_phase` in `ai_insar.conventions`.
 
+Burst-overlap ESD and the provenance of the coregistration and network
+equations are in [spectral-diversity.md](spectral-diversity.md).
+
 ## GMTSAR flowchart
 
 The Pipeline menu and the numbered buttons follow the public GMTSAR pair
