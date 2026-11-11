@@ -88,12 +88,10 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
         local_stop = min(burst_stop, grid.row + rows)
         if local_start >= local_stop:
             continue
-        # A split raster addresses the first written burst as record 0.
-        # The absolute SAFE burst number is not that index.
-        local_burst = burst_index - int(grid.row) // int(model.lines_per_burst)
-        record = local_burst if 0 <= local_burst < len(model.fm_rates) else burst_index
-        fm = model.fm_rates[min(max(record, 0), len(model.fm_rates) - 1)]
-        dc = model.dc_estimates[min(max(record, 0), len(model.dc_estimates) - 1)]
+        # The polynomial belongs to this burst's azimuth time. A window that
+        # starts on a later burst must not slide the index back to record 0.
+        fm = _polynomial_for_burst(model.fm_rates, model.bursts[burst_index].azimuth_time)
+        dc = _polynomial_for_burst(model.dc_estimates, model.bursts[burst_index].azimuth_time)
         ka = _polynomial(fm.coefficients, tau - fm.t0_s)
         fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
         ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
@@ -108,6 +106,18 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
         block = -np.pi * rate[None, :] * delta**2 - 2.0 * np.pi * fdc[None, :] * eta[:, None]
         phase[local_start - grid.row : local_stop - grid.row] = block
     return phase
+
+
+def _polynomial_for_burst(polynomials: tuple, azimuth_time: np.datetime64):
+    """The range polynomial dated nearest this burst, not nearest the window origin."""
+    if not polynomials:
+        raise ValueError("the swath has no range polynomial for this burst")
+    target = np.datetime64(azimuth_time, "ns").astype(np.int64)
+    best = min(
+        polynomials,
+        key=lambda item: abs(int(np.datetime64(item.azimuth_time, "ns").astype(np.int64) - target)),
+    )
+    return best
 
 
 def _two_way(model: SwathModel, sample: float) -> float:
@@ -328,6 +338,151 @@ def flat_earth_phase(
     return phase
 
 
+def simulated_topographic_phase(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    dem: object,
+    degree: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP topographic phase: radar-code DEM posts, then triangulate.
+
+    For each post, the phase is ``-4π/λ (R_slave(ellipsoid) - R_slave(DEM))``
+    at the master line and sample of that post. Flat-earth phase is not in
+    this term. Height on the radar grid is the same triangulation of the
+    post heights, which is not a direct DEM query at the pixel's latitude.
+    """
+    phase = np.zeros(early.shape, dtype=np.float64)
+    heights = np.full(early.shape, np.nan, dtype=np.float64)
+    post_lat, post_lon, post_height = _dem_posts_covering(early, early_orbit, degree, dem)
+    if post_lat.size < 3:
+        return phase, heights
+    dy = float(dem.lat_deg[1] - dem.lat_deg[0]) if dem.lat_deg.size > 1 else 0.0
+    dx = float(dem.lon_deg[1] - dem.lon_deg[0]) if dem.lon_deg.size > 1 else 0.0
+    # SNAP radar-codes the geopos of the DEM pixel, half a post from the centre.
+    lat = np.asarray(post_lat, dtype=np.float64) + 0.5 * dy
+    lon = np.asarray(post_lon, dtype=np.float64) + 0.5 * dx
+    height = np.asarray(post_height, dtype=np.float64)
+    xyz = geodetic_to_ecef(np.deg2rad(lat), np.deg2rad(lon), height)
+    lines = int(early.model.lines_per_burst)
+    first = max(0, int(early.row) // lines)
+    last = min(len(early.model.bursts) - 1, (int(early.row) + early.shape[0] - 1) // lines)
+    ratio = _range_azimuth_ratio(early, early_orbit, degree)
+    for burst in range(first, last + 1):
+        guess = _burst_guess(early.model, burst, xyz.shape[0])
+        try:
+            when = early_orbit.zero_doppler_times(xyz, guess, degree)
+        except ValueError:
+            continue
+        position, _velocity = early_orbit.interpolate(when, degree)
+        slant = np.linalg.norm(xyz - position, axis=1)
+        burst_index = np.full(xyz.shape[0], burst, dtype=np.int64)
+        line = _lines_from_times(early.model, when, burst_index)
+        sample = (slant - early.model.slant_range_m(0.0)) / early.model.range_pixel_spacing_m
+        start = burst * lines
+        stop = start + lines
+        # Keep posts that radar-code just outside the burst so the triangles
+        # cover the first and last lines. SNAP's extended DEM tile does this.
+        margin = max(8.0, 0.25 * lines)
+        inside = (line >= start - margin) & (line <= stop + margin) & np.isfinite(sample)
+        if int(np.count_nonzero(inside)) < 3:
+            continue
+        ellip = ground_points_at_height(
+            early_orbit,
+            when[inside],
+            slant[inside],
+            np.zeros(int(np.count_nonzero(inside))),
+            degree=degree,
+        )
+        slave_burst = min(burst, len(later.model.bursts) - 1)
+        slave_guess = np.full(
+            int(np.count_nonzero(inside)),
+            np.datetime64(later.model.bursts[slave_burst].azimuth_time, "ns"),
+        )
+        slave_dem = _slave_ranges(later_orbit, xyz[inside], slave_guess, degree)
+        slave_ellip = _slave_ranges(later_orbit, ellip, slave_guess, degree)
+        post_phase = -4.0 * np.pi / float(early.model.wavelength_m) * (slave_ellip - slave_dem)
+        _triangulate_burst(
+            phase,
+            heights,
+            early,
+            line[inside],
+            sample[inside],
+            post_phase,
+            height[inside],
+            ratio,
+            burst,
+        )
+    return phase, heights
+
+
+def _slave_ranges(orbit: Orbit, xyz: np.ndarray, guess: np.ndarray, degree: int) -> np.ndarray:
+    when = orbit.zero_doppler_times(xyz, guess, degree)
+    position, _velocity = orbit.interpolate(when, degree)
+    return np.linalg.norm(xyz - position, axis=1)
+
+
+def _range_azimuth_ratio(grid: RadarGrid, orbit: Orbit, degree: int) -> float:
+    """Ground range spacing divided by azimuth spacing, for SNAP's triangulation."""
+    rows, cols = grid.shape
+    if rows < 2 or cols < 2:
+        return 1.0
+    corners_row = np.array([0, 0, rows - 1, rows - 1], dtype=np.int64)
+    corners_col = np.array([0, cols - 1, 0, cols - 1], dtype=np.int64)
+    azimuth = _line_times(grid.model, grid.row + corners_row)
+    slant = _slant_ranges(grid.model, grid.col + corners_col.astype(np.float64))
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(4), degree=degree)
+    range_spacing = 0.5 * (
+        float(np.linalg.norm(ground[0] - ground[1])) + float(np.linalg.norm(ground[2] - ground[3]))
+    ) / max(cols - 1, 1)
+    azimuth_spacing = 0.5 * (
+        float(np.linalg.norm(ground[0] - ground[2])) + float(np.linalg.norm(ground[1] - ground[3]))
+    ) / max(rows - 1, 1)
+    if azimuth_spacing <= 0.0:
+        return 1.0
+    return range_spacing / azimuth_spacing
+
+
+def _triangulate_burst(
+    phase: np.ndarray,
+    heights: np.ndarray,
+    grid: RadarGrid,
+    line: np.ndarray,
+    sample: np.ndarray,
+    post_phase: np.ndarray,
+    post_height: np.ndarray,
+    ratio: float,
+    burst: int,
+) -> None:
+    """Linear triangulation of radar-coded posts onto one burst's rows."""
+    from scipy.interpolate import LinearNDInterpolator
+    from scipy.spatial import QhullError
+
+    points = np.column_stack((line, sample * float(ratio)))
+    try:
+        phase_of = LinearNDInterpolator(points, post_phase, fill_value=np.nan)
+        height_of = LinearNDInterpolator(points, post_height, fill_value=np.nan)
+    except QhullError:
+        return
+    lines = int(grid.model.lines_per_burst)
+    row0 = max(burst * lines, int(grid.row))
+    row1 = min((burst + 1) * lines, int(grid.row) + grid.shape[0])
+    if row1 <= row0:
+        return
+    rows = np.arange(row0, row1, dtype=np.float64)
+    cols = (int(grid.col) + np.arange(grid.shape[1])).astype(np.float64)
+    mesh_row, mesh_col = np.meshgrid(rows, cols, indexing="ij")
+    query = np.column_stack((mesh_row.ravel(), mesh_col.ravel() * float(ratio)))
+    local0 = row0 - int(grid.row)
+    local1 = row1 - int(grid.row)
+    phase[local0:local1] = np.asarray(phase_of(query), dtype=np.float64).reshape(mesh_row.shape)
+    heights[local0:local1] = np.asarray(height_of(query), dtype=np.float64).reshape(mesh_row.shape)
+    missing = ~np.isfinite(phase[local0:local1])
+    phase[local0:local1][missing] = 0.0
+
+
 def topographic_residual_phase(
     early: RadarGrid,
     later: RadarGrid,
@@ -341,51 +496,28 @@ def topographic_residual_phase(
     polynomial_points: int | None = None,
     orbit_states: int = 8,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Topographic phase after the ellipsoid term has been removed.
+    """SNAP topographic phase on the radar grid.
 
-    SNAP's topographic term is the DEM-height range phase minus the
-    ellipsoid range phase, both ``-4π/λ (R_early - R_later)``. The DEM is
-    read at the geocoded pixel centre. The returned height is NaN where the
-    DEM has no sample; the residual there is 0 so the interferogram is left
-    unchanged.
+    The value is the triangulated slave range difference
+    ``-4π/λ (R_slave(ellipsoid) - R_slave(DEM))``, not the dense height
+    phase minus the flat-earth polynomial. Height is that same
+    triangulation and is NaN outside the posts. Missing phase is 0 so the
+    interferogram is left unchanged there.
     """
-    dem_phase, heights = geometric_phase(
+    del polynomial_degree, polynomial_points, orbit_states, max_solves
+    # SNAP TopoPhase.radarCode: each DEM post is radar-coded, the slave range
+    # to that post is compared with the slave range to the ellipsoid point at
+    # the same master line and sample, and the phase is triangulated onto the
+    # radar grid. It is not Phi(H_DEM) - Phi(H=0), so it does not cancel a
+    # fitted flat-earth polynomial.
+    return simulated_topographic_phase(
         early,
         later,
         early_orbit=early_orbit,
         later_orbit=later_orbit,
-        degree=degree,
         dem=dem,
-        max_solves=max_solves,
-        half_cell=True,
+        degree=degree,
     )
-    if polynomial_points is None:
-        flat, _flat_heights = geometric_phase(
-            early,
-            later,
-            early_orbit=early_orbit,
-            later_orbit=later_orbit,
-            degree=degree,
-            height_m=0.0,
-            dem=None,
-            max_solves=max_solves,
-        )
-    else:
-        flat = flat_earth_phase(
-            early,
-            later,
-            early_orbit=early_orbit,
-            later_orbit=later_orbit,
-            degree=degree,
-            height_m=0.0,
-            polynomial_degree=5 if polynomial_degree is None else int(polynomial_degree),
-            polynomial_points=int(polynomial_points),
-            orbit_states=orbit_states,
-        )
-    residual = dem_phase - flat
-    missing = ~np.isfinite(heights)
-    residual[missing] = 0.0
-    return residual, heights
 
 
 def geometric_phase(
@@ -859,7 +991,9 @@ def _coordinates_from_dem_posts(
     rows, cols = reference.shape
     empty_line = np.full((rows, cols), np.nan, dtype=np.float64)
     empty_sample = np.full((rows, cols), np.nan, dtype=np.float64)
-    lat_deg, lon_deg, height = _dem_posts_covering(reference, reference_orbit, degree, dem)
+    lat_deg, lon_deg, height = _dem_posts_covering(
+        reference, reference_orbit, degree, dem, snap_geopos=True
+    )
     if height.size < 3:
         return empty_line, empty_sample, 0.0
     xyz = geodetic_to_ecef(np.deg2rad(lat_deg), np.deg2rad(lon_deg), height)
@@ -938,8 +1072,20 @@ def _coordinates_from_dem_posts(
     return line_s, sample_s, reproduction
 
 
-def _dem_posts_covering(reference: RadarGrid, orbit: Orbit, degree: int, dem: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Latitude, longitude, and ellipsoidal height of the DEM posts around the window."""
+def _dem_posts_covering(
+    reference: RadarGrid,
+    orbit: Orbit,
+    degree: int,
+    dem: object,
+    *,
+    snap_geopos: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Latitude, longitude, and ellipsoidal height of the DEM posts around the window.
+
+    ``snap_geopos`` places each post on SNAP's pixel geopos and reads the
+    elevation there, which is what Back-Geocoding passes to ``getPosition``.
+    Topographic phase keeps the raw sample and shifts the coordinate itself.
+    """
     rows, cols = reference.shape
     corner_row = np.array([0, 0, rows - 1, rows - 1, rows // 2], dtype=np.int64)
     corner_col = np.array([0, cols - 1, 0, cols - 1, cols // 2], dtype=np.int64)
@@ -965,7 +1111,11 @@ def _dem_posts_covering(reference: RadarGrid, orbit: Orbit, degree: int, dem: ob
     post_lon = dem_lon[lon_index]
     mesh_lat, mesh_lon = np.meshgrid(post_lat, post_lon, indexing="ij")
     method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
-    height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method)
+    if snap_geopos and hasattr(dem, "_snap_half_cell"):
+        height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method, half_cell=True)
+        mesh_lat, mesh_lon = dem._snap_half_cell(mesh_lat, mesh_lon)
+    else:
+        height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method)
     keep = np.asarray(valid, dtype=bool) & np.isfinite(height)
     if not np.any(keep):
         return np.empty(0), np.empty(0), np.empty(0)
@@ -2175,7 +2325,7 @@ def shift_secondary_in_overlap(
             shifted = _range_shift(tile, float(range_px))
             baseband = shifted * np.exp(1j * phase)
             baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
-            shifted_phase = _azimuth_shift(phase.astype(np.complex64), float(azimuth_px), interval).real
+            shifted_phase = _azimuth_shift_real(phase, float(azimuth_px), interval)
             corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
             piece = corrected[dst_r0:dst_r1, dst_c0:dst_c1]
             region = write[row_a:row_b, src_c0:src_c1]
@@ -2197,6 +2347,24 @@ def _azimuth_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: fl
     if not pixels:
         return np.asarray(image, dtype=np.complex64)
     return apply_azimuth_pixel_shift(image, float(pixels), float(azimuth_time_interval_s))
+
+
+def _azimuth_shift_real(phase: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
+    """Azimuth Fourier shift of a real phase, kept in float64.
+
+    Casting a large deramp phase to complex64 before the transform moves it
+    by several milliradians. SNAP's double FFT does not.
+    """
+    data = np.asarray(phase, dtype=np.float64)
+    if not pixels:
+        return data
+    spectrum = np.fft.fft(data, axis=0)
+    frequency = np.fft.fftfreq(data.shape[0], d=float(azimuth_time_interval_s))
+    seconds = float(pixels) * float(azimuth_time_interval_s)
+    shape = [1] * spectrum.ndim
+    shape[0] = spectrum.shape[0]
+    spectrum = spectrum * np.exp(-1j * 2.0 * np.pi * frequency.reshape(shape) * seconds)
+    return np.fft.ifft(spectrum, axis=0).real
 
 
 def deburst_window(data: np.ndarray, model: SwathModel, row: int, col: int) -> RadarGrid:

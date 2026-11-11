@@ -7,7 +7,7 @@ import numpy as np
 from ai_insar.pipeline.coherence import coherence_map, snap_window_bounds
 from ai_insar.pipeline.dem import ElevationModel, GeoidGrid
 from ai_insar.pipeline.geometry import Orbit, ecef_to_geodetic, ground_point_at_height
-from ai_insar.pipeline.tops_ops import RadarGrid, flat_earth_phase, topographic_residual_phase
+from ai_insar.pipeline.tops_ops import RadarGrid, flat_earth_phase, geometric_phase, topographic_residual_phase
 from test_locate_grid_batch import _models, _orbit
 
 
@@ -73,37 +73,137 @@ def test_interferogram_window_is_exactly_two_by_ten_and_anchored_forward():
     assert raw[4, 8] < flattened[4, 8]
 
 
-def test_topographic_residual_is_the_dem_phase_minus_the_ellipsoid_phase():
-    early_orbit, later_orbit, early, later = _pair()
-    azimuth = early.model.line_time(early.row + 6)
-    slant = early.model.slant_range_m(5)
+def test_deramp_polynomial_follows_the_burst_not_the_window_origin():
+    from ai_insar.pipeline.s1_annotation import BurstTiming, RangePolynomial
+    from ai_insar.pipeline.tops_ops import tops_phase
+
+    orbit = _orbit()
+    reference, _secondary = _models(orbit)
+    lines = int(reference.lines_per_burst)
+    start = reference.bursts[0].azimuth_time
+    second = reference.bursts[1].azimuth_time
+    bursts = (
+        BurstTiming(start, 0, lines - 1, 0, 20),
+        BurstTiming(second, 0, lines - 1, 0, 20),
+    )
+    polynomials = (
+        RangePolynomial(start, 0.006, np.array([-1000.0, 0.0])),
+        RangePolynomial(second, 0.006, np.array([-5000.0, 0.0])),
+    )
+    model = reference.__class__(
+        wavelength_m=reference.wavelength_m,
+        azimuth_time_interval_s=reference.azimuth_time_interval_s,
+        range_pixel_spacing_m=reference.range_pixel_spacing_m,
+        slant_range_time_s=reference.slant_range_time_s,
+        lines_per_burst=lines,
+        samples_per_burst=reference.samples_per_burst,
+        number_of_lines=lines * 2,
+        incidence_rad=reference.incidence_rad,
+        fm_rate=np.array([-2000.0, 0.0, 0.0]),
+        bursts=bursts,
+        orbit=orbit,
+        fm_rates=polynomials,
+        dc_estimates=polynomials,
+        azimuth_steering_rate_rad_s=0.0,
+    )
+    both = tops_phase(RadarGrid(0, 0, np.ones((lines * 2, 8), dtype=np.complex64), model))
+    alone = tops_phase(RadarGrid(lines, 0, np.ones((lines, 8), dtype=np.complex64), model))
+    assert np.max(np.abs(both[lines:] - alone)) < 1e-6
+    assert np.max(np.abs(both[lines:] - both[:lines])) > 1.0
+
+
+def _dem_over_window(early, early_orbit, height_m: float) -> ElevationModel:
+    """Fine posts around the ellipsoid footprint so radar coding lands on the window."""
+    azimuth = early.model.line_time(early.row + early.shape[0] // 2)
+    slant = early.model.slant_range_m(early.col + early.shape[1] // 2)
     ground = ground_point_at_height(early_orbit, azimuth, slant, 0.0, degree=3)
-    lat, lon, _height = ecef_to_geodetic(ground)
-    lat_deg = float(np.rad2deg(lat))
-    lon_deg = float(np.rad2deg(lon))
-    dem = ElevationModel(
-        lat_deg=np.linspace(lat_deg + 1.0, lat_deg - 1.0, 5),
-        lon_deg=np.linspace(lon_deg - 1.0, lon_deg + 1.0, 5),
-        orthometric_m=np.full((5, 5), 400.0),
+    lat, lon, _height = ecef_to_geodetic(np.atleast_2d(ground))
+    lat0 = float(np.rad2deg(np.asarray(lat).reshape(-1)[0]))
+    lon0 = float(np.rad2deg(np.asarray(lon).reshape(-1)[0]))
+    span = 0.0008
+    count = 41
+    return ElevationModel(
+        lat_deg=np.linspace(lat0 + span, lat0 - span, count),
+        lon_deg=np.linspace(lon0 - span, lon0 + span, count),
+        orthometric_m=np.full((count, count), height_m),
         nodata=-32768.0,
         orthometric_datum="EGM2008",
         geoid=GeoidGrid(
-            lat_deg=np.array([lat_deg + 2.0, lat_deg - 2.0]),
-            lon_deg=np.array([lon_deg - 2.0, lon_deg + 2.0]),
+            lat_deg=np.array([lat0 + 1.0, lat0 - 1.0]),
+            lon_deg=np.array([lon0 - 1.0, lon0 + 1.0]),
             undulation_m=np.zeros((2, 2)),
             source="test",
             model="EGM2008",
         ),
         provenance="test",
     )
-    flat = flat_earth_phase(early, later, early_orbit=early_orbit, later_orbit=later_orbit, degree=3)
-    dem_phase = flat_earth_phase(
-        early, later, early_orbit=early_orbit, later_orbit=later_orbit, degree=3, dem=dem
+
+
+def test_topographic_phase_is_the_radar_coded_slave_range_difference():
+    from ai_insar.pipeline.geometry import geodetic_to_ecef, ground_points_at_height
+    from ai_insar.pipeline.tops_ops import _slave_ranges
+
+    early_orbit, later_orbit, early, later = _pair()
+    row, col = 6, 5
+    height_m = 15.0
+    dem = _dem_over_window(early, early_orbit, height_m)
+    dense, _dense_height = geometric_phase(
+        early, later, early_orbit=early_orbit, later_orbit=later_orbit, dem=dem, degree=3, half_cell=True
+    )
+    polynomial = flat_earth_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=3,
+        polynomial_degree=5,
+        polynomial_points=501,
+        orbit_states=8,
     )
     residual, heights = topographic_residual_phase(
         early, later, early_orbit=early_orbit, later_orbit=later_orbit, dem=dem, degree=3
     )
-    finite = np.isfinite(heights) & np.isfinite(dem_phase) & np.isfinite(flat)
-    assert finite.any()
-    assert np.max(np.abs((dem_phase - flat)[finite] - residual[finite])) < 1e-4
-    assert np.max(np.abs(heights[finite] - 400.0)) < 5.0
+    finite = np.isfinite(heights)
+    assert int(np.count_nonzero(finite)) == early.shape[0] * early.shape[1]
+    assert np.max(np.abs(heights - height_m)) < 1.0
+    # Adding the flat-earth polynomial back does not recover Phi(H). The old
+    # residual was exactly Phi(H) - P5, so this difference was zero.
+    assert np.max(np.abs((polynomial + residual)[finite] - dense[finite])) > 1.0e-4
+    azimuth = early.model.line_time(early.row + row)
+    slant = early.model.slant_range_m(early.col + col)
+    ground = ground_point_at_height(early_orbit, azimuth, slant, height_m, degree=3)
+    lat, lon, _height = [np.asarray(item).reshape(-1) for item in ecef_to_geodetic(np.atleast_2d(ground))]
+    xyz = geodetic_to_ecef(lat, lon, np.array([height_m]))
+    ellip = ground_points_at_height(early_orbit, np.array([azimuth]), np.array([slant]), np.zeros(1), degree=3)
+    guess = np.array([later.model.bursts[0].azimuth_time])
+    slave_dem = float(_slave_ranges(later_orbit, xyz, guess, 3)[0])
+    slave_ellip = float(_slave_ranges(later_orbit, ellip, guess, 3)[0])
+    expected = -4.0 * np.pi / float(early.model.wavelength_m) * (slave_ellip - slave_dem)
+    assert abs(float(residual[row, col]) - expected) < 0.01
+    assert float(residual[row, col]) * expected > 0.0
+    zero = _dem_over_window(early, early_orbit, 0.0)
+    zero_phase, _zero_heights = topographic_residual_phase(
+        early, later, early_orbit=early_orbit, later_orbit=later_orbit, dem=zero, degree=3
+    )
+    assert np.max(np.abs(zero_phase)) < np.max(np.abs(residual))
+
+
+def test_esd_phase_shift_keeps_a_large_phase_in_float64():
+    from ai_insar.pipeline.tops_ops import _azimuth_shift_real
+
+    samples = np.arange(256, dtype=np.float64)
+    phase = (1.0e5 * np.sin(2.0 * np.pi * samples / samples.size))[:, None] * np.ones((1, 4))
+
+    def _complex64_shift(values: np.ndarray, pixels: float) -> np.ndarray:
+        spectrum = np.fft.fft(np.asarray(values, dtype=np.complex64), axis=0)
+        frequency = np.fft.fftfreq(values.shape[0])
+        spectrum = spectrum * np.exp(-1j * 2.0 * np.pi * frequency[:, None] * pixels)
+        return np.fft.ifft(spectrum, axis=0).real
+
+    restored = _azimuth_shift_real(_azimuth_shift_real(phase, 0.25, 1.0), -0.25, 1.0)
+    restored_64 = _complex64_shift(_complex64_shift(phase, 0.25), -0.25)
+    float_error = float(np.max(np.abs(restored - phase)))
+    complex_error = float(np.max(np.abs(restored_64 - phase)))
+    assert float_error < 1.0e-6
+    assert complex_error > 1.0e-3
+    assert float_error < complex_error / 10.0
