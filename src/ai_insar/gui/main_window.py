@@ -2177,10 +2177,9 @@ class MainWindow(QtWidgets.QMainWindow):
             local_x0 = x0 - int(early.col)
             local_x1 = x1 - int(early.col) + 1
             overlap_lines = burst_overlap_rows(model, index)[0][1] - burst_overlap_rows(model, index)[0][0]
-            # A split product keeps the full FM list and indexes it by the burst
-            # number inside the raster, which is 0 for the first written burst.
-            fm_index = index - int(early.row) // int(model.lines_per_burst)
-            separation = spectral_separation_hz(model, max(fm_index, 0), overlap_lines)
+            # Split-local burst ordinal. The annotation list is not trimmed,
+            # and the window origin must not change which record is read.
+            separation = spectral_separation_hz(model, index, overlap_lines)
             estimate = estimate_overlap(
                 _slice(early, start_a, stop_a)[:, local_x0:local_x1],
                 _slice(early, start_b, stop_b)[:, local_x0:local_x1],
