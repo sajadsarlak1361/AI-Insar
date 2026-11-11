@@ -2099,7 +2099,7 @@ class MainWindow(QtWidgets.QMainWindow):
             secondary_orbit=late_orbit,
             dem=dem,
             reramp=not bool(params.get("disable_reramp")),
-            resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
+            resampling=str(params.get("resampling") or "BISINC_5_POINT_INTERPOLATION"),
             dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
             max_solves=None if pixels <= 400_000 else fine,
             tolerance_mm=10.0,
@@ -2126,7 +2126,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.crop_without_coregistration = False
         self._log(
             f"Back Geocoding resampled the secondary onto the reference grid {resampled.shape}. "
-            "Deramp, range-Doppler, bilinear"
+            f"Deramp, range-Doppler, {params.get('resampling') or 'BISINC_5_POINT_INTERPOLATION'}"
             + (" , reramp." if not params.get("disable_reramp") else ". Reramp disabled.")
         )
 
@@ -2219,8 +2219,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
                 f"Range correlation shift {range_shift:.4f} px "
                 f"(coefficient {range_coef:.3f}). "
-                "Inside the common overlap the secondary was range-shifted, deramped, azimuth-shifted, and reramped. "
-                "Outside it the result is no-data."
+                "Only the burst-overlap rows were range-shifted, deramped, azimuth-shifted, and reramped. "
+                "Lines outside the overlap were left as coregistered."
             )
             return
         raise RuntimeError(

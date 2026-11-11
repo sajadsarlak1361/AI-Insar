@@ -1,16 +1,26 @@
 """Enhanced spectral diversity for Sentinel-1 TOPS overlaps.
 
-The equations are the published ones (Prats-Iraola and the SNAP operator
-description): an early and a late overlap interferogram, a coherence weight,
-and an azimuth shift from the double-difference phase. Nothing here is copied
-from SNAP, ISCE, MintPy, or dolphin. Those programs are optional external
-callers when they are installed; the numbers this module returns are computed
-here.
+SNAP ``EnhancedSpectralDiversityOp`` estimates the shifts only on burst
+overlaps and applies one pair shift. The formulas below are the ones that
+operator runs. Nothing is imported from SNAP.
 
-Periodogram maximises the coherence-weighted real part. Average takes the
-argument of the weighted complex sum and divides by ``2π Δf Δt``. Both are
-in pixels. The applied pair shift is the negated weight-mean, which is the
-value SNAP writes after the block list.
+Double difference, early look ``i`` and late look ``i+1``::
+
+    φ_ESD = arg( (m_i · conj(s_i)) · conj(m_{i+1} · conj(s_{i+1})) )
+
+Average estimator, weight ``w`` (0 where either look is invalid)::
+
+    φ = atan2(Σ sin(φ) w, Σ cos(φ) w)
+    Δf = (Σ Δf_DC · w) / N
+    shift_px = φ / (2 π Δf Δt)
+
+``N`` is the pixel count, including zero-weight pixels, which is how the
+operator normalises. Periodogram searches ``shift_px`` to maximise
+``Σ w cos(φ - 2π Δf_DC shift_px Δt)``. The value written as the overall
+azimuth shift, and applied to the secondary, is the negated weight-mean of
+the block periodograms. Range uses one magnitude cross-correlation window
+per burst; the coefficient is the lag-dependent normalised covariance, and
+the pair shift is the mean of the bursts that pass the threshold.
 """
 
 from __future__ import annotations
@@ -50,21 +60,30 @@ def average_shift_px(
     separation_hz: np.ndarray,
     azimuth_time_interval_s: float,
 ) -> float:
-    """``arg(Σ w · Δ) / (2π · f̄ · Δt)``, with ``f̄`` the weighted spectral separation."""
+    """SNAP average: ``atan2(Σ sin φ w, Σ cos φ w) / (2π · Δf · Δt)``.
+
+    ``φ`` is the double-difference phase. A bright sample cannot outvote its
+    weight. ``Δf`` is ``(Σ Δf_DC w) / N``, and ``N`` counts zero-weight pixels.
+    """
+    values = np.asarray(cross)
+    phase = np.angle(values) if np.iscomplexobj(values) else np.asarray(values, dtype=np.float64)
+    phase = np.asarray(phase, dtype=np.float64).ravel()
     weights = np.asarray(weight, dtype=np.float64).ravel()
-    total = float(np.sum(weights))
-    if total <= 0.0:
+    if phase.shape != weights.shape:
+        raise ValueError("ESD phase and weight must share one shape")
+    if float(np.sum(weights)) <= 0.0:
         return 0.0
-    phase = float(np.angle(np.sum(np.asarray(cross, dtype=np.complex64).ravel() * weights)))
     separation = np.asarray(separation_hz, dtype=np.float64).ravel()
     if separation.size == 1:
-        frequency = float(separation[0])
-    else:
-        frequency = float(np.sum(weights * separation) / total)
+        separation = np.full(phase.size, float(separation[0]))
+    elif separation.size != phase.size:
+        raise ValueError("spectral separation must be one value or one value per pixel")
+    frequency = float(np.sum(weights * separation) / phase.size)
     interval = float(azimuth_time_interval_s)
     if frequency == 0.0 or interval <= 0.0:
         return 0.0
-    return phase / (2.0 * np.pi * frequency * interval)
+    angle = float(np.arctan2(np.sum(np.sin(phase) * weights), np.sum(np.cos(phase) * weights)))
+    return angle / (2.0 * np.pi * frequency * interval)
 
 
 def spectral_phase_ramp(separation_hz: np.ndarray, shift_px: float, azimuth_time_interval_s: float) -> np.ndarray:
@@ -106,6 +125,7 @@ def range_cross_correlation_shift(
     array_col0: int = 0,
     mask: np.ndarray | None = None,
     max_shift_px: float = 1.0,
+    per_burst: list | None = None,
 ) -> tuple[float, float]:
     """Constant range shift, one power-of-two window at the centre of each burst.
 
@@ -140,11 +160,20 @@ def range_cross_correlation_shift(
             chip_m, chip_s, oversample=int(oversample), accuracy=int(search_px)
         )
         best_coef = max(best_coef, coef)
-        if coef < float(threshold) or abs(rng) > float(max_shift_px):
+        accepted = coef >= float(threshold) and abs(rng) <= float(max_shift_px)
+        if per_burst is not None:
+            per_burst.append(
+                {
+                    "range_px": float(rng),
+                    "azimuth_px": float(azimuth),
+                    "coherence": float(coef),
+                    "accepted": bool(accepted),
+                }
+            )
+        if not accepted:
             continue
         shifts.append(rng)
         coefficients.append(coef)
-        del azimuth
     if not shifts:
         return 0.0, best_coef
     return float(np.mean(shifts)), float(np.mean(coefficients))

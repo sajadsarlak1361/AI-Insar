@@ -1321,10 +1321,10 @@ _HANN_LUT: dict[int, np.ndarray] = {}
 def _hann_sinc_lut(half: int) -> np.ndarray:
     """Weights for fractional offsets in ``[0, 1)``.
 
-    ``w(u) = sinc(u) · 0.5 · (1 + cos(π u / half))`` for ``|u| <= half``,
-    else 0. Taps are ``floor(x) + offset`` with ``offset`` from ``-half``
-    to ``+half``. A tap past the window is already zero, including the
-    extra fractional tap an unwindowed sinc would keep.
+    ``w(u) = sinc(u) · 0.5 · (1 + cos(2π u / (N-1)))`` with ``N = 2·half+1``,
+    which is SNAP's BiSinc window. An unwindowed sinc keeps the sidelobes
+    that dominated the earlier ESD bias. Taps outside the raster repeat the
+    edge sample, matching SNAP's index clamp, instead of being dropped.
     """
     cached = _HANN_LUT.get(half)
     if cached is not None:
@@ -1394,30 +1394,32 @@ def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_fla
                 continue
             y0 = int(np.floor(y))
             x0 = int(np.floor(x))
-            wy = lut[min(int((y - y0) * bins), bins - 1)].copy()
-            wx = lut[min(int((x - x0) * bins), bins - 1)].copy()
-            for index, offset in enumerate(offsets):
-                if y0 + offset < 0 or y0 + offset >= height:
-                    wy[index] = 0.0
-                if x0 + offset < 0 or x0 + offset >= width:
-                    wx[index] = 0.0
+            wy = lut[min(int((y - y0) * bins), bins - 1)]
+            wx = lut[min(int((x - x0) * bins), bins - 1)]
+            # SNAP BiSinc keeps every window tap and repeats the edge sample.
+            # Dropping the tap and renormalising is the unwindowed-edge bias.
             sy = float(np.sum(wy))
             sx = float(np.sum(wx))
             if sy == 0.0 or sx == 0.0:
                 continue
-            wy /= sy
-            wx /= sx
             acc_r = 0.0
             acc_i = 0.0
             for iy, oy in enumerate(offsets):
-                if wy[iy] == 0.0:
-                    continue
                 yy = y0 + int(oy)
+                if yy < 0:
+                    yy = 0
+                elif yy >= height:
+                    yy = height - 1
+                wy_n = wy[iy] / sy
+                if wy_n == 0.0:
+                    continue
                 for ix, ox in enumerate(offsets):
-                    if wx[ix] == 0.0:
-                        continue
                     xx = x0 + int(ox)
-                    weight = wy[iy] * wx[ix]
+                    if xx < 0:
+                        xx = 0
+                    elif xx >= width:
+                        xx = width - 1
+                    weight = wy_n * (wx[ix] / sx)
                     acc_r += weight * real_part[yy, xx]
                     if complex_flag:
                         acc_i += weight * imag_part[yy, xx]
@@ -1461,28 +1463,27 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
                     sy = 0.0
                     sx = 0.0
                     for tap in range(lut.shape[1]):
-                        offset = tap - half
-                        yy = y0 + offset
-                        xx = x0 + offset
-                        if 0 <= yy < height:
-                            sy += lut[iy, tap]
-                        if 0 <= xx < width:
-                            sx += lut[ix, tap]
+                        sy += lut[iy, tap]
+                        sx += lut[ix, tap]
                     if sy == 0.0 or sx == 0.0:
                         continue
                     acc_r = 0.0
                     acc_i = 0.0
                     for ty in range(lut.shape[1]):
                         yy = y0 + ty - half
-                        if yy < 0 or yy >= height:
-                            continue
+                        if yy < 0:
+                            yy = 0
+                        elif yy >= height:
+                            yy = height - 1
                         wy = lut[iy, ty] / sy
                         if wy == 0.0:
                             continue
                         for tx in range(lut.shape[1]):
                             xx = x0 + tx - half
-                            if xx < 0 or xx >= width:
-                                continue
+                            if xx < 0:
+                                xx = 0
+                            elif xx >= width:
+                                xx = width - 1
                             weight = wy * (lut[ix, tx] / sx)
                             acc_r += weight * real_part[yy, xx]
                             if complex_flag != 0:
@@ -1872,12 +1873,23 @@ def overlap_block_shifts(
     for index in range(int(n_blocks)):
         col0 = index * block_width
         col1 = (index + 1) * block_width
-        early = master_e[:, col0:col1] * np.conj(slave_e[:, col0:col1])
-        late = master_l[:, col0:col1] * np.conj(slave_l[:, col0:col1])
+        early_m = master_e[:, col0:col1]
+        early_s = slave_e[:, col0:col1]
+        late_m = master_l[:, col0:col1]
+        late_s = slave_l[:, col0:col1]
+        early = early_m * np.conj(early_s)
+        late = late_m * np.conj(late_s)
         cross = early * np.conj(late)
-        coherence = float(np.abs(np.sum(cross)) / (np.sum(np.abs(cross)) + 1e-12))
-        look = early_look_coherence(master_e[:, col0:col1], slave_e[:, col0:col1])
-        weight = np.where(look > float(coherence_threshold), np.sqrt(look), 0.0)
+        # A masked look has phase 0. It must not receive the other look's weight.
+        usable = (
+            (np.abs(early_m) > 0)
+            & (np.abs(early_s) > 0)
+            & (np.abs(late_m) > 0)
+            & (np.abs(late_s) > 0)
+        )
+        coherence = float(np.abs(np.sum(cross[usable])) / (np.sum(np.abs(cross[usable])) + 1e-12)) if np.any(usable) else 0.0
+        look = early_look_coherence(early_m, early_s)
+        weight = np.where((look > float(coherence_threshold)) & usable, np.sqrt(look), 0.0)
         if separation.size == 1:
             block_separation = np.full(weight.size, float(separation[0]), dtype=np.float64)
         else:
@@ -1948,27 +1960,27 @@ def shift_secondary_in_overlap(
     shift, stay zero.
     """
     data = np.asarray(grid.data)
-    valid = (np.real(data) != 0) | (np.imag(data) != 0)
+    out = np.array(data, dtype=np.complex64, copy=True)
+    overlap_rows = _burst_overlap_rows(grid)
     if mask is not None and mask.shape == data.shape:
-        valid = valid & np.asarray(mask, dtype=bool)
-    out = np.zeros(data.shape, dtype=np.complex64)
-    extent = overlap_extent(valid)
-    if extent is None:
-        return out
-    r0, r1, c0, c1 = extent
+        overlap_rows = overlap_rows & np.asarray(mask, dtype=bool)
+    present = (np.real(data) != 0) | (np.imag(data) != 0)
+    overlap_rows = overlap_rows & present
     if azimuth_px == 0.0 and range_px == 0.0:
-        out[r0:r1, c0:c1] = np.where(valid[r0:r1, c0:c1], data[r0:r1, c0:c1], 0)
+        return out
+    if not np.any(overlap_rows):
         return out
     phase_full = tops_phase(grid)
-    lines = int(grid.model.lines_per_burst)
     interval = float(grid.model.azimuth_time_interval_s)
-    burst0 = (grid.row + r0) // lines
-    burst1 = (grid.row + r1 - 1) // lines
-    for burst in range(int(burst0), int(burst1) + 1):
-        row_a = max(r0, burst * lines - grid.row)
-        row_b = min(r1, (burst + 1) * lines - grid.row)
-        if row_b <= row_a:
+    # Each contiguous overlap run is shifted on its own. Lines between
+    # overlaps stay the coregistered secondary.
+    runs = _true_runs(np.any(overlap_rows, axis=1))
+    for row_a, row_b in runs:
+        cols = np.flatnonzero(np.any(overlap_rows[row_a:row_b], axis=0))
+        if cols.size == 0:
             continue
+        c0 = int(cols[0])
+        c1 = int(cols[-1]) + 1
         tile = np.asarray(data[row_a:row_b, c0:c1], dtype=np.complex64)
         tile = _range_shift(tile, float(range_px))
         phase = phase_full[row_a:row_b, c0:c1]
@@ -1976,10 +1988,43 @@ def shift_secondary_in_overlap(
         baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
         shifted_phase = _azimuth_shift(phase.astype(np.complex64), float(azimuth_px), interval).real
         corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
-        tile_valid = valid[row_a:row_b, c0:c1]
-        corrected[~tile_valid] = 0
+        tile_valid = overlap_rows[row_a:row_b, c0:c1]
+        corrected = np.where(tile_valid, corrected, out[row_a:row_b, c0:c1])
         out[row_a:row_b, c0:c1] = corrected
     return out
+
+
+def _burst_overlap_rows(grid: RadarGrid) -> np.ndarray:
+    """True on the early and late lines of every burst overlap this window holds."""
+    mask = np.zeros(grid.data.shape, dtype=bool)
+    for index in range(len(grid.model.bursts) - 1):
+        try:
+            early, late = valid_overlap_rows(grid.model, index)
+        except ValueError:
+            continue
+        for start, stop in (early, late):
+            local0 = int(start) - int(grid.row)
+            local1 = int(stop) - int(grid.row)
+            row0 = max(local0, 0)
+            row1 = min(local1, mask.shape[0])
+            if row1 > row0:
+                mask[row0:row1, :] = True
+    return mask
+
+
+def _true_runs(flags: np.ndarray) -> list[tuple[int, int]]:
+    """Half-open index runs where a 1-D boolean is true."""
+    runs: list[tuple[int, int]] = []
+    start = None
+    for index, flag in enumerate(np.asarray(flags, dtype=bool)):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, int(flags.size)))
+    return runs
 
 
 def _range_shift(image: np.ndarray, pixels: float) -> np.ndarray:

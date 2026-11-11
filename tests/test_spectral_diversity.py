@@ -145,6 +145,167 @@ def test_network_fixes_the_reference_and_rejects_a_long_baseline():
     assert abs(shifts[2] - (shifts[1] - 0.001000)) < 5e-4
 
 
+def test_average_uses_the_phase_not_the_amplitude():
+    """A bright sample must not outvote a unit-weight neighbour."""
+    phase = np.full((4, 4), 0.2)
+    phase[0, 0] = 0.0
+    cross = np.exp(1j * phase)
+    cross[0, 0] *= 1.0e6
+    weight = np.ones(phase.shape)
+    separation = 4000.0
+    interval = 0.002
+    got = average_shift_px(cross, weight, np.array([separation]), interval)
+    votes = np.exp(1j * phase.ravel())
+    expected_phase = float(np.angle(np.sum(votes)))
+    # Every weight is 1, so SNAP's /N equals the weighted mean of Δf.
+    expected = expected_phase / (2.0 * np.pi * separation * interval)
+    assert abs(got - expected) < 1e-9
+    amplitude_weighted = float(np.angle(np.sum(cross)))
+    assert abs(amplitude_weighted) < 0.01
+    assert abs(expected_phase - 0.2) > 0.01
+
+
+def test_a_masked_late_look_does_not_vote():
+    separation = 5000.0
+    interval = 0.002
+    pixels = 0.01
+    master, slave_early, slave_late = _tone(32, 80, pixels, separation, interval)
+    slave_late = slave_late.copy()
+    slave_late[:, :40] = 0
+    estimate = estimate_overlap(
+        master,
+        master,
+        slave_early,
+        slave_late,
+        separation_hz=separation,
+        azimuth_time_interval_s=interval,
+        n_blocks=2,
+        estimate_range=False,
+    )
+    assert estimate.block_weights[0] == 0.0
+    assert abs(estimate.block_shifts_px[1] - (-pixels)) < 2e-3
+    assert abs(estimate.applied_shift_px - pixels) < 2e-3
+
+
+def test_range_correlation_recovers_one_sixteenth_of_a_pixel():
+    rng = np.random.default_rng(7)
+    base = rng.normal(size=(64, 64))
+    spectrum = np.fft.fft2(base)
+    keep = np.abs(np.fft.fftfreq(64)) < 0.15
+    spectrum *= keep[:, None] * keep[None, :]
+    smooth = np.fft.ifft2(spectrum).real
+    master = smooth.astype(np.complex128)
+    frequency = np.fft.fftfreq(64)
+    slave = np.fft.ifft(np.fft.fft(master, axis=1) * np.exp(-1j * 2.0 * np.pi * frequency * (1.0 / 16.0)), axis=1)
+    shift, correlation = range_cross_correlation_shift(
+        master, slave, oversample=128, search_px=8, threshold=0.1, window=64
+    )
+    assert correlation > 0.1
+    # One bin of the 128× grid is the oversampled peak spacing.
+    assert abs(shift - (-1.0 / 16.0)) <= 1.0 / 128.0
+
+
+def test_bisinc_edge_repeats_the_border_sample():
+    """SNAP clamps a tap that falls outside the raster instead of dropping it."""
+    from ai_insar.pipeline.tops_ops import resample_real
+
+    image = np.arange(6, dtype=np.float64).reshape(1, 6)
+    got = resample_real(image, np.array([[0.0]]), np.array([[0.25]]), "BISINC_5_POINT_INTERPOLATION")
+
+    def weight(offset: float) -> float:
+        if abs(offset) > 2.0:
+            return 0.0
+        return float(np.sinc(offset) * 0.5 * (1.0 + np.cos(np.pi * offset / 2.0)))
+
+    # Sample 0.25, taps at -2..+2, clamped onto columns 0, 0, 0, 1, 2.
+    deltas = np.array([2.25, 1.25, 0.25, -0.75, -1.75])
+    taps = np.array([weight(delta) for delta in deltas])
+    expected = np.dot(taps, [0, 0, 0, 1, 2]) / np.sum(taps)
+    assert abs(float(got[0, 0]) - expected) < 1e-6
+    # Dropping the two taps that start outside the raster renormalises the rest.
+    kept = taps[2:]
+    dropped_value = np.dot(kept, [0, 1, 2]) / np.sum(kept)
+    assert abs(expected - dropped_value) > 1e-3
+
+
+def test_esd_shift_changes_only_the_overlap_rows():
+    from ai_insar.pipeline.geometry import Orbit
+    from ai_insar.pipeline.s1_annotation import BurstTiming, SwathModel
+    from ai_insar.pipeline.tops_ops import RadarGrid, shift_secondary_in_overlap
+
+    start = np.datetime64("2021-06-30T05:26:15.752882")
+    interval = 0.002
+    lines = 20
+    following = start + np.timedelta64(int(round(12 * interval * 1e9)), "ns")
+    orbit = Orbit(
+        np.array([start, following]),
+        np.array([[7_000_000.0, 0.0, 0.0], [7_000_000.0, 1_000.0, 0.0]]),
+        np.array([[0.0, 7_000.0, 0.0], [0.0, 7_000.0, 0.0]]),
+    )
+    model = SwathModel(
+        wavelength_m=0.055,
+        azimuth_time_interval_s=interval,
+        range_pixel_spacing_m=2.3,
+        slant_range_time_s=0.005,
+        lines_per_burst=lines,
+        samples_per_burst=6,
+        number_of_lines=2 * lines,
+        incidence_rad=0.6,
+        fm_rate=np.zeros(3),
+        bursts=(
+            BurstTiming(start, 0, lines - 1, 0, 5),
+            BurstTiming(following, 0, lines - 1, 0, 5),
+        ),
+        orbit=orbit,
+    )
+    data = (np.arange(2 * lines, dtype=np.float64)[:, None] + 1j * np.arange(6)[None, :]).astype(np.complex64)
+    grid = RadarGrid(0, 0, data, model)
+    shifted = shift_secondary_in_overlap(grid, 0.25, 0.0, None)
+    changed = np.any(np.abs(shifted - data) > 1e-6, axis=1)
+    assert np.any(changed)
+    assert not np.all(changed)
+
+
+def test_esd_dialog_uses_snap_parameter_names():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest = __import__("pytest")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ai_insar.gui.chain_dialogs import EsdDialog
+
+    QApplication.instance() or QApplication([])
+    dialog = EsdDialog(can_run=True)
+    params = dialog.parameters()
+    for name in (
+        "fineWinWidthStr",
+        "fineWinHeightStr",
+        "fineWinAccAzimuth",
+        "fineWinAccRange",
+        "fineWinOversampling",
+        "xCorrThreshold",
+        "cohThreshold",
+        "numBlocksPerOverlap",
+        "esdEstimator",
+        "weightFunc",
+        "temporalBaselineType",
+        "maxTemporalBaseline",
+        "integrationMethod",
+        "doNotWriteTargetBands",
+        "useSuppliedRangeShift",
+        "overallRangeShift",
+        "useSuppliedAzimuthShift",
+        "overallAzimuthShift",
+    ):
+        assert name in params
+    assert params["fineWinWidthStr"] == "512"
+    assert params["esdEstimator"] == "Periodogram"
+    assert params["xCorrThreshold"] == 0.1
+    dialog.close()
+
+
 def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():
     from ai_insar.pipeline.tops_ops import resample_complex, resample_real
 
