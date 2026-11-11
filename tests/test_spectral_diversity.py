@@ -145,6 +145,232 @@ def test_network_fixes_the_reference_and_rejects_a_long_baseline():
     assert abs(shifts[2] - (shifts[1] - 0.001000)) < 5e-4
 
 
+def test_average_uses_the_phase_not_the_amplitude():
+    """A bright sample must not outvote a unit-weight neighbour."""
+    phase = np.full((4, 4), 0.2)
+    phase[0, 0] = 0.0
+    cross = np.exp(1j * phase)
+    cross[0, 0] *= 1.0e6
+    weight = np.ones(phase.shape)
+    separation = 4000.0
+    interval = 0.002
+    got = average_shift_px(cross, weight, np.array([separation]), interval)
+    votes = np.exp(1j * phase.ravel())
+    expected_phase = float(np.angle(np.sum(votes)))
+    # Every weight is 1, so SNAP's /N equals the weighted mean of Δf.
+    expected = expected_phase / (2.0 * np.pi * separation * interval)
+    assert abs(got - expected) < 1e-9
+    amplitude_weighted = float(np.angle(np.sum(cross)))
+    assert abs(amplitude_weighted) < 0.01
+    assert abs(expected_phase - 0.2) > 0.01
+
+
+def test_a_masked_late_look_does_not_vote():
+    separation = 5000.0
+    interval = 0.002
+    pixels = 0.01
+    master, slave_early, slave_late = _tone(32, 80, pixels, separation, interval)
+    slave_late = slave_late.copy()
+    slave_late[:, :40] = 0
+    estimate = estimate_overlap(
+        master,
+        master,
+        slave_early,
+        slave_late,
+        separation_hz=separation,
+        azimuth_time_interval_s=interval,
+        n_blocks=2,
+        estimate_range=False,
+    )
+    assert estimate.block_weights[0] == 0.0
+    assert abs(estimate.block_shifts_px[1] - (-pixels)) < 2e-3
+    assert abs(estimate.applied_shift_px - pixels) < 2e-3
+
+
+def test_range_correlation_recovers_one_sixteenth_of_a_pixel():
+    rng = np.random.default_rng(7)
+    base = rng.normal(size=(64, 64))
+    spectrum = np.fft.fft2(base)
+    keep = np.abs(np.fft.fftfreq(64)) < 0.15
+    spectrum *= keep[:, None] * keep[None, :]
+    smooth = np.fft.ifft2(spectrum).real
+    master = smooth.astype(np.complex128)
+    frequency = np.fft.fftfreq(64)
+    slave = np.fft.ifft(np.fft.fft(master, axis=1) * np.exp(-1j * 2.0 * np.pi * frequency * (1.0 / 16.0)), axis=1)
+    shift, correlation = range_cross_correlation_shift(
+        master, slave, oversample=128, search_px=8, threshold=0.1, window=64
+    )
+    assert correlation > 0.1
+    # One bin of the 128× grid is the oversampled peak spacing.
+    assert abs(shift - (-1.0 / 16.0)) <= 1.0 / 128.0
+
+
+def test_bisinc_edge_repeats_the_border_sample():
+    """SNAP clamps a tap that falls outside the raster instead of dropping it."""
+    from ai_insar.pipeline.tops_ops import resample_real
+
+    image = np.arange(6, dtype=np.float64).reshape(1, 6)
+    got = resample_real(image, np.array([[0.0]]), np.array([[0.25]]), "BISINC_5_POINT_INTERPOLATION")
+
+    def weight(offset: float) -> float:
+        if abs(offset) > 2.0:
+            return 0.0
+        return float(np.sinc(offset) * 0.5 * (1.0 + np.cos(np.pi * offset / 2.0)))
+
+    # Sample 0.25, taps at -2..+2, clamped onto columns 0, 0, 0, 1, 2.
+    deltas = np.array([2.25, 1.25, 0.25, -0.75, -1.75])
+    taps = np.array([weight(delta) for delta in deltas])
+    expected = np.dot(taps, [0, 0, 0, 1, 2]) / np.sum(taps)
+    assert abs(float(got[0, 0]) - expected) < 1e-6
+    # Dropping the two taps that start outside the raster renormalises the rest.
+    kept = taps[2:]
+    dropped_value = np.dot(kept, [0, 1, 2]) / np.sum(kept)
+    assert abs(expected - dropped_value) > 1e-3
+
+
+def test_esd_shift_uses_the_full_burst_tile_and_keeps_nodata():
+    from ai_insar.pipeline.geometry import Orbit
+    from ai_insar.pipeline.s1_annotation import BurstTiming, SwathModel
+    from ai_insar.pipeline.tops_ops import RadarGrid, shift_secondary_in_overlap
+
+    start = np.datetime64("2021-06-30T05:26:15.752882")
+    interval = 0.002
+    lines = 20
+    following = start + np.timedelta64(int(round(12 * interval * 1e9)), "ns")
+    orbit = Orbit(
+        np.array([start, following]),
+        np.array([[7_000_000.0, 0.0, 0.0], [7_000_000.0, 1_000.0, 0.0]]),
+        np.array([[0.0, 7_000.0, 0.0], [0.0, 7_000.0, 0.0]]),
+    )
+    model = SwathModel(
+        wavelength_m=0.055,
+        azimuth_time_interval_s=interval,
+        range_pixel_spacing_m=2.3,
+        slant_range_time_s=0.005,
+        lines_per_burst=lines,
+        samples_per_burst=6,
+        number_of_lines=2 * lines,
+        incidence_rad=0.6,
+        fm_rate=np.zeros(3),
+        bursts=(
+            BurstTiming(start, 0, lines - 1, 0, 5),
+            BurstTiming(following, 0, lines - 1, 0, 5),
+        ),
+        orbit=orbit,
+    )
+    data = (np.arange(2 * lines, dtype=np.float64)[:, None] + 1j * np.arange(6)[None, :]).astype(np.complex64)
+    data[3, 1] = 0
+    grid = RadarGrid(0, 0, data, model)
+    shifted = shift_secondary_in_overlap(grid, 0.25, 0.0, None)
+    # Both bursts are transformed, including lines that are not in the overlap.
+    assert np.max(np.abs(shifted[0] - data[0])) > 1e-4
+    assert np.max(np.abs(shifted[lines] - data[lines])) > 1e-4
+    assert shifted[3, 1] == 0
+    # A one-line transform is a different Fourier support from the burst tile.
+    short = RadarGrid(0, 0, data[:1].copy(), model)
+    short_shifted = shift_secondary_in_overlap(short, 0.25, 0.0, None)
+    assert np.max(np.abs(short_shifted[0] - shifted[0])) > 1e-4
+
+
+def test_esd_dialog_uses_snap_parameter_names():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest = __import__("pytest")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ai_insar.gui.chain_dialogs import EsdDialog
+
+    QApplication.instance() or QApplication([])
+    dialog = EsdDialog(can_run=True)
+    params = dialog.parameters()
+    for name in (
+        "fineWinWidthStr",
+        "fineWinHeightStr",
+        "fineWinAccAzimuth",
+        "fineWinAccRange",
+        "fineWinOversampling",
+        "xCorrThreshold",
+        "cohThreshold",
+        "numBlocksPerOverlap",
+        "esdEstimator",
+        "weightFunc",
+        "temporalBaselineType",
+        "maxTemporalBaseline",
+        "integrationMethod",
+        "doNotWriteTargetBands",
+        "useSuppliedRangeShift",
+        "overallRangeShift",
+        "useSuppliedAzimuthShift",
+        "overallAzimuthShift",
+    ):
+        assert name in params
+    assert params["fineWinWidthStr"] == "512"
+    assert params["esdEstimator"] == "Periodogram"
+    assert params["xCorrThreshold"] == 0.1
+    dialog.close()
+
+
+def test_snap_flat_earth_polynomial_has_twenty_one_coefficients_and_the_geometric_sign():
+    from ai_insar.pipeline.tops_ops import _distribute_points, _snap_monomials, flat_earth_phase
+    from test_flat_earth_coherence import _pair
+
+    points = _distribute_points(501, 1507, 22848)
+    assert points.shape == (501, 2)
+    assert points[:, 0].min() >= 0 and points[:, 0].max() <= 1507
+    assert points[:, 1].min() >= 0 and points[:, 1].max() <= 22848
+    assert _snap_monomials(points[:, 0], points[:, 1], 5, 1507, 22848).shape[1] == 21
+    early_orbit, later_orbit, early, later = _pair()
+    dense = flat_earth_phase(
+        early, later, early_orbit=early_orbit, later_orbit=later_orbit, degree=3, polynomial_points=None
+    )
+    fitted = flat_earth_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=3,
+        polynomial_degree=5,
+        polynomial_points=501,
+        orbit_states=8,
+    )
+    assert fitted.shape == dense.shape
+    assert np.isfinite(fitted).all()
+    # Same sign as -4π/λ (R_reference - R_secondary). The polynomial is not the dense field.
+    assert fitted[4, 3] * dense[4, 3] > 0.0
+
+
+def test_snap_dem_half_cell_shifts_the_query_by_half_a_post():
+    from ai_insar.pipeline.dem import ElevationModel, GeoidGrid
+
+    lat = np.array([10.0, 9.0, 8.0])
+    lon = np.array([20.0, 21.0, 22.0])
+    # North-up: dy = -1, dx = +1. SNAP reads the centre grid half a post southeast.
+    heights = np.array([[0.0, 10.0, 20.0], [100.0, 110.0, 120.0], [200.0, 210.0, 220.0]])
+    dem = ElevationModel(
+        lat_deg=lat,
+        lon_deg=lon,
+        orthometric_m=heights,
+        nodata=-32768.0,
+        orthometric_datum="EGM2008",
+        geoid=GeoidGrid(
+            lat_deg=np.array([12.0, 6.0]),
+            lon_deg=np.array([18.0, 24.0]),
+            undulation_m=np.zeros((2, 2)),
+            source="test",
+            model="EGM2008",
+        ),
+        provenance="test",
+    )
+    centre, centre_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=False)
+    shifted, shifted_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=True)
+    assert centre_ok and shifted_ok
+    assert abs(centre - 110.0) < 1e-6
+    # lat 9 + (-1)/2 = 8.5, lon 21 + 0.5 = 21.5, bilinear between 110, 120, 210, 220.
+    assert abs(shifted - centre) > 1.0
+
+
 def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():
     from ai_insar.pipeline.tops_ops import resample_complex, resample_real
 
@@ -161,6 +387,7 @@ def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():
 
     taps = np.array([weight(4.5 - index) for index in range(2, 7)])
     taps /= np.sum(taps)
+    # The stored SLC is complex64. The kernel itself is the exact BiSinc weight.
     assert abs(float(half[0, 0].real) - float(taps[2])) < 1e-6
     odd = resample_real(np.real(image).astype(np.float64), np.array([[4.3]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
     odd_taps = np.array([weight(4.3 - index) for index in range(2, 7)])

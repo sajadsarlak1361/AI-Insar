@@ -110,7 +110,7 @@ def test_back_geocoding_matches_the_graph_dialog_and_does_not_coregister(qapp, t
     assert dialog.dem.count() == 11
     assert dialog.dem_resampling.count() == 7
     assert dialog.dem_resampling.currentText() == "BILINEAR_INTERPOLATION"
-    assert dialog.resampling.currentText() == "BILINEAR_INTERPOLATION"
+    assert dialog.resampling.currentText() == "BISINC_5_POINT_INTERPOLATION"
     assert dialog.mask_elevation.isChecked()
     assert not dialog.output_deramp.isChecked()
     assert not dialog.disable_reramp.isChecked()

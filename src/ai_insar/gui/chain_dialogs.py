@@ -557,6 +557,24 @@ class EsdDialog(OperatorDialog):
             "user_range": checked("esdUserRange"),
             "user_azimuth": checked("esdUserAzimuth"),
             "do_not_write": checked("esdNoWrite"),
+            "fineWinWidthStr": combo("esdWinWidth") or "512",
+            "fineWinHeightStr": combo("esdWinHeight") or "512",
+            "fineWinAccAzimuth": combo("esdAzAccuracy") or "16",
+            "fineWinAccRange": combo("esdRgAccuracy") or "16",
+            "fineWinOversampling": combo("esdOversample") or "128",
+            "xCorrThreshold": float(text("esdXcorr", "0.1") or "0.1"),
+            "cohThreshold": float(text("esdCohThreshold", "0.3") or "0.3"),
+            "numBlocksPerOverlap": int(text("esdWindows", "10") or "10"),
+            "esdEstimator": combo("esdEstimator") or "Periodogram",
+            "weightFunc": combo("esdWeight") or "Inv Quadratic",
+            "temporalBaselineType": combo("esdBaselineType") or "Number of images",
+            "maxTemporalBaseline": int(float(text("esdMaxBaseline", "4") or "4")),
+            "integrationMethod": combo("esdIntegration") or "L1 and L2",
+            "doNotWriteTargetBands": checked("esdNoWrite"),
+            "useSuppliedRangeShift": checked("esdUserRange"),
+            "overallRangeShift": float(text("esdRangeShift", "0") or "0"),
+            "useSuppliedAzimuthShift": checked("esdUserAzimuth"),
+            "overallAzimuthShift": float(text("esdAzimuthShift", "0") or "0"),
         }
 
 
@@ -617,7 +635,8 @@ class BackGeocodingDialog(QtWidgets.QDialog):
             "Eleven DEM names were visible. SNAP 14 showed a scrollbar, so the list may be longer."
         )
         self.dem_resampling = _combo(_RESAMPLING, "BILINEAR_INTERPOLATION", "backGeoDemResampling")
-        self.resampling = _combo(_RESAMPLING, "BILINEAR_INTERPOLATION", "backGeoResampling")
+        # SNAP BackGeocodingOp defaults to the 5-point windowed sinc.
+        self.resampling = _combo(_RESAMPLING, "BISINC_5_POINT_INTERPOLATION", "backGeoResampling")
         self.mask_elevation = QtWidgets.QCheckBox("Mask out areas with no elevation")
         self.mask_elevation.setObjectName("backGeoMaskElevation")
         self.mask_elevation.setChecked(True)

@@ -1798,10 +1798,10 @@ _HANN_LUT: dict[int, np.ndarray] = {}
 def _hann_sinc_lut(half: int) -> np.ndarray:
     """Weights for fractional offsets in ``[0, 1)``.
 
-    ``w(u) = sinc(u) · 0.5 · (1 + cos(π u / half))`` for ``|u| <= half``,
-    else 0. Taps are ``floor(x) + offset`` with ``offset`` from ``-half``
-    to ``+half``. A tap past the window is already zero, including the
-    extra fractional tap an unwindowed sinc would keep.
+    ``w(u) = sinc(u) · 0.5 · (1 + cos(2π u / (N-1)))`` with ``N = 2·half+1``,
+    which is SNAP's BiSinc window. An unwindowed sinc keeps the sidelobes
+    that dominated the earlier ESD bias. Taps outside the raster repeat the
+    edge sample, matching SNAP's index clamp, instead of being dropped.
     """
     cached = _HANN_LUT.get(half)
     if cached is not None:
@@ -2358,12 +2358,23 @@ def overlap_block_shifts(
     for index in range(int(n_blocks)):
         col0 = index * block_width
         col1 = (index + 1) * block_width
-        early = master_e[:, col0:col1] * np.conj(slave_e[:, col0:col1])
-        late = master_l[:, col0:col1] * np.conj(slave_l[:, col0:col1])
+        early_m = master_e[:, col0:col1]
+        early_s = slave_e[:, col0:col1]
+        late_m = master_l[:, col0:col1]
+        late_s = slave_l[:, col0:col1]
+        early = early_m * np.conj(early_s)
+        late = late_m * np.conj(late_s)
         cross = early * np.conj(late)
-        coherence = float(np.abs(np.sum(cross)) / (np.sum(np.abs(cross)) + 1e-12))
-        look = early_look_coherence(master_e[:, col0:col1], slave_e[:, col0:col1])
-        weight = np.where(look > float(coherence_threshold), np.sqrt(look), 0.0)
+        # A masked look has phase 0. It must not receive the other look's weight.
+        usable = (
+            (np.abs(early_m) > 0)
+            & (np.abs(early_s) > 0)
+            & (np.abs(late_m) > 0)
+            & (np.abs(late_s) > 0)
+        )
+        coherence = float(np.abs(np.sum(cross[usable])) / (np.sum(np.abs(cross[usable])) + 1e-12)) if np.any(usable) else 0.0
+        look = early_look_coherence(early_m, early_s)
+        weight = np.where((look > float(coherence_threshold)) & usable, np.sqrt(look), 0.0)
         if separation.size == 1:
             block_separation = np.full(weight.size, float(separation[0]), dtype=np.float64)
         else:
@@ -2418,53 +2429,75 @@ def apply_azimuth_pixel_shift(image: np.ndarray, pixels: float, azimuth_time_int
     return np.fft.ifft(spectrum, axis=0).astype(np.complex64)
 
 
+# SNAP SpectralDiversityOp.setPreferredTileSize(512, linesPerBurst).
+ESD_RANGE_TILE = 512
+
+
 def shift_secondary_in_overlap(
     grid: RadarGrid,
     azimuth_px: float,
     range_px: float,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Range-shift, deramp, azimuth-shift the baseband and the phase, then reramp.
+    """Range-shift, deramp, azimuth-shift, and reramp on SNAP's tiles.
 
-    The range ramp is applied to the still-chirped lines. Deramp uses that
-    burst's phase, and the azimuth ramp is applied to the baseband and to the
-    phase before the phase is put back. Each burst is transformed on its own
-    so the ramp does not cross a burst boundary. Only the common-overlap box
-    is touched. Pixels outside the mask, and pixels that were zero before the
-    shift, stay zero.
+    Each transform is one burst tall (``linesPerBurst``) and 512 range
+    samples wide, aligned to the product sample grid. ``mask`` chooses which
+    valid pixels are replaced. It does not change the Fourier support. A
+    sample that was no-data stays no-data.
     """
     data = np.asarray(grid.data)
-    valid = (np.real(data) != 0) | (np.imag(data) != 0)
-    if mask is not None and mask.shape == data.shape:
-        valid = valid & np.asarray(mask, dtype=bool)
-    out = np.zeros(data.shape, dtype=np.complex64)
-    extent = overlap_extent(valid)
-    if extent is None:
-        return out
-    r0, r1, c0, c1 = extent
+    out = np.array(data, dtype=np.complex64, copy=True)
     if azimuth_px == 0.0 and range_px == 0.0:
-        out[r0:r1, c0:c1] = np.where(valid[r0:r1, c0:c1], data[r0:r1, c0:c1], 0)
         return out
     phase_full = tops_phase(grid)
-    lines = int(grid.model.lines_per_burst)
     interval = float(grid.model.azimuth_time_interval_s)
-    burst0 = (grid.row + r0) // lines
-    burst1 = (grid.row + r1 - 1) // lines
-    for burst in range(int(burst0), int(burst1) + 1):
-        row_a = max(r0, burst * lines - grid.row)
-        row_b = min(r1, (burst + 1) * lines - grid.row)
+    lines = int(grid.model.lines_per_burst)
+    height, width = out.shape
+    present = (np.real(data) != 0) | (np.imag(data) != 0)
+    if mask is not None and np.asarray(mask).shape == data.shape:
+        write = present & np.asarray(mask, dtype=bool)
+    else:
+        write = present
+    first = int(grid.row) // lines
+    last = (int(grid.row) + height - 1) // lines
+    product_samples = int(grid.model.samples_per_burst)
+    for burst in range(first, last + 1):
+        local_origin = burst * lines - int(grid.row)
+        row_a = max(0, local_origin)
+        row_b = min(height, local_origin + lines)
         if row_b <= row_a:
             continue
-        tile = np.asarray(data[row_a:row_b, c0:c1], dtype=np.complex64)
-        tile = _range_shift(tile, float(range_px))
-        phase = phase_full[row_a:row_b, c0:c1]
-        baseband = tile * np.exp(1j * phase)
-        baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
-        shifted_phase = _azimuth_shift_real(phase, float(azimuth_px), interval)
-        corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
-        tile_valid = valid[row_a:row_b, c0:c1]
-        corrected[~tile_valid] = 0
-        out[row_a:row_b, c0:c1] = corrected
+        abs_col = int(grid.col)
+        tile_start = (abs_col // ESD_RANGE_TILE) * ESD_RANGE_TILE
+        for abs0 in range(tile_start, abs_col + width, ESD_RANGE_TILE):
+            tile_width = ESD_RANGE_TILE
+            if abs0 + tile_width > product_samples:
+                tile_width = product_samples - abs0
+            if tile_width < 1:
+                continue
+            local0 = abs0 - abs_col
+            src_c0 = max(local0, 0)
+            src_c1 = min(local0 + tile_width, width)
+            if src_c1 <= src_c0:
+                continue
+            tile = np.zeros((lines, tile_width), dtype=np.complex64)
+            phase = np.zeros((lines, tile_width), dtype=np.float64)
+            dst_r0 = row_a - local_origin
+            dst_c0 = src_c0 - local0
+            dst_r1 = dst_r0 + (row_b - row_a)
+            dst_c1 = dst_c0 + (src_c1 - src_c0)
+            tile[dst_r0:dst_r1, dst_c0:dst_c1] = data[row_a:row_b, src_c0:src_c1]
+            phase[dst_r0:dst_r1, dst_c0:dst_c1] = phase_full[row_a:row_b, src_c0:src_c1]
+            shifted = _range_shift(tile, float(range_px))
+            baseband = shifted * np.exp(1j * phase)
+            baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
+            shifted_phase = _azimuth_shift_real(phase, float(azimuth_px), interval)
+            corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
+            piece = corrected[dst_r0:dst_r1, dst_c0:dst_c1]
+            region = write[row_a:row_b, src_c0:src_c1]
+            current = out[row_a:row_b, src_c0:src_c1]
+            out[row_a:row_b, src_c0:src_c1] = np.where(region, piece, current)
     return out
 
 

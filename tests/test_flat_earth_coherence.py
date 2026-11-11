@@ -364,7 +364,9 @@ def test_coherence_is_zero_when_a_look_has_no_power_and_does_not_cross_bursts():
     late[1, 4:8] = 1
     gamma = coherence_map(early, late, 10, azimuth_window=2)
     assert gamma.dtype == np.float32
+    # Column 19's range window starts at sample 15, past the only non-zero samples.
     assert float(gamma[0, 19]) == 0.0
+    # The last line's next azimuth sample is outside this burst. It stays zero.
     assert float(gamma[2, 6]) == 0.0
     assert float(gamma[1, 6]) > 0.5
 
@@ -388,6 +390,7 @@ def test_snaphu_export_is_unscaled_little_endian_float32():
     conf = export_snaphu("/tmp/snaphu-parity-9501", phase, coherence)
     folder = conf.parent
     written = np.fromfile(folder / "corr.img", dtype="<f4").reshape(2, 2)
+    assert written.dtype == np.dtype("<f4")
     assert written.tolist() == [[0.25, 1.0], [0.0, 0.5]]
     header = (folder / "phase.hdr").read_text(encoding="utf-8")
     assert "data type = 4" in header
