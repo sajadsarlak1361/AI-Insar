@@ -144,6 +144,22 @@ class TopsSplitDialog(OperatorDialog):
         burst_row.addWidget(QtWidgets.QLabel("to"))
         burst_row.addWidget(self.burst_last)
         form.addRow(burst_row)
+        self.wkt_aoi = QtWidgets.QPlainTextEdit()
+        self.wkt_aoi.setObjectName("splitWktAoi")
+        self.wkt_aoi.setFixedHeight(72)
+        self.wkt_aoi.setPlaceholderText("POLYGON ((lon lat, lon lat, ...))")
+        self.aoi_button = QtWidgets.QPushButton("Select bursts covering the region")
+        self.aoi_button.setObjectName("splitAoiBursts")
+        self.aoi_button.clicked.connect(self._apply_wkt_bursts)
+        self.aoi_status = QtWidgets.QLabel("")
+        self.aoi_status.setObjectName("splitAoiStatus")
+        self.aoi_status.setWordWrap(True)
+        form.addRow("Geographic region (WKT):", self.wkt_aoi)
+        form.addRow(self.aoi_button)
+        form.addRow(self.aoi_status)
+        self._burst_footprints = ()
+        self._reference_footprint = None
+        self._secondary_footprint = None
         self.add_processing(form)
 
     def _on_source_index(self, index: int) -> None:
@@ -307,6 +323,14 @@ class TopsSplitDialog(OperatorDialog):
             return "Burst range is reversed."
         if "9999" in self.burst_text.text() and self._product is None:
             return "Burst count is the empty-product placeholder. Bind a source before Run."
+        wkt = self.wkt_aoi.toPlainText().strip()
+        if wkt:
+            try:
+                from ai_insar.pipeline.aoi import parse_wkt
+
+                parse_wkt(wkt)
+            except ValueError as exc:
+                return str(exc)
         return ""
 
     def parameters(self) -> dict:
@@ -318,7 +342,67 @@ class TopsSplitDialog(OperatorDialog):
             "polarisation": "" if item is None else item.text(),
             "burst_first": int(self.burst_first.value()),
             "burst_last": int(self.burst_last.value()),
+            "wktAoi": self.wkt_aoi.toPlainText().strip(),
         }
+
+    def set_aoi_context(self, *, reference=None, secondary=None, burst_footprints=(), wkt: str = "") -> None:
+        """Footprints are longitude, latitude rings. An existing WKT is kept."""
+        self._reference_footprint = reference
+        self._secondary_footprint = secondary
+        self._burst_footprints = tuple(burst_footprints or ())
+        if wkt and not self.wkt_aoi.toPlainText().strip():
+            self.wkt_aoi.setPlainText(wkt)
+
+    def _apply_wkt_bursts(self) -> None:
+        from ai_insar.pipeline.aoi import AoiError, azimuth_burst_footprints, footprint_polygon, prepare_aoi
+
+        text = self.wkt_aoi.toPlainText().strip()
+        if not text:
+            self.aoi_status.setText("Enter a WKT polygon or draw one in Processing area.")
+            return
+        footprints = list(self._burst_footprints)
+        if not footprints and self._product is not None:
+            scene = footprint_polygon(self._product.footprint)
+            count = self._max_bursts()
+            if scene is not None and count > 1:
+                try:
+                    footprints = list(azimuth_burst_footprints(scene, count))
+                except AoiError as exc:
+                    self.aoi_status.setText(str(exc))
+                    return
+        reference = self._as_ring(self._reference_footprint)
+        secondary = self._as_ring(self._secondary_footprint)
+        try:
+            report = prepare_aoi(
+                text,
+                reference=reference,
+                secondary=secondary,
+                burst_footprints=tuple(footprints) or None,
+                subswath=self.subswath.currentText().strip() or "IW1",
+            )
+        except AoiError as exc:
+            self.aoi_status.setText(str(exc))
+            return
+        if report.outside:
+            self.aoi_status.setText(report.message)
+            return
+        if report.burst_first is not None and report.burst_last is not None:
+            self.burst_first.setValue(int(report.burst_first))
+            self.burst_last.setValue(int(report.burst_last))
+        self.aoi_status.setText(report.message)
+
+    @staticmethod
+    def _as_ring(ring):
+        from ai_insar.pipeline.aoi import AoiError, LonLatPolygon
+
+        if ring is None:
+            return None
+        if isinstance(ring, LonLatPolygon):
+            return ring
+        try:
+            return LonLatPolygon(tuple((float(lon), float(lat)) for lon, lat in ring))
+        except (AoiError, TypeError, ValueError):
+            return None
 
 
 class TopsDeburstDialog(OperatorDialog):

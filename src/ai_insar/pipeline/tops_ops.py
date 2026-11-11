@@ -2057,6 +2057,7 @@ def ellipsoid_geocode(
     out_cols: int = 8,
     degree: int = 3,
     resampling: str = "BILINEAR_INTERPOLATION",
+    geo_region: str | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     """Inverse range-Doppler resample at one ellipsoidal height.
 
@@ -2071,6 +2072,7 @@ def ellipsoid_geocode(
         degree=degree,
         resampling=resampling,
         surface="ellipsoid",
+        geo_region=geo_region,
     )
 
 
@@ -2085,6 +2087,7 @@ def terrain_correct(
     resampling: str = "BILINEAR_INTERPOLATION",
     dem_resampling: str = "BILINEAR_INTERPOLATION",
     projection: str = "geographic",
+    geo_region: str | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float], np.ndarray]:
     """Inverse range-Doppler resample using a DEM height at every output coordinate.
 
@@ -2107,6 +2110,7 @@ def terrain_correct(
         resampling=resampling,
         surface="dem",
         projection=projection,
+        geo_region=geo_region,
     )
     return image, bounds, heights
 
@@ -2122,6 +2126,7 @@ def _geocode(
     resampling: str,
     surface: str,
     projection: str = "geographic",
+    geo_region: str | None = None,
 ):
     if int(out_rows) < 2 or int(out_cols) < 2:
         raise ValueError("output grid must be at least 2 by 2")
@@ -2140,6 +2145,14 @@ def _geocode(
         )
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
+    geo_polygon = None
+    if geo_region:
+        from ai_insar.pipeline.aoi import AoiError, limit_geographic_bounds
+
+        try:
+            west, south, east, north, geo_polygon = limit_geographic_bounds(west, south, east, north, geo_region)
+        except AoiError as exc:
+            raise ValueError(str(exc)) from exc
     if mode == "utm":
         from pyproj import Transformer
 
@@ -2183,6 +2196,14 @@ def _geocode(
             line[row_index, col_index] = local_line
             sample[row_index, col_index] = local_sample
     image = resample_complex(grid.data, line, sample, resampling)
+    if geo_polygon is not None:
+        from ai_insar.pipeline.aoi import points_in_polygon
+
+        keep = points_in_polygon(lon_axis, lat_axis, geo_polygon)
+        image = np.array(image, copy=True, dtype=np.complex64)
+        image[~keep] = np.nan + 1j * np.nan
+        heights = np.array(heights, copy=True)
+        heights[~keep] = np.nan
     _geocode.last_surface = surface
     _geocode.last_warning = ""
     if surface == "dem":

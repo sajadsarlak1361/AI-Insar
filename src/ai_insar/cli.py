@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--demo", action="store_true", help="Use the built-in synthetic SLC stack")
     source.add_argument("--slc", type=Path, help="complex64 .npy SLC stack shaped (dates, height, width)")
     run_parser.add_argument("--meta", type=Path, help="JSON sidecar with dates and wavelength_m")
+    run_parser.add_argument("--aoi", help="Processing-area WKT polygon, POLYGON ((lon lat, ...))")
+    run_parser.add_argument("--aoi-config", type=Path, help="JSON AOI saved by the Processing area dialog")
 
     commands.add_parser(
         "package-windows",
@@ -84,6 +86,7 @@ def _run(args: argparse.Namespace) -> int:
         stack = load_slc(args.slc, args.meta)
         print(f"Loaded SLC {stack.data.shape} {stack.data.dtype} from {args.slc}.")
     workspace = Workspace(stack=stack)
+    _apply_cli_aoi(workspace, args)
 
     def _printer(message: str) -> None:
         print(message)
@@ -92,6 +95,45 @@ def _run(args: argparse.Namespace) -> int:
     save_products(workspace, args.output)
     print(f"Wrote products to {args.output}")
     return 0
+
+
+def _apply_cli_aoi(workspace: Workspace, args: argparse.Namespace) -> None:
+    """Store a typed WKT or a saved AOI config on the workspace before the chain runs."""
+    from ai_insar.pipeline.aoi import AoiError, chain_aoi, load_aoi_config, parse_wkt, prepare_aoi
+
+    config = None
+    if getattr(args, "aoi_config", None):
+        config = load_aoi_config(args.aoi_config)
+    wkt = str(getattr(args, "aoi", "") or "").strip()
+    if not wkt and config is not None:
+        wkt = config.wkt
+    if not wkt:
+        return
+    try:
+        report = prepare_aoi(parse_wkt(wkt))
+    except AoiError as exc:
+        raise SystemExit(str(exc)) from exc
+    if config is not None:
+        report.subswath = config.subswath or report.subswath
+        report.polarisation = config.polarisation or report.polarisation
+        report.burst_first = config.burst_first
+        report.burst_last = config.burst_last
+        report.burst_ids = tuple(config.burst_ids)
+        report.esd_overlap_bursts = config.esd_overlap_bursts
+        report.pixel_region = config.region
+        report.sub_sampling_x = config.sub_sampling_x
+        report.sub_sampling_y = config.sub_sampling_y
+        report.source_bands = tuple(config.source_bands)
+        report.copy_metadata = config.copy_metadata
+        if config.area_km2 is not None:
+            report.area_km2 = config.area_km2
+        if config.centre_latitude is not None:
+            report.centre_latitude = config.centre_latitude
+            report.centre_longitude = config.centre_longitude
+    workspace.config.aoi_wkt = report.clipped_wkt or report.requested_wkt
+    workspace.aoi = report.to_dict()
+    workspace.aoi_stages = chain_aoi(report)
+    print(report.message)
 
 
 def _package() -> int:

@@ -180,6 +180,11 @@ def save_products(workspace: Any, directory: Path) -> Path:
             "detection_min_pixels": workspace.config.detection_min_pixels,
             "timeseries_method": workspace.config.timeseries_method,
             "unwrap_method": workspace.config.unwrap_method,
+            "aoi_wkt": getattr(workspace.config, "aoi_wkt", ""),
         }
+        if getattr(workspace, "aoi", None):
+            payload["aoi"] = workspace.aoi
+        if getattr(workspace, "aoi_stages", None):
+            payload["aoi_stages"] = workspace.aoi_stages
     (directory / "products.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return directory
