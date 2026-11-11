@@ -1105,6 +1105,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 output_intensity=False,
             )
             self.workspace.mean_coherence = np.mean(self.workspace.coherence, axis=0).astype(np.float32)
+        mask = self.workspace.common_overlap_mask
+        if mask is not None:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            used_h = (mask.shape[0] // azimuth_looks) * azimuth_looks
+            used_w = (mask.shape[1] // range_looks) * range_looks
+            view = mask[:used_h, :used_w].reshape(
+                used_h // azimuth_looks, azimuth_looks, used_w // range_looks, range_looks
+            )
+            reduced = np.all(view, axis=(1, 3))
+            self.workspace.common_overlap_mask = reduced
+            self.workspace.common_overlap_extent = overlap_extent(reduced)
+            self.workspace.common_overlap_meta = overlap_metadata(reduced)
         shape = self.workspace.interferograms.shape if self.workspace.interferograms is not None else self.workspace.coherence.shape
         self._log(
             f"Multilook independent looks: {azimuth_looks} azimuth × {range_looks} range. "
@@ -1125,9 +1138,13 @@ class MainWindow(QtWidgets.QMainWindow):
             raise RuntimeError("Snaphu export needs an interferogram and a coherence image. Zeros were not written.")
         if self.workspace.interferograms.shape != self.workspace.coherence.shape:
             raise RuntimeError("Interferogram and coherence shapes differ.")
+        from ai_insar.pipeline.engine import restrict_array
+
         pair_count = int(self.workspace.interferograms.shape[0])
         phase = np.angle(self.workspace.interferograms[0]).astype(np.float64)
         coherence = np.asarray(self.workspace.coherence[0], dtype=np.float64)
+        phase = restrict_array(phase, self.workspace.common_overlap_mask)
+        coherence = restrict_array(coherence, self.workspace.common_overlap_mask)
         wavelength = None if self.workspace.stack is None else float(self.workspace.stack.wavelength_m)
         conf = export_snaphu(
             params["folder"],
@@ -1421,21 +1438,73 @@ class MainWindow(QtWidgets.QMainWindow):
         if params.get("subtract_flat") or params.get("subtract_topo"):
             self._remove_geometric_phase(params)
         if params.get("output_coherence"):
-            self._set_coherence_windows(
-                int(params["coherence_range"]),
-                None if params["square_pixel"] else int(params["coherence_azimuth"]),
-                square=bool(params["square_pixel"]),
-            )
-            self.run_coherence()
+            azimuth, range_window = self._coherence_window_sizes(params)
+            self.workspace.config.coherence_window = range_window
+            self.workspace.config.coherence_azimuth_window = azimuth
+            if self._coregistered_pair_ready() and self.workspace.interferograms is not None:
+                self._coherence_after_phase(azimuth, range_window)
+            else:
+                self.run_coherence()
         if request.open_in_app:
             self._preferred_layer = "Coherence" if params.get("output_coherence") else "Interferogram phase"
         self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["interferogram"])
         if params.get("output_coherence") and request.save and self.workspace.coherence is not None:
             self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
 
+    def _coregistered_pair_ready(self) -> bool:
+        early = getattr(self.workspace, "reference_grid", None)
+        later = getattr(self.workspace, "secondary_grid", None)
+        return (
+            early is not None
+            and later is not None
+            and early.shape == later.shape
+            and early.row == later.row
+            and early.col == later.col
+        )
+
+    def _coherence_window_sizes(self, params: dict) -> tuple[int, int]:
+        range_window = int(params.get("coherence_range") or 10)
+        azimuth = int(params.get("coherence_azimuth") or 2)
+        if params.get("square_pixel"):
+            model = getattr(self.workspace, "swath_model", None)
+            if model is None and self.workspace.reference_grid is not None:
+                model = self.workspace.reference_grid.model
+            if model is not None:
+                from ai_insar.pipeline.coherence import snap_square_windows
+
+                azimuth, range_window = snap_square_windows(model, range_window)
+        self._log(
+            f"Coherence window azimuth {azimuth} × range {range_window}"
+            + (" (square pixel)." if params.get("square_pixel") else ".")
+        )
+        return azimuth, range_window
+
+    def _coherence_after_phase(self, azimuth: int, range_window: int) -> None:
+        from ai_insar.pipeline.coherence import coherence_map
+
+        early = self.workspace.reference_grid
+        later = self.workspace.secondary_grid
+        ifg = self.workspace.interferograms
+        if ifg is None or early is None or later is None or ifg.shape[1:] != early.shape:
+            raise RuntimeError("Coherence after flat-earth needs the coregistered pair and the interferogram.")
+        plane = coherence_map(
+            early.data,
+            later.data,
+            range_window,
+            azimuth_window=azimuth,
+            product=ifg[0],
+        )
+        self.workspace.coherence = plane[None, ...]
+        self.workspace.mean_coherence = plane
+        self._log(
+            "Coherence used the flat-earth"
+            + (" and topographic" if getattr(self, "_topo_removed", False) else "")
+            + " interferogram. Even windows are centred with size//2 on each side."
+        )
+
     def _remove_geometric_phase(self, params: dict) -> None:
-        """Subtract ellipsoid flat-earth and, when asked, a constant-height topographic term."""
-        from ai_insar.pipeline.tops_ops import RadarGrid, flat_earth_phase, subtract_phase
+        """Subtract SNAP flat-earth and, when asked, the topographic residual."""
+        from ai_insar.pipeline.tops_ops import flat_earth_phase, subtract_phase, topographic_residual_phase
 
         early = getattr(self.workspace, "reference_grid", None)
         later = getattr(self.workspace, "secondary_grid", None)
@@ -1446,23 +1515,41 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Flat-earth or topographic subtraction needs both radar windows and both precise orbits. "
                 "They are not on this stack."
             )
-        dem = None
+        degree = int(self._combo_int(params, "orbit_degree", 3))
+        phase = np.zeros(early.shape, dtype=np.float64)
+        self._topo_removed = False
+        if params.get("subtract_flat"):
+            phase = flat_earth_phase(
+                early,
+                later,
+                early_orbit=early_orbit,
+                later_orbit=later_orbit,
+                degree=degree,
+                height_m=0.0,
+            )
         if params.get("subtract_topo"):
-            dem = getattr(self.workspace, "elevation", None)
-            if dem is None:
-                raise RuntimeError(
-                    "Topographic subtraction needs an elevation model sampled at each pixel. "
-                    "A single DEM mean is not used."
-                )
-        phase = flat_earth_phase(
-            early,
-            later,
-            early_orbit=early_orbit,
-            later_orbit=later_orbit,
-            degree=int(self._combo_int(params, "orbit_degree", 3)),
-            height_m=0.0,
-            dem=dem,
-        )
+            dem = self._interferogram_dem(params, early, early_orbit)
+            residual, heights = topographic_residual_phase(
+                early,
+                later,
+                early_orbit=early_orbit,
+                later_orbit=later_orbit,
+                dem=dem,
+                degree=degree,
+            )
+            phase = phase + residual
+            self._topo_removed = True
+            self.workspace.elevation = dem
+            if params.get("output_elevation"):
+                self.workspace.dem_m = heights
+            if params.get("output_topo"):
+                self.workspace.topo_phase = residual
+            self._log(
+                f"Topographic phase is -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                f"Tile extension {int(params.get('tile_extension_percent') or 100)}%. "
+                "DEM samples are the geocoded pixel centres. "
+                f"External DEM geoid {'not applied' if params.get('dem_path') else 'follows the named model'}."
+            )
         ifg = self.workspace.interferograms
         if ifg is None or ifg.shape[0] < 1 or ifg.shape[1:] != phase.shape:
             raise RuntimeError("The interferogram grid does not match the radar windows.")
@@ -1470,10 +1557,20 @@ class MainWindow(QtWidgets.QMainWindow):
         ifg[0] = subtract_phase(ifg[0], phase)
         self.workspace.interferograms = ifg
         self._log(
-            "Removed ellipsoid flat-earth phase from pair 0"
-            + (" plus the per-pixel topographic term." if dem is not None else ".")
-            + f" RMS {float(np.sqrt(np.nanmean(phase**2))):.3f} rad."
+            "Removed geometric phase from pair 0. "
+            f"phi = -4π/λ (R_ref - R_sec). RMS {float(np.sqrt(np.nanmean(phase**2))):.3f} rad."
         )
+
+    def _interferogram_dem(self, params: dict, grid, orbit):
+        dem = self._elevation_model(
+            str(params.get("dem_choice") or "Copernicus 30m Global DEM (Auto Download)"),
+            str(params.get("dem_path") or ""),
+            grid,
+            orbit,
+        )
+        if params.get("dem_path"):
+            dem.geoid.undulation_m = np.zeros_like(dem.geoid.undulation_m)
+        return dem
 
     def _combo_int(self, params: dict, key: str, default: int) -> int:
         try:
@@ -1551,18 +1648,52 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.config.goldstein_alpha = alpha
         self.workspace.config.goldstein_window = fft_size
         self.workspace.config.goldstein_spectrum_smooth = int(params["window_size"])
-        if params.get("adaptive") or params.get("coherence_mask"):
-            self._goldstein_with_coherence(params)
-        else:
-            self._log(
-                f"Goldstein constant alpha={alpha:.2f}, FFT size={fft_size}, "
-                f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
-            )
-            self.run_filter()
+        self._goldstein_snap(params)
+        self._log(
+            f"Goldstein alpha={alpha:.2f}, FFT size={fft_size}, "
+            f"window={int(params['window_size'])}, "
+            f"coherence mask {'on' if params.get('coherence_mask') else 'off'}. "
+            f"Suffix {PRODUCT_SUFFIX['goldstein']}."
+        )
         if request.open_in_app:
             self._preferred_layer = "Filtered phase"
         if request.save:
             self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+
+    def _goldstein_snap(self, params: dict) -> None:
+        from ai_insar.pipeline.filtering import goldstein_snap
+
+        if self.workspace.interferograms is None:
+            raise RuntimeError("Form an interferogram before Goldstein filtering.")
+        adaptive = bool(params.get("adaptive"))
+        use_mask = bool(params.get("coherence_mask"))
+        if (adaptive or use_mask) and self.workspace.coherence is None:
+            raise RuntimeError(
+                "Adaptive alpha or the coherence mask needs a coherence image "
+                "of the same shape as the interferogram."
+            )
+        if self.workspace.coherence is not None and self.workspace.coherence.shape != self.workspace.interferograms.shape:
+            raise RuntimeError("Coherence and interferogram shapes differ.")
+        filtered = np.empty_like(self.workspace.interferograms, dtype=np.complex64)
+        for index in range(self.workspace.interferograms.shape[0]):
+            coherence = None if self.workspace.coherence is None else self.workspace.coherence[index]
+            filtered[index] = goldstein_snap(
+                self.workspace.interferograms[index],
+                alpha=float(params["alpha"]),
+                fft_size=int(params["fft_size"]),
+                window_size=int(params["window_size"]),
+                coherence=coherence,
+                adaptive=adaptive,
+                alpha_min=float(params.get("alpha_min", 0.2)),
+                alpha_max=float(params.get("alpha_max", 1.0)),
+                coherence_mask=use_mask,
+                coherence_threshold=float(params.get("coherence_threshold", 0.2)),
+            )
+        self.workspace.filtered = filtered
+        self.workspace.unwrapped = None
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
 
     def _goldstein_with_coherence(self, params: dict) -> None:
         if self.workspace.interferograms is None or self.workspace.coherence is None:
@@ -1912,7 +2043,19 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = self.workspace.reference_grid
         if grid is None:
             raise RuntimeError(_DEBURST_BLOCK)
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
+        mask = self.workspace.common_overlap_mask
         result = deburst_window(grid.data, grid.model, grid.row, grid.col)
+        if mask is not None and mask.shape == grid.data.shape:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            carried = deburst_window(mask.astype(np.float32), grid.model, grid.row, grid.col)
+            new_mask = carried.data > 0.5
+            self.workspace.common_overlap_mask = new_mask
+            self.workspace.common_overlap_extent = overlap_extent(new_mask)
+            self.workspace.common_overlap_meta = overlap_metadata(new_mask)
         self.workspace.reference_grid = result
         if self.workspace.stack is not None and self.workspace.stack.data.shape[0] == 1:
             self.workspace.stack.data = result.data[None, ...]
@@ -1949,11 +2092,25 @@ class MainWindow(QtWidgets.QMainWindow):
             resampling=str(params.get("resampling") or "BILINEAR_INTERPOLATION"),
             dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
             max_solves=None if pixels <= 400_000 else fine,
-            max_residual_px=0.00043,
+            tolerance_mm=10.0,
         )
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+        from ai_insar.pipeline.tops_ops import overlap_metadata
+
+        mask = backgeocode.last_overlap_mask
+        self.workspace.common_overlap_mask = mask
+        self.workspace.common_overlap_extent = backgeocode.last_overlap_extent
+        self.workspace.common_overlap_meta = overlap_metadata(mask)
+        apply_overlap_to_workspace(self.workspace)
+        meta = self.workspace.common_overlap_meta
         self._log(
-            f"Back-geocoding map stride {backgeocode.last_stride}, "
-            f"check residual {backgeocode.last_residual_px:.4f} pixels."
+            f"Back-geocoding {getattr(backgeocode, 'last_geometry', 'radar-lattice')}, "
+            f"map stride {backgeocode.last_stride}, "
+            f"check residual {backgeocode.last_residual_px:.4f} pixels. "
+            f"Common overlap rows {meta['row_start']}:{meta['row_end']}, "
+            f"samples {meta['col_start']}:{meta['col_end']}, "
+            f"{meta['count']} pixels ({meta['rows']}×{meta['cols']}). "
+            "Outside that intersection is no-data and was not resampled."
         )
         self.workspace.secondary_grid = RadarGrid(early.row, early.col, resampled, early.model)
         self.workspace.crop_without_coregistration = False
@@ -1964,11 +2121,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def apply_esd(self, params: dict) -> None:
-        from ai_insar.pipeline.spectral_diversity import (
-            apply_global_shift,
-            estimate_overlap,
-            range_cross_correlation_shift,
-        )
+        from ai_insar.pipeline.spectral_diversity import estimate_overlap, range_cross_correlation_shift
         from ai_insar.pipeline.tops_ops import RadarGrid, burst_overlap_rows, spectral_separation_hz, valid_overlap_rows
 
         early = self.workspace.reference_grid
@@ -1976,16 +2129,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if early is None or late is None or early.shape != late.shape or early.row != late.row:
             raise RuntimeError(_ESD_BLOCK)
         if params.get("user_azimuth") or params.get("user_range"):
-            shifted = np.array(late.data, copy=True)
+            from ai_insar.pipeline.tops_ops import shift_secondary_in_overlap
+
             azimuth_px = float(params.get("azimuth_shift") or 0.0) if params.get("user_azimuth") else 0.0
             range_px = float(params.get("range_shift") or 0.0) if params.get("user_range") else 0.0
-            if range_px or azimuth_px:
-                shifted = apply_global_shift(
-                    shifted,
-                    azimuth_px,
-                    range_px,
-                    early.model.azimuth_time_interval_s,
-                )
+            shifted = shift_secondary_in_overlap(
+                late,
+                azimuth_px,
+                range_px,
+                getattr(self.workspace, "common_overlap_mask", None),
+            )
             self.workspace.secondary_grid = RadarGrid(late.row, late.col, shifted, late.model)
             self.workspace.esd_azimuth_shift_s = azimuth_px * early.model.azimuth_time_interval_s
             self._log(
@@ -2033,12 +2186,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 search_px=int(params.get("range_accuracy") or 16),
                 threshold=float(params.get("xcorr_threshold") or 0.1),
                 window=int(params.get("window_width") or 512),
+                lines_per_burst=int(model.lines_per_burst),
+                samples_per_burst=int(model.samples_per_burst),
+                array_row0=int(early.row),
+                array_col0=int(early.col),
+                mask=getattr(self.workspace, "common_overlap_mask", None),
             )
-            corrected = apply_global_shift(
-                late.data,
+            from ai_insar.pipeline.tops_ops import shift_secondary_in_overlap
+
+            corrected = shift_secondary_in_overlap(
+                late,
                 estimate.applied_shift_px,
                 range_shift,
-                model.azimuth_time_interval_s,
+                getattr(self.workspace, "common_overlap_mask", None),
             )
             self.workspace.secondary_grid = RadarGrid(late.row, late.col, corrected, late.model)
             self.workspace.esd_azimuth_shift_s = estimate.applied_shift_px * model.azimuth_time_interval_s
@@ -2049,7 +2209,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
                 f"Range correlation shift {range_shift:.4f} px "
                 f"(coefficient {range_coef:.3f}). "
-                "The whole secondary was Fourier-shifted by those azimuth and range amounts."
+                "Inside the common overlap the secondary was range-shifted, deramped, azimuth-shifted, and reramped. "
+                "Outside it the result is no-data."
             )
             return
         raise RuntimeError(
@@ -2057,6 +2218,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def apply_phase_to_displacement(self, params: dict) -> None:
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
         if self.workspace.unwrapped is None:
             raise RuntimeError(
                 "Phase to Displacement needs unwrapped phase in radians. "
@@ -2076,6 +2240,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_request(request, displacement, PRODUCT_SUFFIX["displacement"])
 
     def apply_terrain_correction(self, params: dict) -> None:
+        from ai_insar.pipeline.engine import apply_overlap_to_workspace
+
+        apply_overlap_to_workspace(self.workspace)
         from ai_insar.pipeline.tops_ops import ellipsoid_geocode, terrain_correct
 
         grid = self.workspace.reference_grid
@@ -2124,10 +2291,12 @@ class MainWindow(QtWidgets.QMainWindow):
             finite = heights[np.isfinite(heights)]
             missing = int(heights.size - finite.size)
             spread = float(np.std(finite)) if finite.size else float("nan")
+            valid = int(np.count_nonzero(np.isfinite(np.real(image))))
             self._log(
                 f"Range-Doppler terrain correction sampled {dem.provenance}. "
                 f"Ellipsoidal height std {spread:.2f} m, no-data pixels {missing}. "
-                f"Orthometric datum {dem.orthometric_datum}."
+                f"Orthometric datum {dem.orthometric_datum}. "
+                f"{valid} output pixels fall inside the source; the rest are NaN."
             )
         stored = image if params.get("output_complex") else np.abs(image).astype(np.float32)
         self.workspace.geocoded = stored
@@ -2238,6 +2407,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     grid.model,
                 ),
             )
+            changed = True
+        mask = self.workspace.common_overlap_mask
+        if mask is not None and mask.shape[0] >= row1 and mask.shape[1] >= col1:
+            from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
+
+            cropped_mask = mask[row0:row1, col0:col1]
+            self.workspace.common_overlap_mask = cropped_mask
+            self.workspace.common_overlap_extent = overlap_extent(cropped_mask)
+            self.workspace.common_overlap_meta = overlap_metadata(cropped_mask)
             changed = True
         if not changed:
             raise RuntimeError("Subset found no raster of that size.")
@@ -2370,6 +2548,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.topo_baseline_perp_m = float(baseline_m)
         self.workspace.topo_slant_range_m = float(slant_range_m)
         self.workspace.topo_incidence_deg = float(incidence_deg)
+        if (
+            self._coregistered_pair_ready()
+            and getattr(self.workspace, "precise_orbit", None) is not None
+            and getattr(self.workspace, "secondary_orbit", None) is not None
+            and getattr(self.workspace, "elevation", None) is not None
+            and hasattr(self.workspace.elevation, "ellipsoidal_heights")
+        ):
+            from ai_insar.pipeline.tops_ops import subtract_phase, topographic_residual_phase
+
+            residual, heights = topographic_residual_phase(
+                self.workspace.reference_grid,
+                self.workspace.secondary_grid,
+                early_orbit=self.workspace.precise_orbit,
+                later_orbit=self.workspace.secondary_orbit,
+                dem=self.workspace.elevation,
+                degree=3,
+            )
+            self.workspace.interferograms = self.workspace.interferograms.copy()
+            self.workspace.interferograms[0] = subtract_phase(self.workspace.interferograms[0], residual)
+            self.workspace.dem_m = heights
+            self._log(
+                "Topographic Phase Removal used -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "The perpendicular-baseline formula was not used."
+            )
+            self.workspace.filtered = None
+            self.workspace.unwrapped = None
+            self.workspace.los_m = None
+            self.workspace.velocity_m_yr = None
+            self.workspace.mask = None
+            return
         if abs(float(baseline_m)) < 1e-9:
             self._log(
                 "Topographic phase is 0 because the perpendicular baseline is 0. "

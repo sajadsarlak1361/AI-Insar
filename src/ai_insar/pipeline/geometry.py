@@ -346,8 +346,11 @@ def ground_points_at_height(
     height = np.broadcast_to(np.asarray(height_m, dtype=np.float64), slant.shape).copy()
     correction = np.zeros(slant.shape[0], dtype=np.float64)
     point = right_looking_ground_points(position, velocity, slant, height)
-    for _ in range(4):
+    for _ in range(12):
         _lat, _lon, got = ecef_to_geodetic(point)
-        correction = correction + (height - got)
+        error = height - got
+        if float(np.max(np.abs(error))) < 1e-3:
+            break
+        correction = correction + error
         point = right_looking_ground_points(position, velocity, slant, height + correction)
     return point

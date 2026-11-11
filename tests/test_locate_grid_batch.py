@@ -114,3 +114,101 @@ def test_batched_lattice_matches_the_scalar_solver_with_and_without_dem():
                 )
                 worst = max(worst, abs(scalar_line - lines[i, j]), abs(scalar_sample - samples[i, j]))
         assert worst < 1e-9
+
+
+def test_dem_posts_triangulate_onto_the_reference_and_stay_inside_the_overlap():
+    from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_points_at_height
+    from ai_insar.pipeline.tops_ops import _coordinates_from_dem_posts, _line_times, _slant_ranges, backgeocode
+
+    orbit = _orbit()
+    reference_model, secondary_model = _models(orbit)
+    later = Orbit(
+        orbit.time + np.timedelta64(12, "D"),
+        orbit.position_m + np.array([0.0, 0.0, 30.0]),
+        orbit.velocity_m_s,
+    )
+    reference = RadarGrid(0, 0, np.zeros((24, 16), dtype=np.complex64), reference_model)
+    secondary = RadarGrid(0, 0, np.ones((24, 16), dtype=np.complex64), secondary_model)
+    azimuth = _line_times(reference_model, np.array([0, 23]))
+    slant = _slant_ranges(reference_model, np.array([0.0, 15.0]))
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(2))
+    lat, lon, _height = ecef_to_geodetic(ground)
+    lat_deg = np.rad2deg(lat)
+    lon_deg = np.rad2deg(lon)
+    dem = ElevationModel(
+        lat_deg=np.linspace(float(lat_deg.mean()) + 0.02, float(lat_deg.mean()) - 0.02, 21),
+        lon_deg=np.linspace(float(lon_deg.mean()) - 0.01, float(lon_deg.mean()) + 0.01, 9),
+        orthometric_m=np.full((21, 9), 40.0),
+        nodata=-32768.0,
+        orthometric_datum="EGM2008",
+        geoid=GeoidGrid(
+            lat_deg=np.array([float(lat_deg.max()) + 1.0, float(lat_deg.min()) - 1.0]),
+            lon_deg=np.array([float(lon_deg.min()) - 1.0, float(lon_deg.max()) + 1.0]),
+            undulation_m=np.zeros((2, 2)),
+            source="test",
+            model="EGM2008",
+        ),
+        provenance="test",
+    )
+    line, sample, reproduction = _coordinates_from_dem_posts(
+        reference,
+        secondary,
+        reference_orbit=orbit,
+        secondary_orbit=later,
+        degree=3,
+        dem=dem,
+    )
+    assert np.isfinite(line).any()
+    assert reproduction < 1e-6
+    image = backgeocode(
+        reference,
+        secondary,
+        reference_orbit=orbit,
+        secondary_orbit=later,
+        dem=dem,
+        resampling="BILINEAR_INTERPOLATION",
+    )
+    assert image.shape == reference.shape
+    assert backgeocode.last_geometry == "dem-triangulation"
+    mask = backgeocode.last_overlap_mask
+    assert mask.shape == reference.shape
+    assert not np.any(image[~mask])
+
+
+def test_dem_height_settles_within_a_millimetre_of_the_sample():
+    from ai_insar.pipeline.geometry import ecef_to_geodetic, ground_points_at_height
+    from ai_insar.pipeline.tops_ops import _ground_on_dem, _line_times, _slant_ranges
+
+    orbit = _orbit()
+    reference_model, _secondary_model = _models(orbit)
+    azimuth = _line_times(reference_model, np.array([4, 12]))
+    slant = _slant_ranges(reference_model, np.array([2.0, 8.0]))
+    dem = _dem()
+    dem.orthometric_m = 200.0 + 40.0 * np.linspace(0.0, 1.0, dem.orthometric_m.size).reshape(dem.orthometric_m.shape)
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(2))
+    settled, valid = _ground_on_dem(ground, azimuth, slant, orbit, dem, 3, np.ones(2, dtype=bool))
+    assert valid.all()
+    lat, lon, got = ecef_to_geodetic(settled)
+    sampled, inside = dem.ellipsoidal_heights(np.rad2deg(lat), np.rad2deg(lon))
+    assert inside.all()
+    assert np.max(np.abs(got - sampled)) < 1e-3
+
+
+def test_common_overlap_is_the_valid_sample_intersection_and_resample_skips_the_rest():
+    from ai_insar.pipeline.tops_ops import common_overlap_mask, resample_complex
+
+    orbit = _orbit()
+    reference_model, _secondary_model = _models(orbit)
+    reference_model.bursts[0].last_valid_sample = 4
+    rows, cols = 6, 8
+    line = np.broadcast_to(np.arange(rows, dtype=np.float64)[:, None], (rows, cols)).copy()
+    sample = np.broadcast_to(np.arange(cols, dtype=np.float64)[None, :], (rows, cols)).copy()
+    reference = RadarGrid(0, 0, np.zeros((rows, cols)), reference_model)
+    secondary = RadarGrid(0, 0, np.ones((rows, cols)), reference_model)
+    mask = common_overlap_mask(reference, secondary, line, sample)
+    assert mask[:, :5].all()
+    assert not mask[:, 5:].any()
+    image = np.ones((rows, cols), dtype=np.complex64)
+    resampled = resample_complex(image, line, sample, "BILINEAR_INTERPOLATION", mask=mask)
+    assert resampled[0, 0] != 0
+    assert resampled[0, 6] == 0

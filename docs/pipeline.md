@@ -13,6 +13,13 @@ phase equation. The code constants are `C_BAND_WAVELENGTH_M` and
 Burst-overlap ESD and the provenance of the coregistration and network
 equations are in [spectral-diversity.md](spectral-diversity.md).
 
+Back-geocoding records the common overlap: reference samples that land inside
+the secondary burst's valid lines and samples. With a DEM those coordinates
+are the triangulation of the DEM posts, not a radar-pixel sphere. Resampling,
+ESD, interferogram, coherence, Goldstein, unwrap, multilook, subset, SNAPHU,
+displacement, terrain correction, and KMZ use that mask. Pixels outside it
+stay no-data.
+
 ## GMTSAR flowchart
 
 The Pipeline menu and the numbered buttons follow the public GMTSAR pair

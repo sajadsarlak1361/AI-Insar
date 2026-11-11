@@ -368,25 +368,17 @@ class InterferogramDialog(OperatorDialog):
         self.subtract_ramp.setObjectName("ifgSubtractRamp")
         self.dem = QtWidgets.QLineEdit("Copernicus 30m Global DEM (Auto Download)")
         self.dem.setObjectName("ifgDem")
-        self.dem.setReadOnly(True)
-        _disable(
-            self.dem,
-            "Shown while Subtract Topographic Phase is unchecked. "
-            "The SNAP 14 audit did not open this list, so options are not recorded.",
-        )
+        self.dem_path = QtWidgets.QLineEdit("")
+        self.dem_path.setObjectName("ifgDemPath")
+        self.dem_path.setPlaceholderText("External ellipsoidal DEM (GeoTIFF or HGT). Geoid is not added.")
         self.tile = QtWidgets.QLineEdit("100")
         self.tile.setObjectName("ifgTile")
-        self.tile.setReadOnly(True)
-        _disable(self.tile, "Shown as 100 and not interactive while Subtract Topographic Phase is unchecked.")
         self.output_topo = QtWidgets.QCheckBox("Output Topographic Phase")
         self.output_topo.setObjectName("ifgOutputTopo")
-        _disable(self.output_topo, _EXTRA_BANDS)
         self.output_elevation = QtWidgets.QCheckBox("Output Elevation")
         self.output_elevation.setObjectName("ifgOutputElevation")
-        _disable(self.output_elevation, _EXTRA_BANDS)
         self.output_latlon = QtWidgets.QCheckBox("Output Orthorectified Lat/Lon")
         self.output_latlon.setObjectName("ifgOutputLatLon")
-        _disable(self.output_latlon, _EXTRA_BANDS)
         self.output_coherence = QtWidgets.QCheckBox("Output Coherence")
         self.output_coherence.setObjectName("ifgOutputCoherence")
         self.output_coherence.setChecked(True)
@@ -394,7 +386,8 @@ class InterferogramDialog(OperatorDialog):
         self.square_pixel.setObjectName("ifgSquarePixel")
         self.square_pixel.setChecked(True)
         self.square_pixel.setToolTip(
-            "Square Pixel uses the range window in both directions. Ground spacing is not applied."
+            "Square Pixel sets the azimuth window from ground range and azimuth spacing. "
+            "An even window is centred with size//2 samples on each side."
         )
         self.independent = QtWidgets.QCheckBox("Independent Window Sizes")
         self.independent.setObjectName("ifgIndependentWindows")
@@ -407,6 +400,8 @@ class InterferogramDialog(OperatorDialog):
         self.subtract_topo.toggled.connect(self._sync_dem)
         self._on_square(True)
         self._sync_dem(False)
+        for widget in (self.dem, self.dem_path, self.tile, self.output_topo, self.output_elevation, self.output_latlon):
+            widget.setEnabled(False)
 
         form.addRow(self.subtract_flat)
         form.addRow('Degree of "Flat Earth" polynomial', self.flat_degree)
@@ -416,6 +411,7 @@ class InterferogramDialog(OperatorDialog):
         form.addRow(self.subtract_topo)
         form.addRow(self.subtract_ramp)
         form.addRow("Digital Elevation Model", self.dem)
+        form.addRow("External DEM", self.dem_path)
         form.addRow("Tile Extension [%]", self.tile)
         form.addRow(self.output_topo)
         form.addRow(self.output_elevation)
@@ -428,8 +424,8 @@ class InterferogramDialog(OperatorDialog):
         self.add_processing(form)
 
     def _sync_dem(self, checked: bool) -> None:
-        # The audit did not toggle Subtract Topographic Phase, so the DEM list stays closed.
-        del checked
+        for widget in (self.dem, self.dem_path, self.tile, self.output_topo, self.output_elevation, self.output_latlon):
+            widget.setEnabled(bool(checked))
 
     def _on_square(self, checked: bool) -> None:
         if checked:
@@ -473,8 +469,12 @@ class InterferogramDialog(OperatorDialog):
             "subtract_topo": self.subtract_topo.isChecked(),
             "subtract_ramp": self.subtract_ramp.isChecked(),
             "output_flat": self.output_flat.isChecked(),
+            "output_topo": self.output_topo.isChecked(),
+            "output_elevation": self.output_elevation.isChecked(),
+            "output_latlon": self.output_latlon.isChecked(),
             "dem_choice": self.dem.text(),
-            "dem_path": "",
+            "dem_path": self.dem_path.text().strip(),
+            "tile_extension_percent": int(self.tile.text().strip() or "100"),
             "output_coherence": self.output_coherence.isChecked(),
             "square_pixel": self.square_pixel.isChecked(),
             "coherence_range": int(self.coherence_range.text().strip() or "0"),
