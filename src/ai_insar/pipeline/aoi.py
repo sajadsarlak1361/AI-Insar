@@ -6,10 +6,10 @@ overlap. Pixels outside that clip are not a processing area. Burst
 selection is the contiguous burst range whose footprints meet the clip,
 which is what TOPS Split does with ``wktAoi``.
 
-The validation square is 1 km on a side. It replaces the earlier 100 m
-square. Its centre sits on the burst boundary between product bursts 5
-and 6 of IW1 (Copernicus burst ids 359478 and 359479) for the
-2021-06-30 / 2021-07-12 pair, relative orbit 168.
+The validation square is 200 m on a side. It replaces the earlier 1 km
+square and keeps that square's centre. The centre sits on the burst
+boundary between product bursts 5 and 6 of IW1 (Copernicus burst ids
+359478 and 359479) for the 2021-06-30 / 2021-07-12 pair, relative orbit 168.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ SQUARE_100M_WKT = (
 )
 SQUARE_100M_REFERENCE_WINDOW = {"row0": 260, "row1": 269, "column0": 2469, "column1": 2492}
 
-# Radar placement of the 1 km square. The 100 m square centre is 1,098
+# Radar placement of the 200 m square. The 100 m square centre is 1,098
 # lines from the burst-overlap zone (measured on the real split). The next
 # burst starts 2.756501 s later and each burst has 1,508 lines, so the
 # overlap is 166 lines. The boundary used by deburst is the middle of that
@@ -69,7 +69,7 @@ _BURST_GAP_S = 2.756501
 _AZIMUTH_INTERVAL_S = 0.002055556299999998
 _LINES_PER_BURST = 1508
 _GROUND_M_PER_LINE = 12.400850123770615
-_SQUARE_EDGE_M = 1000.0
+_SQUARE_EDGE_M = 200.0
 # Corners of the 100 m square, (lat, lon), low-row/low-col then low-row/high-col
 # then high-row/low-col. They fix the range and azimuth axes.
 _CORNER_AZ_START = (50.37613874744699, 13.326887869665738)
@@ -855,6 +855,21 @@ def overlap_line_count(gap_s: float = _BURST_GAP_S, lines_per_burst: int = _LINE
     return count
 
 
+def validation_square_centre_lines() -> float:
+    """Lines from the 100 m square to the centre of the burst-5/6 boundary.
+
+    The overlap is clamped to the end of the burst. The unclamped midpoint
+    sits about 127 m past that boundary, and a 200 m square centred there
+    would fall entirely in burst 6. The square is centred on the boundary.
+    """
+    overlap_start = _LINES_TO_OVERLAP
+    overlap_span = min(
+        float(overlap_line_count()),
+        float(_LINES_PER_BURST) - (264.5 + overlap_start),
+    )
+    return overlap_start + overlap_span / 2.0
+
+
 def radar_axes() -> tuple[tuple[float, float], tuple[float, float]]:
     """Unit east/north vectors of increasing azimuth line and increasing range sample."""
     lon0, lat0 = _OLD_LON, _OLD_LAT
@@ -872,16 +887,15 @@ def radar_axes() -> tuple[tuple[float, float], tuple[float, float]]:
 
 
 def burst_boundary_square() -> AoiReport:
-    """The 1 km validation square centred on the burst-5/6 boundary.
+    """The 200 m validation square centred on the burst-5/6 boundary.
 
     Azimuth runs from the 100 m square toward increasing line, which is the
-    direction of the overlap zone 1,098 lines away. The square is 500 m
-    either side of the mid-overlap line and 500 m either side in range, so
+    direction of the overlap zone 1,098 lines away. The square is 100 m
+    either side of the burst boundary and 100 m either side in range, so
     it straddles bursts 5 and 6 and contains their overlap.
     """
     overlap_lines = overlap_line_count()
-    mid_lines = _LINES_TO_OVERLAP + overlap_lines / 2.0
-    distance_m = mid_lines * _GROUND_M_PER_LINE
+    distance_m = validation_square_centre_lines() * _GROUND_M_PER_LINE
     azimuth, rng = radar_axes()
     centre_x = distance_m * azimuth[0]
     centre_y = distance_m * azimuth[1]
@@ -923,7 +937,7 @@ def burst_boundary_square() -> AoiReport:
     report.clipped_wkt = format_wkt(polygon)
     report.requested_wkt = format_wkt(polygon)
     report.message = (
-        f"1 km square on the IW1 burst 5/6 boundary, area {report.area_km2:.6f} km². "
+        f"200 m square on the IW1 burst 5/6 boundary, area {report.area_km2:.6f} km². "
         f"Centre latitude {centre[1]:.8f}, longitude {centre[0]:.8f}. "
         "ESD uses the overlap between bursts 5 and 6. "
         "The stage 5–15 comparison skips ESD until that estimator is revised."
@@ -979,14 +993,14 @@ def square_100m_pixel_window(locator: BilinearLocator) -> PixelWindow:
 
 
 def validation_square_covers_overlap() -> dict:
-    """Lines of the burst-5/6 overlap that fall inside the 1 km square.
+    """Lines of the burst-5/6 overlap that fall inside the 200 m square.
 
     Rows are relative to the first line of burst 5, which is where TOPS
     Split starts when bursts 5 and 6 are the selected range and the raster
     origin is that burst.
     """
     overlap_lines = overlap_line_count()
-    square_centre_line = 264.5 + _LINES_TO_OVERLAP + overlap_lines / 2.0
+    square_centre_line = 264.5 + validation_square_centre_lines()
     half_lines = (_SQUARE_EDGE_M / 2.0) / _GROUND_M_PER_LINE
     square_start = square_centre_line - half_lines
     square_stop = square_centre_line + half_lines

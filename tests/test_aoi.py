@@ -1,4 +1,4 @@
-"""AOI parsing, overlap clipping, and the 1 km burst-boundary square."""
+"""AOI parsing, overlap clipping, and the 200 m burst-boundary square."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from ai_insar.pipeline.aoi import (
 from ai_insar.pipeline.aoi import _validation_burst_footprints
 
 ROOT = Path(__file__).resolve().parents[1]
-AOI_JSON = ROOT / "docs" / "parity" / "square1000m_burst56" / "AOI.json"
+AOI_JSON = ROOT / "docs" / "parity" / "square200m_burst56" / "AOI.json"
 
 
 def test_wkt_and_bounds_round_trip():
@@ -92,7 +92,7 @@ def test_hundred_metre_square_still_maps_to_the_parity_window():
     )
 
 
-def test_one_kilometre_square_selects_bursts_5_and_6_and_their_overlap():
+def test_two_hundred_metre_square_selects_bursts_5_and_6_and_their_overlap():
     report = burst_boundary_square()
     assert report.subswath == "IW1"
     assert report.polarisation == "VV"
@@ -100,15 +100,16 @@ def test_one_kilometre_square_selects_bursts_5_and_6_and_their_overlap():
     assert report.burst_ids == (359478, 359479)
     assert report.esd_overlap_bursts == (5, 6)
     assert not report.outside
-    assert abs(report.centre_latitude - 50.24663071127351) < 1e-9
-    assert abs(report.centre_longitude - 13.286084846039746) < 1e-9
+    assert abs(report.centre_latitude - 50.24775165315557) < 1e-9
+    assert abs(report.centre_longitude - 13.28643181011991) < 1e-9
     burst_5, burst_6 = _validation_burst_footprints(overlap_line_count())
     square = parse_wkt(report.clipped_wkt)
     assert bursts_covering((burst_5, burst_6), square) == (1, 2)
     assert bursts_covering((burst_5, burst_6), parse_wkt(SQUARE_100M_WKT)) == (1, 1)
     cover = validation_square_covers_overlap()
     assert cover["square_straddles_boundary"]
-    assert cover["overlap_inside_square"] > 40.0
+    # 200 m is about 16 azimuth lines, and the square sits inside the overlap.
+    assert 10.0 < cover["overlap_inside_square"] < 25.0
     assert cover["square_line_start"] < cover["boundary_line"] < cover["square_line_stop"]
     stages = chain_aoi(report)
     assert list(stages) == list(CHAIN_STAGES)
