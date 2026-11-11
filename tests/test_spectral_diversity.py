@@ -228,7 +228,7 @@ def test_bisinc_edge_repeats_the_border_sample():
     assert abs(expected - dropped_value) > 1e-3
 
 
-def test_esd_shift_changes_only_the_overlap_rows():
+def test_esd_shift_uses_the_full_burst_tile_and_keeps_nodata():
     from ai_insar.pipeline.geometry import Orbit
     from ai_insar.pipeline.s1_annotation import BurstTiming, SwathModel
     from ai_insar.pipeline.tops_ops import RadarGrid, shift_secondary_in_overlap
@@ -259,11 +259,17 @@ def test_esd_shift_changes_only_the_overlap_rows():
         orbit=orbit,
     )
     data = (np.arange(2 * lines, dtype=np.float64)[:, None] + 1j * np.arange(6)[None, :]).astype(np.complex64)
+    data[3, 1] = 0
     grid = RadarGrid(0, 0, data, model)
     shifted = shift_secondary_in_overlap(grid, 0.25, 0.0, None)
-    changed = np.any(np.abs(shifted - data) > 1e-6, axis=1)
-    assert np.any(changed)
-    assert not np.all(changed)
+    # Both bursts are transformed, including lines that are not in the overlap.
+    assert np.max(np.abs(shifted[0] - data[0])) > 1e-4
+    assert np.max(np.abs(shifted[lines] - data[lines])) > 1e-4
+    assert shifted[3, 1] == 0
+    # A one-line transform is a different Fourier support from the burst tile.
+    short = RadarGrid(0, 0, data[:1].copy(), model)
+    short_shifted = shift_secondary_in_overlap(short, 0.25, 0.0, None)
+    assert np.max(np.abs(short_shifted[0] - shifted[0])) > 1e-4
 
 
 def test_esd_dialog_uses_snap_parameter_names():
@@ -304,6 +310,65 @@ def test_esd_dialog_uses_snap_parameter_names():
     assert params["esdEstimator"] == "Periodogram"
     assert params["xCorrThreshold"] == 0.1
     dialog.close()
+
+
+def test_snap_flat_earth_polynomial_has_twenty_one_coefficients_and_the_geometric_sign():
+    from ai_insar.pipeline.tops_ops import _distribute_points, _snap_monomials, flat_earth_phase
+    from test_flat_earth_coherence import _pair
+
+    points = _distribute_points(501, 1507, 22848)
+    assert points.shape == (501, 2)
+    assert points[:, 0].min() >= 0 and points[:, 0].max() <= 1507
+    assert points[:, 1].min() >= 0 and points[:, 1].max() <= 22848
+    assert _snap_monomials(points[:, 0], points[:, 1], 5, 1507, 22848).shape[1] == 21
+    early_orbit, later_orbit, early, later = _pair()
+    dense = flat_earth_phase(
+        early, later, early_orbit=early_orbit, later_orbit=later_orbit, degree=3, polynomial_points=None
+    )
+    fitted = flat_earth_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=3,
+        polynomial_degree=5,
+        polynomial_points=501,
+        orbit_states=8,
+    )
+    assert fitted.shape == dense.shape
+    assert np.isfinite(fitted).all()
+    # Same sign as -4π/λ (R_reference - R_secondary). The polynomial is not the dense field.
+    assert fitted[4, 3] * dense[4, 3] > 0.0
+
+
+def test_snap_dem_half_cell_shifts_the_query_by_half_a_post():
+    from ai_insar.pipeline.dem import ElevationModel, GeoidGrid
+
+    lat = np.array([10.0, 9.0, 8.0])
+    lon = np.array([20.0, 21.0, 22.0])
+    # North-up: dy = -1, dx = +1. SNAP reads the centre grid half a post southeast.
+    heights = np.array([[0.0, 10.0, 20.0], [100.0, 110.0, 120.0], [200.0, 210.0, 220.0]])
+    dem = ElevationModel(
+        lat_deg=lat,
+        lon_deg=lon,
+        orthometric_m=heights,
+        nodata=-32768.0,
+        orthometric_datum="EGM2008",
+        geoid=GeoidGrid(
+            lat_deg=np.array([12.0, 6.0]),
+            lon_deg=np.array([18.0, 24.0]),
+            undulation_m=np.zeros((2, 2)),
+            source="test",
+            model="EGM2008",
+        ),
+        provenance="test",
+    )
+    centre, centre_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=False)
+    shifted, shifted_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=True)
+    assert centre_ok and shifted_ok
+    assert abs(centre - 110.0) < 1e-6
+    # lat 9 + (-1)/2 = 8.5, lon 21 + 0.5 = 21.5, bilinear between 110, 120, 210, 220.
+    assert abs(shifted - centre) > 1.0
 
 
 def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():

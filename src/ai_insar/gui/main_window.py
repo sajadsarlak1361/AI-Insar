@@ -1526,6 +1526,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 degree=degree,
                 height_m=0.0,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
             )
         if params.get("subtract_topo"):
             dem = self._interferogram_dem(params, early, early_orbit)
@@ -1536,6 +1539,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 dem=dem,
                 degree=degree,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
             )
             phase = phase + residual
             self._topo_removed = True
@@ -2219,8 +2225,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"({self.workspace.esd_azimuth_shift_s:.6e} s), the negated weight mean. "
                 f"Range correlation shift {range_shift:.4f} px "
                 f"(coefficient {range_coef:.3f}). "
-                "Only the burst-overlap rows were range-shifted, deramped, azimuth-shifted, and reramped. "
-                "Lines outside the overlap were left as coregistered."
+                "The shift was applied on 512 by linesPerBurst tiles, one burst at a time. "
+                "No-data samples were left unchanged."
             )
             return
         raise RuntimeError(

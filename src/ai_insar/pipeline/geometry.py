@@ -97,16 +97,24 @@ class Orbit:
     def seconds(self, when: np.datetime64 | np.ndarray) -> np.ndarray:
         return seconds_since(np.asarray(when), self._epoch)
 
-    def interpolate(self, when: np.datetime64 | np.ndarray, degree: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    def interpolate(
+        self,
+        when: np.datetime64 | np.ndarray,
+        degree: int = 3,
+        states: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Interpolate position and velocity with a polynomial of ``degree``.
 
-        The fit uses ``degree + 1`` surrounding state vectors, so a state
-        vector that is one of those nodes is reproduced up to rounding.
+        ``states`` is the number of surrounding vectors in the fit. The
+        default, ``degree + 1``, reproduces a node up to rounding. SNAP's
+        flat-earth orbit uses 8 vectors and a cubic least-squares fit.
         """
         degree = int(degree)
         if degree < 1:
             raise ValueError("polynomial degree must be at least 1")
-        needed = degree + 1
+        needed = degree + 1 if states is None else int(states)
+        if needed < degree + 1:
+            raise ValueError("an orbit fit needs at least degree + 1 state vectors")
         if self.time.shape[0] < needed:
             raise ValueError(f"orbit has {self.time.shape[0]} vectors, need {needed}")
         times = np.atleast_1d(np.asarray(when, dtype="datetime64[ns]"))
@@ -115,6 +123,30 @@ class Orbit:
         if np.asarray(when).shape == ():
             return position[0], velocity[0]
         return position, velocity
+
+    def nearest_window(self, when: np.datetime64, count: int = 8) -> Orbit:
+        """The ``count`` state vectors SNAP keeps around one burst centre.
+
+        The closest vector is index ``minIdx``. The window is ``minIdx-3``
+        through ``minIdx+4`` when that fits, the same ends as
+        ``getAdjacentOrbitStateVectors``.
+        """
+        count = int(count)
+        if count < 2:
+            raise ValueError("an orbit window needs at least two state vectors")
+        count = min(count, int(self.time.shape[0]))
+        seconds = float(np.asarray(self.seconds(np.datetime64(when, "ns")), dtype=np.float64).reshape(-1)[0])
+        index = int(np.argmin(np.abs(self._seconds - seconds)))
+        last = int(self.time.shape[0]) - 1
+        if index < 3:
+            start = 0
+        elif index > last - 4:
+            start = max(last + 1 - count, 0)
+        else:
+            start = index - 3
+        stop = min(start + count, int(self.time.shape[0]))
+        start = max(stop - count, 0)
+        return Orbit(self.time[start:stop], self.position_m[start:stop], self.velocity_m_s[start:stop])
 
     def _polynomials(self, degree: int, needed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Cubic (or ``degree``) coefficients for every orbit window.
@@ -127,12 +159,12 @@ class Orbit:
         if cache is None:
             cache = {}
             self._poly_cache = cache
-        found = cache.get(degree)
+        found = cache.get((degree, needed))
         if found is not None:
             return found
         nodes = self._seconds
         windows = nodes.shape[0] - needed + 1
-        position = np.empty((windows, needed, 3), dtype=np.float64)
+        position = np.empty((windows, degree + 1, 3), dtype=np.float64)
         velocity = np.empty_like(position)
         origins = np.empty(windows, dtype=np.float64)
         for start in range(windows):
@@ -147,8 +179,8 @@ class Orbit:
                 velocity[start, :, axis] = np.polyfit(
                     abscissa, self.velocity_m_s[start : start + needed, axis], degree
                 )
-        cache[degree] = (origins, position, velocity)
-        return cache[degree]
+        cache[(degree, needed)] = (origins, position, velocity)
+        return cache[(degree, needed)]
 
     def _evaluate(self, seconds: np.ndarray, degree: int, needed: int) -> tuple[np.ndarray, np.ndarray]:
         origins, position_coeff, velocity_coeff = self._polynomials(degree, needed)
@@ -165,7 +197,13 @@ class Orbit:
                 velocity[chosen, axis] = np.polyval(velocity_coeff[window, :, axis], query)
         return position, velocity
 
-    def zero_doppler_times(self, xyz_m: np.ndarray, guess: np.ndarray, degree: int = 3) -> np.ndarray:
+    def zero_doppler_times(
+        self,
+        xyz_m: np.ndarray,
+        guess: np.ndarray,
+        degree: int = 3,
+        states: int | None = None,
+    ) -> np.ndarray:
         """Zero-Doppler time of many targets.
 
         The iteration is the scalar solver: clip to the interior nodes, query
@@ -180,9 +218,11 @@ class Orbit:
         if guesses.shape[0] != points.shape[0]:
             raise ValueError("zero-Doppler needs one guess time per target")
         degree = int(degree)
-        needed = degree + 1
-        low = float(self._seconds[degree])
-        high = float(self._seconds[-degree - 1])
+        needed = degree + 1 if states is None else int(states)
+        if needed > self.time.shape[0]:
+            needed = int(self.time.shape[0])
+        low = float(self._seconds[min(degree, needed - 1)])
+        high = float(self._seconds[-min(degree, needed - 1) - 1])
         raw = self.seconds(guesses)
         if np.any(raw < float(self._seconds[0]) - 1.0) or np.any(raw > float(self._seconds[-1]) + 1.0):
             raise ValueError(
@@ -197,8 +237,8 @@ class Orbit:
             second = np.where(done, second, np.clip(second, low, high))
             query = self._epoch_ns + np.rint(second * 1e9).astype(np.int64)
             later = self._epoch_ns + np.rint((second + 1e-4) * 1e9).astype(np.int64)
-            pos, vel = self.interpolate(query.astype("datetime64[ns]"), degree)
-            pos2, vel2 = self.interpolate(later.astype("datetime64[ns]"), degree)
+            pos, vel = self.interpolate(query.astype("datetime64[ns]"), degree, states=needed)
+            pos2, vel2 = self.interpolate(later.astype("datetime64[ns]"), degree, states=needed)
             doppler = np.sum((points - pos) * vel, axis=1)
             doppler2 = np.sum((points - pos2) * vel2, axis=1)
             rate = (doppler2 - doppler) / 1e-4
@@ -207,7 +247,6 @@ class Orbit:
             updated = np.where(small_rate, second, second - step)
             second = np.where(done, second, updated)
             done = done | small_rate | (np.abs(step) < 1e-12)
-        del needed
         rounded = self._epoch_ns + np.rint(second * 1e9).astype(np.int64)
         return rounded.astype("datetime64[ns]")
 
@@ -335,13 +374,14 @@ def ground_points_at_height(
     height_m: np.ndarray,
     *,
     degree: int = 3,
+    states: int | None = None,
 ) -> np.ndarray:
     """Geolocate many radar samples onto ellipsoidal heights.
 
     ``height_m`` is either one height or one height per sample. The four
     corrections are the scalar loop, applied independently to each sample.
     """
-    position, velocity = orbit.interpolate(azimuth_time, degree)
+    position, velocity = orbit.interpolate(azimuth_time, degree, states=states)
     slant = np.asarray(slant_range_m, dtype=np.float64)
     height = np.broadcast_to(np.asarray(height_m, dtype=np.float64), slant.shape).copy()
     correction = np.zeros(slant.shape[0], dtype=np.float64)
