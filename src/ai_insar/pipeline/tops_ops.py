@@ -346,6 +346,7 @@ def simulated_topographic_phase(
     later_orbit: Orbit,
     dem: object,
     degree: int = 3,
+    tile_extension_percent: int = 100,
 ) -> tuple[np.ndarray, np.ndarray]:
     """SNAP topographic phase: radar-code DEM posts, then triangulate.
 
@@ -356,14 +357,58 @@ def simulated_topographic_phase(
     """
     phase = np.zeros(early.shape, dtype=np.float64)
     heights = np.full(early.shape, np.nan, dtype=np.float64)
-    post_lat, post_lon, post_height = _dem_posts_covering(early, early_orbit, degree, dem)
-    if post_lat.size < 3:
-        return phase, heights
+    # SNAP tileExtensionPercent 100 widens the DEM by the min-to-max height
+    # shift, then again if that hull still misses the radar window.
+    for margin_scale in (1.0, 2.0, 4.0):
+        post_lat, post_lon, post_height = _dem_posts_covering(
+            early,
+            early_orbit,
+            degree,
+            dem,
+            tile_extension_percent=int(tile_extension_percent),
+            margin_scale=margin_scale,
+        )
+        if post_lat.size < 3:
+            continue
+        phase, heights = _topographic_phase_from_posts(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            dem=dem,
+            degree=degree,
+            post_lat=post_lat,
+            post_lon=post_lon,
+            post_height=post_height,
+        )
+        if np.isfinite(heights).all():
+            return phase, heights
+    missing = int(np.count_nonzero(~np.isfinite(heights)))
+    raise ValueError(
+        f"Topographic phase is missing on {missing} of {heights.size} radar pixels. "
+        "The DEM posts do not cover the window, so the phase is not set to zero."
+    )
+
+
+def _topographic_phase_from_posts(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    dem: object,
+    degree: int,
+    post_lat: np.ndarray,
+    post_lon: np.ndarray,
+    post_height: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    phase = np.zeros(early.shape, dtype=np.float64)
+    heights = np.full(early.shape, np.nan, dtype=np.float64)
     dy = float(dem.lat_deg[1] - dem.lat_deg[0]) if dem.lat_deg.size > 1 else 0.0
     dx = float(dem.lon_deg[1] - dem.lon_deg[0]) if dem.lon_deg.size > 1 else 0.0
-    # SNAP radar-codes the geopos of the DEM pixel, half a post from the centre.
-    lat = np.asarray(post_lat, dtype=np.float64) + 0.5 * dy
-    lon = np.asarray(post_lon, dtype=np.float64) + 0.5 * dx
+    # Native geopos of the raw sample is the GIS centre minus half a post.
+    # The half-cell query that reads a height at a latitude is the other way.
+    lat, lon = _topo_post_geopos(post_lat, post_lon, dy, dx)
     height = np.asarray(post_height, dtype=np.float64)
     xyz = geodetic_to_ecef(np.deg2rad(lat), np.deg2rad(lon), height)
     lines = int(early.model.lines_per_burst)
@@ -416,6 +461,15 @@ def simulated_topographic_phase(
             burst,
         )
     return phase, heights
+
+
+def _topo_post_geopos(lat, lon, dy: float, dx: float):
+    """SNAP's geopos of a raw DEM sample stored at the GIS pixel centre.
+
+    ``geopos = centre - (dy, dx) / 2``. Adding half a cell is the query
+    convention and is not this coordinate.
+    """
+    return np.asarray(lat, dtype=np.float64) - 0.5 * float(dy), np.asarray(lon, dtype=np.float64) - 0.5 * float(dx)
 
 
 def _slave_ranges(orbit: Orbit, xyz: np.ndarray, guess: np.ndarray, degree: int) -> np.ndarray:
@@ -479,8 +533,6 @@ def _triangulate_burst(
     local1 = row1 - int(grid.row)
     phase[local0:local1] = np.asarray(phase_of(query), dtype=np.float64).reshape(mesh_row.shape)
     heights[local0:local1] = np.asarray(height_of(query), dtype=np.float64).reshape(mesh_row.shape)
-    missing = ~np.isfinite(phase[local0:local1])
-    phase[local0:local1][missing] = 0.0
 
 
 def topographic_residual_phase(
@@ -495,14 +547,15 @@ def topographic_residual_phase(
     polynomial_degree: int | None = None,
     polynomial_points: int | None = None,
     orbit_states: int = 8,
+    tile_extension_percent: int = 100,
 ) -> tuple[np.ndarray, np.ndarray]:
     """SNAP topographic phase on the radar grid.
 
     The value is the triangulated slave range difference
     ``-4π/λ (R_slave(ellipsoid) - R_slave(DEM))``, not the dense height
     phase minus the flat-earth polynomial. Height is that same
-    triangulation and is NaN outside the posts. Missing phase is 0 so the
-    interferogram is left unchanged there.
+    triangulation. A window the posts do not cover raises instead of
+    storing a zero phase.
     """
     del polynomial_degree, polynomial_points, orbit_states, max_solves
     # SNAP TopoPhase.radarCode: each DEM post is radar-coded, the slave range
@@ -517,6 +570,7 @@ def topographic_residual_phase(
         later_orbit=later_orbit,
         dem=dem,
         degree=degree,
+        tile_extension_percent=int(tile_extension_percent),
     )
 
 
@@ -1072,6 +1126,20 @@ def _coordinates_from_dem_posts(
     return line_s, sample_s, reproduction
 
 
+def _radar_corner_latlon(reference: RadarGrid, orbit: Orbit, degree: int, height_m: float):
+    """Latitude and longitude of the window corners at one ellipsoidal height."""
+    rows, cols = reference.shape
+    corner_row = np.array([0, 0, rows - 1, rows - 1, rows // 2], dtype=np.int64)
+    corner_col = np.array([0, cols - 1, 0, cols - 1, cols // 2], dtype=np.int64)
+    azimuth = _line_times(reference.model, reference.row + corner_row)
+    slant = _slant_ranges(reference.model, reference.col + corner_col.astype(np.float64))
+    ground = ground_points_at_height(
+        orbit, azimuth, slant, np.full(corner_row.shape, float(height_m)), degree=degree
+    )
+    lat, lon, _height = ecef_to_geodetic(ground)
+    return np.rad2deg(lat), np.rad2deg(lon)
+
+
 def _dem_posts_covering(
     reference: RadarGrid,
     orbit: Orbit,
@@ -1079,30 +1147,76 @@ def _dem_posts_covering(
     dem: object,
     *,
     snap_geopos: bool = False,
+    tile_extension_percent: int = 100,
+    margin_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Latitude, longitude, and ellipsoidal height of the DEM posts around the window.
 
+    The box is the union of the ellipsoid footprint and the same corners at
+    the DEM's minimum and maximum height. SNAP's ``tileExtensionPercent``
+    of 100 scales that maximum by two before measuring the extra latitude
+    and longitude (``defineExtraPhiLam``). ``margin_scale`` widens that
+    extra again when the first hull still misses the radar window.
+
     ``snap_geopos`` places each post on SNAP's pixel geopos and reads the
     elevation there, which is what Back-Geocoding passes to ``getPosition``.
-    Topographic phase keeps the raw sample and shifts the coordinate itself.
+    Topographic phase keeps the raw sample and applies the minus-half-cell
+    geopos itself.
     """
-    rows, cols = reference.shape
-    corner_row = np.array([0, 0, rows - 1, rows - 1, rows // 2], dtype=np.int64)
-    corner_col = np.array([0, cols - 1, 0, cols - 1, cols // 2], dtype=np.int64)
-    azimuth = _line_times(reference.model, reference.row + corner_row)
-    slant = _slant_ranges(reference.model, reference.col + corner_col.astype(np.float64))
-    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(corner_row.size), degree=degree)
-    lat, lon, _height = ecef_to_geodetic(ground)
-    lat_deg = np.rad2deg(lat)
-    lon_deg = np.rad2deg(lon)
     dem_lat = np.asarray(dem.lat_deg, dtype=np.float64)
     dem_lon = np.asarray(dem.lon_deg, dtype=np.float64)
     lat_step = float(np.max(np.abs(np.diff(dem_lat)))) if dem_lat.size > 1 else 0.01
     lon_step = float(np.max(np.abs(np.diff(dem_lon)))) if dem_lon.size > 1 else 0.01
-    lat_min = float(np.min(lat_deg)) - 20.0 * lat_step
-    lat_max = float(np.max(lat_deg)) + 20.0 * lat_step
-    lon_min = float(np.min(lon_deg)) - 20.0 * lon_step
-    lon_max = float(np.max(lon_deg)) + 20.0 * lon_step
+    lat0, lon0 = _radar_corner_latlon(reference, orbit, degree, 0.0)
+    probe = _posts_in_box(
+        dem,
+        float(np.min(lat0)) - 20.0 * lat_step,
+        float(np.max(lat0)) + 20.0 * lat_step,
+        float(np.min(lon0)) - 20.0 * lon_step,
+        float(np.max(lon0)) + 20.0 * lon_step,
+        snap_geopos=False,
+    )
+    if probe[2].size:
+        height_min = float(np.nanmin(probe[2]))
+        height_max = float(np.nanmax(probe[2]))
+    else:
+        height_min, height_max = 0.0, 0.0
+    # tileExtensionPercent 100 -> max height is doubled, then the centre
+    # pixel's lat/lon change between those heights is the extra margin.
+    scale = 1.0 + float(tile_extension_percent) / 100.0
+    height_hi = height_max * scale
+    height_lo = height_min
+    lat_lo, lon_lo = _radar_corner_latlon(reference, orbit, degree, height_lo)
+    lat_hi, lon_hi = _radar_corner_latlon(reference, orbit, degree, height_hi)
+    rows, cols = reference.shape
+    centre_az = _line_times(reference.model, np.array([reference.row + rows // 2]))
+    centre_rg = _slant_ranges(reference.model, np.array([float(reference.col + cols // 2)]))
+    centre_lo = ground_points_at_height(orbit, centre_az, centre_rg, np.array([height_lo]), degree=degree)
+    centre_hi = ground_points_at_height(orbit, centre_az, centre_rg, np.array([height_hi]), degree=degree)
+    lat_c_lo, lon_c_lo, _h = ecef_to_geodetic(centre_lo)
+    lat_c_hi, lon_c_hi, _h = ecef_to_geodetic(centre_hi)
+    extra_lat = abs(float(np.rad2deg(np.asarray(lat_c_hi).reshape(-1)[0] - np.asarray(lat_c_lo).reshape(-1)[0])))
+    extra_lon = abs(float(np.rad2deg(np.asarray(lon_c_hi).reshape(-1)[0] - np.asarray(lon_c_lo).reshape(-1)[0])))
+    extra_lat *= float(margin_scale)
+    extra_lon *= float(margin_scale)
+    lat_min = min(float(np.min(lat0)), float(np.min(lat_lo)), float(np.min(lat_hi))) - extra_lat - lat_step
+    lat_max = max(float(np.max(lat0)), float(np.max(lat_lo)), float(np.max(lat_hi))) + extra_lat + lat_step
+    lon_min = min(float(np.min(lon0)), float(np.min(lon_lo)), float(np.min(lon_hi))) - extra_lon - lon_step
+    lon_max = max(float(np.max(lon0)), float(np.max(lon_lo)), float(np.max(lon_hi))) + extra_lon + lon_step
+    return _posts_in_box(dem, lat_min, lat_max, lon_min, lon_max, snap_geopos=snap_geopos)
+
+
+def _posts_in_box(
+    dem: object,
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+    *,
+    snap_geopos: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dem_lat = np.asarray(dem.lat_deg, dtype=np.float64)
+    dem_lon = np.asarray(dem.lon_deg, dtype=np.float64)
     lat_index = np.flatnonzero((dem_lat >= lat_min) & (dem_lat <= lat_max))
     lon_index = np.flatnonzero((dem_lon >= lon_min) & (dem_lon <= lon_max))
     if lat_index.size == 0 or lon_index.size == 0:

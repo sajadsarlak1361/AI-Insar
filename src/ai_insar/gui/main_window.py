@@ -1542,6 +1542,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
                 polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
                 orbit_states=8,
+                tile_extension_percent=int(params.get("tile_extension_percent") or 100),
             )
             phase = phase + residual
             self._topo_removed = True
@@ -1551,9 +1552,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if params.get("output_topo"):
                 self.workspace.topo_phase = residual
             self._log(
-                f"Topographic phase is -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "Topographic phase is the radar-coded slave range difference, "
+                "triangulated from DEM posts. "
                 f"Tile extension {int(params.get('tile_extension_percent') or 100)}%. "
-                "DEM samples are the geocoded pixel centres. "
+                "Each raw sample is placed at the GIS centre minus half a post. "
                 f"External DEM geoid {'not applied' if params.get('dem_path') else 'follows the named model'}."
             )
         ifg = self.workspace.interferograms
@@ -2585,7 +2587,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.workspace.interferograms[0] = subtract_phase(self.workspace.interferograms[0], residual)
             self.workspace.dem_m = heights
             self._log(
-                "Topographic Phase Removal used -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "Topographic Phase Removal radar-coded the DEM posts and triangulated "
+                "-4π/λ (R_slave(ellipsoid) - R_slave(DEM)). "
                 "The perpendicular-baseline formula was not used."
             )
             self.workspace.filtered = None
