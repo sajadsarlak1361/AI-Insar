@@ -46,9 +46,21 @@ def test_flat_earth_phase_is_minus_four_pi_over_lambda_times_reference_minus_sec
     assert abs(phase[row, col] - (-expected)) > 1e-3
 
 
-def test_even_coherence_window_uses_size_over_two_on_both_sides():
-    assert snap_window_bounds(5, 2, 20) == (4, 6)
-    assert snap_window_bounds(5, 10, 40) == (0, 10)
+def test_interferogram_window_is_exactly_two_by_ten_and_anchored_forward():
+    from ai_insar.pipeline.coherence import _box_sum, correct_coherence_bias
+
+    assert snap_window_bounds(5, 2, 20) == (5, 6)
+    assert snap_window_bounds(5, 10, 40) == (1, 10)
+    field = np.zeros((6, 16), dtype=np.float64)
+    field[3, 5] = 1.0
+    summed = _box_sum(field, 2, 10)
+    assert summed[3, 5] == 1.0
+    assert summed[2, 5] == 1.0
+    assert summed[4, 5] == 0.0
+    assert summed[3, 9] == 1.0
+    assert summed[3, 10] == 0.0
+    corrected = correct_coherence_bias(np.array([0.5], dtype=np.float32), 30)
+    assert corrected[0] == np.float32(np.float32(0.5) - (1.0 - 0.25) / 60.0)
     rows, cols = 8, 16
     early = np.ones((rows, cols), dtype=np.complex64)
     late = np.ones((rows, cols), dtype=np.complex64)
@@ -56,6 +68,7 @@ def test_even_coherence_window_uses_size_over_two_on_both_sides():
     raw = coherence_map(early, late * ramp, 10, azimuth_window=2)
     flat = np.ones((rows, cols), dtype=np.complex64)
     flattened = coherence_map(early, late * ramp, 10, azimuth_window=2, product=flat)
+    assert flattened.shape == (rows, cols)
     assert flattened[4, 8] > 0.99
     assert raw[4, 8] < flattened[4, 8]
 
