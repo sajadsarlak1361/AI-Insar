@@ -4,6 +4,19 @@ This area replaces the 1 km square, which replaced the 100 m square in
 [square100m_9e0457d](../square100m_9e0457d/README.md). It is entered as the
 processing-area AOI (`wktAoi` / `geoRegion`), not as a hard-coded crop.
 
+The measured validation box keeps the centre of the 1 km rerun,
+50.230140 N, 13.276190 E, and is scaled to 200 m about that centre. It
+still straddles IW1 VV bursts 5 and 6 (Copernicus ids 359478 and 359479).
+
+```
+POLYGON ((13.277940547243 50.230736260374, 13.275260248341 50.231262860184, 13.274439612857 50.229543622652, 13.277119475167 50.229017116715, 13.277940547243 50.230736260374))
+```
+
+The polygon checked in below is the same 200 m construction in the local
+frame of the 100 m square. Its centre is the burst boundary. The previous
+1 km fixture was centred on the unclamped overlap midpoint, about 127 m
+into burst 6, and a 200 m square there would have missed burst 5.
+
 | | |
 | --- | --- |
 | Dates | 2021-06-30 reference, 2021-07-12 secondary |
@@ -13,9 +26,11 @@ processing-area AOI (`wktAoi` / `geoRegion`), not as a hard-coded crop.
 | Subswath | IW1 |
 | Polarisation | VV |
 | Bursts | 5 and 6 (Copernicus burst ids 359478 and 359479) |
-| Centre latitude | 50.24775165 |
-| Centre longitude | 13.28643181 |
-| Edge | 200 m in the same local east/north frame as the 100 m square |
+| Measured centre latitude | 50.230140 |
+| Measured centre longitude | 13.276190 |
+| Local-frame centre latitude | 50.24775165 |
+| Local-frame centre longitude | 13.28643181 |
+| Edge | 200 m |
 
 WKT:
 
