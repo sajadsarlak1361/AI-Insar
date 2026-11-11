@@ -251,12 +251,12 @@ def _normalised_covariance(master: np.ndarray, slave: np.ndarray) -> np.ndarray:
     slave_pad = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
     master_pad[:lines, :pixels] = master
     slave_pad[lines // 2 : lines // 2 + lines, pixels // 2 : pixels // 2 + pixels] = slave
-    cross = np.fft.ifft2(np.conj(np.fft.fft2(master_pad)) * np.fft.fft2(slave_pad))
+    cross = _ifft2(_conj(_fft2(master_pad)) * _fft2(slave_pad))
     power = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
     power[lines:, pixels:] = master[::-1, ::-1] ** 2 + 1j * slave**2
     ones = np.zeros((padded_lines, padded_pixels), dtype=np.complex128)
     ones[lines // 2 : lines // 2 + lines, pixels // 2 : pixels // 2 + pixels] = 1.0
-    norm = np.fft.ifft2(np.fft.fft2(power) * np.conj(np.fft.fft2(ones)))
+    norm = _ifft2(_fft2(power) * _conj(_fft2(ones)))
     denom = np.sqrt(np.maximum(norm.real, 0.0) * np.maximum(norm.imag, 0.0))
     covar = np.zeros((lines + 1, pixels + 1), dtype=np.float64)
     usable = denom[: lines + 1, : pixels + 1] > 0
@@ -270,7 +270,7 @@ def _oversample_real(image: np.ndarray, factor: int) -> np.ndarray:
     if factor == 1:
         return np.asarray(image, dtype=np.float64)
     lines, pixels = image.shape
-    spectrum = np.fft.fft2(image)
+    spectrum = _fft2(image)
     spectrum = spectrum.copy()
     spectrum[:, pixels // 2] *= 0.5
     spectrum[lines // 2, :] *= 0.5
@@ -283,7 +283,24 @@ def _oversample_real(image: np.ndarray, factor: int) -> np.ndarray:
     placed[: half_line + 1, -half_pixel:] = spectrum[: half_line + 1, half_pixel:]
     placed[-half_line:, : half_pixel + 1] = spectrum[half_line:, : half_pixel + 1]
     placed[-half_line:, -half_pixel:] = spectrum[half_line:, half_pixel:]
-    return np.real(np.fft.ifft2(placed)) * float(factor * factor)
+    return np.real(_ifft2(placed)) * float(factor * factor)
+
+
+def _fft2(image: np.ndarray) -> np.ndarray:
+    """scipy.fft matches NumPy's peak on these sizes and is the faster planner."""
+    from scipy import fft as scipy_fft
+
+    return scipy_fft.fft2(image, overwrite_x=False)
+
+
+def _ifft2(spectrum: np.ndarray) -> np.ndarray:
+    from scipy import fft as scipy_fft
+
+    return scipy_fft.ifft2(spectrum, overwrite_x=False)
+
+
+def _conj(values: np.ndarray) -> np.ndarray:
+    return np.conj(values)
 
 
 def apply_range_shift(image: np.ndarray, shift_px: float, method: str = "FOURIER") -> np.ndarray:

@@ -150,8 +150,15 @@ def _coherence_plane(
         azimuth,
         range_window,
     )
-    gamma = np.abs(real + 1j * imag) / np.sqrt(np.maximum(power_early * power_late, 0.0) + 1e-30)
-    return np.clip(gamma, 0.0, 1.0).astype(np.float32)
+    # SNAP SarUtils.coherenceProduct: |sum| / sqrt(|slave|^2 sum * |master|^2 sum),
+    # and 0 when either power sum is 0. The sums are float64. The stored band
+    # is float32. Coherence is taken after flat-earth and topographic phase
+    # have been applied to the slave, on the pre-deburst burst grid. A window
+    # that leaves the array adds zeros; it does not wrap into the next burst.
+    gamma = np.zeros(real.shape, dtype=np.float64)
+    valid = (power_early > 0.0) & (power_late > 0.0)
+    gamma[valid] = np.abs(real[valid] + 1j * imag[valid]) / np.sqrt(power_early[valid] * power_late[valid])
+    return gamma.astype(np.float32)
 
 
 def _box_sum(values: np.ndarray, azimuth: int, range_window: int) -> np.ndarray:

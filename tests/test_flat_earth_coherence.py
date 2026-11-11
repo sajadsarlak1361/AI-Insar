@@ -249,6 +249,46 @@ def test_missing_dem_coverage_raises_instead_of_zeroing_the_phase():
         )
 
 
+def test_coherence_is_zero_when_a_look_has_no_power_and_does_not_cross_bursts():
+    early = np.zeros((3, 20), dtype=np.complex64)
+    late = np.zeros((3, 20), dtype=np.complex64)
+    early[1, 4:8] = 1
+    late[1, 4:8] = 1
+    gamma = coherence_map(early, late, 10, azimuth_window=2)
+    assert gamma.dtype == np.float32
+    assert float(gamma[0, 19]) == 0.0
+    assert float(gamma[2, 6]) == 0.0
+    assert float(gamma[1, 6]) > 0.5
+
+
+def test_deramp_and_reramp_use_float64_and_snaps_signs():
+    from ai_insar.pipeline.tops_ops import _deramp_iq, _reramp_iq
+
+    value = 3.0 + 4.0j
+    phase = np.array([[12_345.678]])
+    real, imag = _deramp_iq(np.array([[value]]), phase)
+    restored_real, restored_imag = _reramp_iq(real, imag, phase)
+    restored = complex(restored_real[0, 0], restored_imag[0, 0])
+    assert abs(restored - value) < 1e-9
+
+
+def test_snaphu_export_is_unscaled_little_endian_float32():
+    from ai_insar.pipeline.snaphu_io import export_snaphu
+
+    phase = np.array([[0.5, np.nan], [-1.25, 0.0]], dtype=np.float64)
+    coherence = np.array([[0.25, 1.0], [np.nan, 0.5]], dtype=np.float64)
+    conf = export_snaphu("/tmp/snaphu-parity-9501", phase, coherence)
+    folder = conf.parent
+    written = np.fromfile(folder / "corr.img", dtype="<f4").reshape(2, 2)
+    assert written.tolist() == [[0.25, 1.0], [0.0, 0.5]]
+    header = (folder / "phase.hdr").read_text(encoding="utf-8")
+    assert "data type = 4" in header
+    assert "byte order = 0" in header
+    phase_written = np.fromfile(folder / "phase.img", dtype="<f4")
+    assert abs(float(phase_written[0]) - 0.5) < 1e-6
+    assert float(phase_written[1]) == 0.0
+
+
 def test_unremoved_topographic_phase_moves_coherence_past_one_hundredth():
     rows, cols = 8, 24
     early = np.ones((rows, cols), dtype=np.complex64)
