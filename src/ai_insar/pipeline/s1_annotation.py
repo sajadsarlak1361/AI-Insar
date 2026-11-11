@@ -7,7 +7,7 @@ are kept.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -57,6 +57,8 @@ class BurstTiming:
     last_valid_line: int
     first_valid_sample: int
     last_valid_sample: int
+    # Maximum firstValidSample in this burst. -1 means the parser did not see the vector.
+    widest_first_valid: int = -1
 
 
 @dataclass
@@ -152,6 +154,47 @@ def snap_utc_seconds(when: np.datetime64) -> float:
     return float(mjd * 86400.0)
 
 
+def split_annotation(model: SwathModel, burst_first: int, burst_last: int) -> SwathModel:
+    """TOPS Split: keep the selected bursts and restart their index at zero.
+
+    Burst numbers are 1-based and inclusive, as in the Split dialog. The
+    FM-rate and Doppler lists are not trimmed. SNAP restarts burst numbering
+    and still reads record 0 for the first burst of the split product, so
+    retained bursts 5 and 6 read annotation records 0 and 1.
+
+    ``product_first_line_utc`` becomes the first line of the first retained
+    burst. ``product_last_line_utc`` becomes the last line of the last one,
+    ``azimuthTime + (linesPerBurst - 1) * azimuthTimeInterval``. The steering
+    velocity is the orbit speed at the midpoint of those two times.
+    """
+    first = int(burst_first)
+    last = int(burst_last)
+    count = len(model.bursts)
+    if first < 1 or last < first or last > count:
+        raise ValueError(f"burst range {first}..{last} is outside 1..{count}")
+    kept = model.bursts[first - 1 : last]
+    lines = int(model.lines_per_burst)
+    origin = (first - 1) * lines
+    ticks = int(round((lines - 1) * float(model.azimuth_time_interval_s) * 1e9))
+    end = np.datetime64(kept[-1].azimuth_time, "ns") + np.timedelta64(ticks, "ns")
+    anchors = [
+        int(item.widest_first_valid) if int(item.widest_first_valid) >= 0 else int(item.first_valid_sample)
+        for item in kept
+    ]
+    geolocation_line = model.geolocation_line
+    if geolocation_line.size:
+        geolocation_line = np.asarray(geolocation_line, dtype=np.float64) - float(origin)
+    return replace(
+        model,
+        bursts=kept,
+        number_of_lines=lines * len(kept),
+        product_first_line_utc=np.datetime64(kept[0].azimuth_time, "ns"),
+        product_last_line_utc=end,
+        first_valid_pixel=int(max(anchors)),
+        geolocation_line=geolocation_line,
+    )
+
+
 def read_swath_annotation(path: Path | str) -> SwathModel:
     """Parse one measurement annotation XML file into a :class:`SwathModel`."""
     return read_swath_annotation_bytes(Path(path).read_bytes())
@@ -209,6 +252,7 @@ def read_swath_annotation_bytes(payload: bytes) -> SwathModel:
                 last_valid_line=int(valid[-1]),
                 first_valid_sample=sample,
                 last_valid_sample=sample_last,
+                widest_first_valid=int(np.max(first[valid])),
             )
         )
     return SwathModel(
