@@ -1,0 +1,206 @@
+{
+  "geographic_square_original": {
+    "status": "STEP_A_COMPLETE",
+    "centre_latitude": 50.37578508812358,
+    "centre_longitude": 13.326061878105238,
+    "corners_lat_lon": [
+      [
+        50.37613874744699,
+        13.326887869665738
+      ],
+      [
+        50.37631330257908,
+        13.325508840648142
+      ],
+      [
+        50.375431422913316,
+        13.325235898826342
+      ],
+      [
+        50.37525687099057,
+        13.32661490328058
+      ]
+    ],
+    "ellipsoidal_edge_lengths_m": [
+      99.99999999853482,
+      99.99999999721106,
+      99.9999999986407,
+      99.99999999871623
+    ],
+    "reference_split_bounds_half_open": {
+      "row0": 260,
+      "row1": 269,
+      "column0": 2469,
+      "column1": 2492
+    },
+    "secondary_split_bounds_half_open": {
+      "row0": 262,
+      "row1": 271,
+      "column0": 2447,
+      "column1": 2470
+    },
+    "reference_original_SAFE_bounds_half_open": {
+      "row0": 6292,
+      "row1": 6301,
+      "column0": 2469,
+      "column1": 2492
+    },
+    "secondary_original_SAFE_bounds_half_open": {
+      "row0": 6294,
+      "row1": 6303,
+      "column0": 2447,
+      "column1": 2470
+    },
+    "corner_reference_pixel_coordinates_yx": [
+      [
+        260.46713374857944,
+        2469.902178874556
+      ],
+      [
+        260.4671214177977,
+        2491.557741988094
+      ],
+      [
+        268.5329125140802,
+        2491.095673204336
+      ],
+      [
+        268.5329073446804,
+        2469.444445462294
+      ]
+    ],
+    "corner_secondary_pixel_coordinates_yx": [
+      [
+        262.04977289019206,
+        2448.228823478241
+      ],
+      [
+        262.0497085855585,
+        2469.8813797696407
+      ],
+      [
+        270.115460198688,
+        2469.4193150791643
+      ],
+      [
+        270.1155109092603,
+        2447.7713532375974
+      ]
+    ],
+    "bounding_shape": [
+      9,
+      23
+    ],
+    "bounding_pixels": 207,
+    "pixel_centres_inside_exact_ground_square": 191,
+    "all_bounding_pixels_in_AI_common_mask": true,
+    "SNAP_2x10_coherence_median": 0.7858636975288391,
+    "DEM_ellipsoid_height_samples_m": [
+      367.6046142578125,
+      368.1837463378906,
+      367.4736633300781,
+      367.7146301269531,
+      367.1529541015625,
+      367.1905212402344,
+      367.1875915527344,
+      368.0405578613281,
+      367.8101806640625
+    ],
+    "DEM_height_spread_m": 1.030792236328125,
+    "approx_ground_m_per_line": 12.400850123770615,
+    "approx_ground_m_per_sample": 4.618213062368599,
+    "SNAP_one_based_burst": 5,
+    "distance_to_burst_overlap_zone_lines": 1098,
+    "geographic_square_definition": "100m x100m orthogonal axes in local WGS84 azimuthal equidistant tangent projection, range-aligned; edges verified with WGS84 geodesic. Tie-point-grid positions use pixel-centre x+.5,y+.5. Ellipsoidal rather than terrain-following lengths.",
+    "crs_proj4": "+proj=aeqd +lat_0=50.3757850881236 +lon_0=13.3260618781052 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+    "geoRegion_WKT": "POLYGON ((13.326887869666 50.376138747447, 13.325508840648 50.376313302579, 13.325235898826 50.375431422913, 13.326614903281 50.375256870991, 13.326887869666 50.376138747447))",
+    "processing_context": {
+      "row0": 240,
+      "row1": 288,
+      "column0": 2448,
+      "column1": 2512,
+      "shape": [
+        48,
+        64
+      ],
+      "reason": "Minimal modest real-data context around the9x23 square: FFT32 Goldstein and coherence10x2 must not invent samples or clampFFT to9. All comparisons remain191 exact-square pixel centres; surrounding real pixels are kernel context only."
+    }
+  },
+  "reference_physical_corners_and_centre": [
+    [
+      231.07031755831758,
+      2454.361776249027
+    ],
+    [
+      231.07330847615322,
+      2476.67359667426
+    ],
+    [
+      238.2456768515658,
+      2476.365401999144
+    ],
+    [
+      238.24277106883437,
+      2454.3306170183164
+    ],
+    [
+      234.65806896167214,
+      2465.5668751096787
+    ]
+  ],
+  "secondary_physical_corners_and_centre": [
+    [
+      232.6531153634669,
+      2432.690126166379
+    ],
+    [
+      232.65605130834956,
+      2454.998763125329
+    ],
+    [
+      239.82838611620627,
+      2454.6906528931763
+    ],
+    [
+      239.82553481994182,
+      2432.6590658329364
+    ],
+    [
+      236.2408224965675,
+      2443.8936860817726
+    ]
+  ],
+  "radar_bbox": {
+    "row0": 230,
+    "row1": 241,
+    "column0": 2453,
+    "column1": 2479
+  },
+  "coherence_context": {
+    "row0": 229,
+    "row1": 242,
+    "column0": 2448,
+    "column1": 2484
+  },
+  "mask_count": 154,
+  "orbit_files": [
+    "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF",
+    "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF"
+  ],
+  "origin_in_original_SAFE": 6032,
+  "definition": "Same original100m geographic polygon, freshly mapped through Copernicus ellipsoidal DEM and precise orbit to correct the misleading coarse stage3 tie grid. Bounding1pixel interpolation halo; minimal10x2 coherence context. No old SAR products used.",
+  "old_reference_bbox": {
+    "row0": 260,
+    "row1": 269,
+    "column0": 2469,
+    "column1": 2492
+  },
+  "Goldstein_padding": "Far-edge zero extension to64x64, same on both; only genuine square-bbox real SAR data, not a synthetic test.",
+  "backgeo_geometry_context": {
+    "row0": 229,
+    "row1": 242,
+    "column0": 2448,
+    "column1": 2534
+  },
+  "backgeo_context_reason": "Installed new DEM-post triangulation seeds its post selection at0m height with20-post margin; on367m terrain a tiny100m raster misses the hull. An additional50 range samples(geometry-only context) is needed, then immediately cropped before stage5. Same DEM and unmodified public backgeocode."
+}

@@ -1,0 +1,342 @@
+PR20 UNMERGED9e0457d: fresh AI chain through15 COMPLETE; exact same SNAP14 products reused unchanged from final_437b766/snap.
+Topographic phase subtraction ON both sides, same ellipsoidal Copernicus DEM, no extra geoid, SNAPHU2.0.7, ESD skipped.
+Signal/phase/coherence verdicts: {"phase_strict_005rad": "PASS", "coherence_001": "PASS", "stage13_LOS_10mm": "PASS", "final_common_geographic_LOS_10mm": "PASS", "horizontal_50m": "PASS", "terrain_height_arrays_same_as_SNAP_10mm": "FAIL", "terrain_height_AI_vs_independent_GIS_sampling": "PASS"}
+AI whole-chain runtime14.307753s. SNAP not rerun; preserved reference original fresh runtime54.050471s.
+Stage13 LOS mm:
+{
+  "count": 154,
+  "raw": {
+    "mean_abs": 0.044464197773378976,
+    "median_abs": 0.034310971143147295,
+    "p99_abs": 0.16824315174506185,
+    "max_abs": 0.19675979424839696,
+    "RMSE": 0.05824808984871771,
+    "mean_signed": 0.025942545595655793
+  },
+  "median_signed_bias_AI_minus_SNAP": 0.024398066581381883,
+  "median_bias_removed": {
+    "mean_abs": 0.04004737128606561,
+    "median_abs": 0.03468449435427701,
+    "p99_abs": 0.16104452648479894,
+    "max_abs": 0.1862887402490525,
+    "RMSE": 0.0521747996111834,
+    "mean_signed": 0.00154447901427391
+  },
+  "correlation_raw_samples": 0.9999671054646124,
+  "tolerance": 10.0,
+  "raw_verdict": "PASS",
+  "median_bias_removed_verdict": "PASS",
+  "count_above_tolerance": 0,
+  "median_bias_removed_count_above_tolerance": 0,
+  "unit": "mm"
+}
+Final LOS at common geographic points after allowed analytical registration, mm:
+{
+  "count": 458,
+  "raw": {
+    "mean_abs": 0.43369854464015406,
+    "median_abs": 0.26101576075668476,
+    "p99_abs": 2.281969264854673,
+    "max_abs": 5.234187856263,
+    "RMSE": 0.6736757009745975,
+    "mean_signed": 0.02654037499024262
+  },
+  "median_signed_bias_AI_minus_SNAP": 0.05349927050084613,
+  "median_bias_removed": {
+    "mean_abs": 0.42752428551449634,
+    "median_abs": 0.2654842953652583,
+    "p99_abs": 2.3046170968074353,
+    "max_abs": 5.287687126763847,
+    "RMSE": 0.6736923189603279,
+    "mean_signed": -0.026958895510603507
+  },
+  "correlation_raw_samples": 0.9894729955625631,
+  "tolerance": 10,
+  "raw_verdict": "PASS",
+  "median_bias_removed_verdict": "PASS",
+  "count_above_tolerance": 0,
+  "median_bias_removed_count_above_tolerance": 0,
+  "unit": "mm",
+  "geographic_registration": "Correct ONLY the proven endpoint/outer-edge geotag convention, then interpolate existing AI raster bilinearly to unchanged SNAP geographic pixel centres. No image-value fit, bias correction, or arbitrary image translation."
+}
+Per-stage verdicts:
+{
+  "5": {
+    "phase_LOS_10mm": "PASS",
+    "phase_strict_005rad": "PASS",
+    "retained_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "6": {
+    "phase_LOS_10mm": "PASS",
+    "phase_strict_005rad": "PASS",
+    "retained_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "7": {
+    "phase_LOS_10mm": "PASS",
+    "phase_strict_005rad": "PASS",
+    "retained_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "8": {
+    "phase_LOS_10mm": "PASS",
+    "phase_strict_005rad": "PASS",
+    "retained_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "9": {
+    "phase_LOS_10mm": "PASS",
+    "phase_strict_005rad": "PASS",
+    "retained_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "10": {
+    "exported_phase_strict_005rad": "PASS",
+    "exported_coherence_001": "PASS",
+    "overall_compared_fields": "PASS"
+  },
+  "11": {
+    "unwrap_10mm_LOS": "PASS"
+  },
+  "12": {
+    "imported_unwrapped_10mm_LOS": "PASS"
+  },
+  "13": {
+    "LOS_10mm": "PASS",
+    "bias_removed_10mm": "PASS"
+  },
+  "14": {
+    "registered_LOS_10mm": "PASS",
+    "bias_removed_10mm": "PASS"
+  },
+  "15": {
+    "registered_LOS_10mm": "PASS",
+    "KMZ_files": "PASS",
+    "horizontal_50m": "PASS"
+  }
+}
+Actual topo DEM-height control:
+{
+  "count": 154,
+  "raw": {
+    "mean_abs": 253.22677654685913,
+    "median_abs": 228.08275511488318,
+    "p99_abs": 638.6153153516352,
+    "max_abs": 724.5805691927671,
+    "RMSE": 301.90835508775746,
+    "mean_signed": 80.41786441168227
+  },
+  "median_signed_bias_AI_minus_SNAP": 70.08318929001689,
+  "median_bias_removed": {
+    "mean_abs": 244.99498073060016,
+    "median_abs": 248.79981158301234,
+    "p99_abs": 634.410323994234,
+    "max_abs": 794.663758482784,
+    "RMSE": 291.184524769312,
+    "mean_signed": 10.334675121665388
+  },
+  "correlation_raw_samples": 0.596397290737073,
+  "tolerance": 10,
+  "raw_verdict": "FAIL",
+  "median_bias_removed_verdict": "FAIL",
+  "count_above_tolerance": 149,
+  "median_bias_removed_count_above_tolerance": 150,
+  "unit": "mm",
+  "signed_min_max_mm": [
+    -724.5805691927671,
+    632.2350492700934
+  ],
+  "note": "Actual per-radar-pixel heights used in topographic subtraction; native simulates/interpolates DEM posts in radar geometry, AI iterates per pixel with bilinear DEM.10mm is numerical height-parity control, not surveyed absolute DEM accuracy.",
+  "AI_used_height_vs_GIS_pixel_centres": {
+    "count": 154,
+    "raw": {
+      "mean_abs": 0.3618333867483458,
+      "median_abs": 0.34248777452739887,
+      "p99_abs": 0.9590678362123435,
+      "max_abs": 0.9864249193342403,
+      "RMSE": 0.432614147235324,
+      "mean_signed": 0.22872589629630305
+    },
+    "median_signed_bias_AI_minus_SNAP": 0.314603982551489,
+    "median_bias_removed": {
+      "mean_abs": 0.28063234177194296,
+      "median_abs": 0.23339099166332744,
+      "p99_abs": 0.9314951040089363,
+      "max_abs": 0.9834950759541243,
+      "RMSE": 0.37711339203275795,
+      "mean_signed": -0.08587808625518599
+    },
+    "correlation_raw_samples": 0.999999207644221,
+    "tolerance": 10,
+    "raw_verdict": "PASS",
+    "median_bias_removed_verdict": "PASS",
+    "count_above_tolerance": 0,
+    "median_bias_removed_count_above_tolerance": 0
+  },
+  "native_used_height_vs_corner_bilinear_at_AI_geolocation": {
+    "count": 154,
+    "raw": {
+      "mean_abs": 37.67162002040362,
+      "median_abs": 24.663370428053895,
+      "p99_abs": 227.6563497866178,
+      "max_abs": 245.89038058795268,
+      "RMSE": 60.68892482621201,
+      "mean_signed": -8.30023578173056
+    },
+    "median_signed_bias_AI_minus_SNAP": -3.228385220427299,
+    "median_bias_removed": {
+      "mean_abs": 36.883428928587065,
+      "median_abs": 23.04314614753821,
+      "p99_abs": 227.46264667339216,
+      "max_abs": 249.11876580837998,
+      "RMSE": 60.33220823611121,
+      "mean_signed": -5.071850561303262
+    },
+    "correlation_raw_samples": 0.9849996850891569,
+    "tolerance": 10,
+    "raw_verdict": "FAIL",
+    "median_bias_removed_verdict": "FAIL",
+    "count_above_tolerance": 92,
+    "median_bias_removed_count_above_tolerance": 93
+  },
+  "convention": "AI uses TIFF pixel centres, independently checked. Native external DEM uses half-cell-shifted sampling; native topographic simulation also triangulates/interpolates DEM posts. Do not equate terrain-height disagreement with LOS displacement error."
+}
+Height caveat: raw height arrays still differ from SNAP at10mm, but AI heights follow independent TIFF centre sampling within0.986425mm. No surveyed absolute height truth.
+Exact new coherence kernel:
+{
+  "count": 154,
+  "mean_abs": 8.727575342936572e-09,
+  "max_abs": 2.8948110464277477e-08,
+  "verdict": "PASS",
+  "note": "Actual fresh topo-removed IFG and SLC power windows; float32 output rounding only."
+}
+Effect vs previous build:
+{
+  "comparison_only_no_old_AI_inputs": true,
+  "stage05_ifg_bit_identical": true,
+  "stage13_changed_pixel_count": 13,
+  "stage13_max_change_mm": 27.73288024556876,
+  "interpretation": "Exact-window correction changes five local unwrap branches by one LOS cycle; geometric-phase outputs remain identical."
+}
+Remaining differences / code locations (not LOS failures):
+[
+  {
+    "issue": "DEM-height sampling/interpolation differs despite identical DEM bytes and datum",
+    "code": [
+      "pipeline/dem.py:203-215",
+      "pipeline/dem.py:256-280",
+      "pipeline/tops_ops.py:315-355",
+      "pipeline/tops_ops.py:385-389"
+    ],
+    "actual_height_stats": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 253.22677654685913,
+        "median_abs": 228.08275511488318,
+        "p99_abs": 638.6153153516352,
+        "max_abs": 724.5805691927671,
+        "RMSE": 301.90835508775746,
+        "mean_signed": 80.41786441168227
+      },
+      "median_signed_bias_AI_minus_SNAP": 70.08318929001689,
+      "median_bias_removed": {
+        "mean_abs": 244.99498073060016,
+        "median_abs": 248.79981158301234,
+        "p99_abs": 634.410323994234,
+        "max_abs": 794.663758482784,
+        "RMSE": 291.184524769312,
+        "mean_signed": 10.334675121665388
+      },
+      "correlation_raw_samples": 0.596397290737073,
+      "tolerance": 10,
+      "raw_verdict": "FAIL",
+      "median_bias_removed_verdict": "FAIL",
+      "count_above_tolerance": 149,
+      "median_bias_removed_count_above_tolerance": 150,
+      "unit": "mm",
+      "signed_min_max_mm": [
+        -724.5805691927671,
+        632.2350492700934
+      ],
+      "note": "Actual per-radar-pixel heights used in topographic subtraction; native simulates/interpolates DEM posts in radar geometry, AI iterates per pixel with bilinear DEM.10mm is numerical height-parity control, not surveyed absolute DEM accuracy.",
+      "AI_used_height_vs_GIS_pixel_centres": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 0.3618333867483458,
+          "median_abs": 0.34248777452739887,
+          "p99_abs": 0.9590678362123435,
+          "max_abs": 0.9864249193342403,
+          "RMSE": 0.432614147235324,
+          "mean_signed": 0.22872589629630305
+        },
+        "median_signed_bias_AI_minus_SNAP": 0.314603982551489,
+        "median_bias_removed": {
+          "mean_abs": 0.28063234177194296,
+          "median_abs": 0.23339099166332744,
+          "p99_abs": 0.9314951040089363,
+          "max_abs": 0.9834950759541243,
+          "RMSE": 0.37711339203275795,
+          "mean_signed": -0.08587808625518599
+        },
+        "correlation_raw_samples": 0.999999207644221,
+        "tolerance": 10,
+        "raw_verdict": "PASS",
+        "median_bias_removed_verdict": "PASS",
+        "count_above_tolerance": 0,
+        "median_bias_removed_count_above_tolerance": 0
+      },
+      "native_used_height_vs_corner_bilinear_at_AI_geolocation": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 37.67162002040362,
+          "median_abs": 24.663370428053895,
+          "p99_abs": 227.6563497866178,
+          "max_abs": 245.89038058795268,
+          "RMSE": 60.68892482621201,
+          "mean_signed": -8.30023578173056
+        },
+        "median_signed_bias_AI_minus_SNAP": -3.228385220427299,
+        "median_bias_removed": {
+          "mean_abs": 36.883428928587065,
+          "median_abs": 23.04314614753821,
+          "p99_abs": 227.46264667339216,
+          "max_abs": 249.11876580837998,
+          "RMSE": 60.33220823611121,
+          "mean_signed": -5.071850561303262
+        },
+        "correlation_raw_samples": 0.9849996850891569,
+        "tolerance": 10,
+        "raw_verdict": "FAIL",
+        "median_bias_removed_verdict": "FAIL",
+        "count_above_tolerance": 92,
+        "median_bias_removed_count_above_tolerance": 93
+      },
+      "convention": "AI uses TIFF pixel centres, independently checked. Native external DEM uses half-cell-shifted sampling; native topographic simulation also triangulates/interpolates DEM posts. Do not equate terrain-height disagreement with LOS displacement error."
+    },
+    "effect": "Topographic-phase residual remains below0.14mm LOS. The previous27.7mm local cycle failures are resolved by this build.",
+    "native_height_interpolation_note": "Actual native topo heights also use radar-domain DEM-post interpolation. Half-cell convention alone does not explain every height difference.",
+    "AI_height_vs_GIS_centres_max_mm": 0.9864249193342403
+  },
+  {
+    "issue": "AI terrain-correction endpoint/GeoTIFF outer-edge convention remains inconsistent",
+    "code": [
+      "pipeline/tops_ops.py:2114-2163",
+      "pipeline/tops_ops.py:2335-2367"
+    ],
+    "effect": "Maximum2.849867415324688m: ACCEPTED under50m, analytically corrected for the geographic LOS comparison. Existing raster values unchanged."
+  }
+]
+Parameters, runtimes, band names, extents and complete numeric statistics: FINAL_REPORT.json.
+Limitations:
+LOS range change, not independent vertical motion. No absolute surveyed terrain/deformation truth.
+Native SNAP14 GPF engine (same as GPT) used headlessly. Native jLinda+sameDEM per-pixel source geocoding fixes the sparse-tie-point footprint, without AI coordinates. Actual source/script and params retained.
+Native stage5 extra outputFlatEarthPhase/outputTopoPhase/outputElevation bands enabled for diagnostics; no effect on numerical IFG. Native externalDEMApplyEGM=false and actual model applyEarthGravitionalModel(false), verified native bilinear.
+AI dense geometric-phase GUI does not wire degree5/501 native polynomial fit, despite a separate helper existing. Dense as-shipped operation used, without a custom fitting patch. Tile-extension setting is logged but AI dense DEM evaluation has no tile-percent argument.
+BG geometry-only13x86 real context; crop13x36 for coherence;11x26 bbox and154 exact-square centres for acceptance. Goldstein64x64 far-edge zero pad identical.1x1 multilook. All accepted comparisons restricted to the square.
+Final common-world-coordinate comparison analytically corrects only AI known geotag convention within50m; no fitted displacement offset. Median-bias-removed statistics are explicit, not silently applied.
+No corrected-coherence diagnostic is substituted for the current result: every current AI stage ran freshly with the unmodified PR20 wheel. SNAP imagery is reused only as comparison reference, never as AI processing input.
+
+Rounding classification: {"comparison_only_no_old_AI_inputs": true, "stage05_ifg_bit_identical": true, "stage13_max_change_mm": 27.73288024556876, "interpretation": "Exact-window correction changes five local unwrap branches by one LOS cycle; geometric-phase outputs remain identical.", "stage13_one_cycle_changed_pixel_count": 5, "stage13_remaining_max_change_mm": 2.10467573924511e-06, "stage13_changed_pixel_count_before_rounding_filter": 13, "stage13_changed_pixel_count_ignoring_rounding": 5}
+
+Explicit field separation: stages5–15 signal/phase/coherence/LOS PASS. Raw DEM-height array parity vs SNAP remains FAIL at10mm; this is a terrain sampling/interpolation difference, not an unwrapped/deformation error. AI heights pass independent GIS-centre numerical control; absolute surveyed vertical accuracy is not established.
