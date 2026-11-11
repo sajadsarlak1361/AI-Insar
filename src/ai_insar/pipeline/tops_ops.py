@@ -2047,15 +2047,15 @@ def _geocode(
     if mode not in {"geographic", "wgs84(dd)", "utm"}:
         raise ValueError(f"{projection} is not implemented. Use geographic or UTM.")
     rows, cols = grid.shape
-    lats: list[float] = []
-    lons: list[float] = []
-    for row, col in ((0, 0), (0, cols - 1), (rows - 1, 0), (rows - 1, cols - 1)):
-        azimuth = grid.model.line_time(grid.row + row)
-        slant = grid.model.slant_range_m(grid.col + col)
-        ground = ground_point_at_height(orbit, azimuth, slant, 0.0, degree=degree)
-        lat, lon, _height = ecef_to_geodetic(ground)
-        lats.append(float(np.rad2deg(lat)))
-        lons.append(float(np.rad2deg(lon)))
+    if surface == "dem":
+        lats, lons = _footprint_latlon(grid, orbit, height_of, degree)
+    else:
+        lats, lons = _footprint_latlon(grid, orbit, lambda _lat, _lon: (0.0, True), degree, height_m=0.0)
+    if not lats:
+        raise ValueError(
+            "Range-Doppler terrain correction found no DEM height on the source footprint. "
+            "The output grid was not filled with zeros."
+        )
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
     if mode == "utm":
@@ -2095,16 +2095,112 @@ def _geocode(
             heights[row_index, col_index] = height
             xyz = geodetic_to_ecef(np.deg2rad(lat_deg), np.deg2rad(lon_deg), np.asarray(height, dtype=np.float64))
             try:
-                absolute, pixel = radar_coordinates(grid.model, orbit, xyz, guess=guess, degree=degree)
+                local_line, local_sample = _raster_coordinates(grid, orbit, xyz, guess=guess, degree=degree)
             except ValueError:
                 continue
-            line[row_index, col_index] = absolute - grid.row
-            sample[row_index, col_index] = pixel - grid.col
+            line[row_index, col_index] = local_line
+            sample[row_index, col_index] = local_sample
     image = resample_complex(grid.data, line, sample, resampling)
     _geocode.last_surface = surface
+    _geocode.last_warning = ""
+    if surface == "dem":
+        image = np.asarray(image, dtype=np.complex64).copy()
+        inside = (
+            np.isfinite(line)
+            & np.isfinite(sample)
+            & (line >= -0.5)
+            & (line <= rows - 0.5)
+            & (sample >= -0.5)
+            & (sample <= cols - 0.5)
+        )
+        image[~inside] = np.nan + 1j * np.nan
+        valid_count = int(np.count_nonzero(np.isfinite(np.real(image))))
+        _geocode.last_valid = valid_count
+        if valid_count == 0:
+            finite_sample = sample[np.isfinite(sample)]
+            span = (
+                f"{float(finite_sample.min()):.1f} to {float(finite_sample.max()):.1f}"
+                if finite_sample.size
+                else "undefined"
+            )
+            message = (
+                "Range-Doppler terrain correction produced no valid output pixels. "
+                f"Inverse source columns were {span}, outside 0..{cols - 1}. "
+                "Invalid samples are NaN, not 0."
+            )
+            _geocode.last_warning = message
+            raise ValueError(message)
     if surface == "ellipsoid":
         return image, (west, south, east, north)
     return image, (west, south, east, north), heights
+
+
+def _footprint_latlon(grid, orbit, height_of, degree, height_m=None):
+    """Latitude and longitude of the source border, at the DEM height.
+
+    A zero-elevation box sits hundreds of metres from the same pixels on a
+    real DEM. Each border sample is geocoded, the DEM is read there, and the
+    point is geocoded again until the height stops moving.
+    """
+    rows, cols = grid.shape
+    samples = (
+        (0, 0),
+        (0, cols - 1),
+        (rows - 1, 0),
+        (rows - 1, cols - 1),
+        (0, cols // 2),
+        (rows - 1, cols // 2),
+        (rows // 2, 0),
+        (rows // 2, cols - 1),
+        (rows // 2, cols // 2),
+    )
+    lats: list[float] = []
+    lons: list[float] = []
+    for row, col in samples:
+        azimuth = grid.model.line_time(grid.row + row)
+        slant = grid.model.slant_range_m(grid.col + col)
+        height = 0.0 if height_m is None else float(height_m)
+        lat_deg = lon_deg = None
+        for _ in range(12):
+            ground = ground_point_at_height(orbit, azimuth, slant, height, degree=degree)
+            lat, lon, got = ecef_to_geodetic(ground)
+            lat_deg = float(np.rad2deg(lat))
+            lon_deg = float(np.rad2deg(lon))
+            if height_m is not None:
+                break
+            sampled, valid = height_of(lat_deg, lon_deg)
+            if not valid:
+                lat_deg = None
+                break
+            if abs(float(sampled) - height) < 1e-3 and abs(float(got) - float(sampled)) < 1e-3:
+                height = float(sampled)
+                ground = ground_point_at_height(orbit, azimuth, slant, height, degree=degree)
+                lat, lon, _got = ecef_to_geodetic(ground)
+                lat_deg = float(np.rad2deg(lat))
+                lon_deg = float(np.rad2deg(lon))
+                break
+            height = float(sampled)
+        if lat_deg is not None:
+            lats.append(lat_deg)
+            lons.append(lon_deg)
+    return lats, lons
+
+
+def _raster_coordinates(grid, orbit, xyz, *, guess, degree):
+    """Line and sample in this raster, measured from its first line and sample.
+
+    ``grid.row`` and ``grid.col`` are the subset or deburst origin. The slant
+    range is relative to that first sample, and the azimuth time is relative
+    to that first line, not to sample 0 of the uncut swath.
+    """
+    when = orbit.zero_doppler_time(xyz, guess, degree)
+    position, _velocity = orbit.interpolate(when, degree)
+    slant = float(np.linalg.norm(xyz - position))
+    sample = (slant - grid.model.slant_range_m(grid.col)) / grid.model.range_pixel_spacing_m
+    first = grid.model.line_time(int(grid.row))
+    elapsed = int((when - first).astype(np.int64)) * 1e-9
+    line = elapsed / float(grid.model.azimuth_time_interval_s)
+    return float(line), float(sample)
 
 
 def geocode_window(

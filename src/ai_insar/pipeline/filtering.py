@@ -127,6 +127,182 @@ def goldstein_filter(
 goldstein_filter.last_backend = "numpy"
 
 
+def goldstein_snap(
+    interferogram: np.ndarray,
+    *,
+    alpha: float = 1.0,
+    fft_size: int = 64,
+    window_size: int = 3,
+    coherence: np.ndarray | None = None,
+    adaptive: bool = False,
+    alpha_min: float = 0.2,
+    alpha_max: float = 1.0,
+    coherence_mask: bool = False,
+    coherence_threshold: float = 0.2,
+) -> np.ndarray:
+    """SNAP Goldstein filter: FFT blocks of ``fft_size``, step ``fft_size/4``.
+
+    The spectrum magnitude is averaged in a ``window_size`` box (3 means the
+    bin and its neighbours), zeros are left out of that average, and the mean
+    is raised to ``alpha``. A crop smaller than the FFT is zero-padded so the
+    block still runs, then cropped back. A sample that is NaN, or 0 on either
+    component, stays no-data. The overlap-add weight is SNAP's separable
+    triangle. The phase is the argument of that weighted sum.
+    """
+    ifg = np.asarray(interferogram)
+    if ifg.ndim != 2 or not np.iscomplexobj(ifg):
+        raise ValueError("interferogram must be a 2-D complex array")
+    if not 0.0 <= float(alpha) <= 1.0:
+        raise ValueError("alpha must be between 0 and 1")
+    fft = int(fft_size)
+    if fft < 8 or fft % 2 != 0:
+        raise ValueError("FFT size must be an even integer of at least 8")
+    half_window = int(window_size) // 2
+    height, width = ifg.shape
+    real = np.real(ifg).astype(np.float64, copy=False)
+    imag = np.imag(ifg).astype(np.float64, copy=False)
+    valid = np.isfinite(real) & np.isfinite(imag) & (real != 0.0) & (imag != 0.0)
+    pad_y = max(0, fft - height)
+    pad_x = max(0, fft - width)
+    padded_h = height + pad_y
+    padded_w = width + pad_x
+    real_p = np.zeros((padded_h, padded_w), dtype=np.float64)
+    imag_p = np.zeros((padded_h, padded_w), dtype=np.float64)
+    valid_p = np.zeros((padded_h, padded_w), dtype=bool)
+    real_p[:height, :width] = np.where(valid, real, 0.0)
+    imag_p[:height, :width] = np.where(valid, imag, 0.0)
+    valid_p[:height, :width] = valid
+    acc_i = np.zeros((height, width), dtype=np.float64)
+    acc_q = np.zeros((height, width), dtype=np.float64)
+    covered = np.zeros((height, width), dtype=bool)
+    step = max(1, fft // 4)
+    half = fft // 2
+    for y0 in _snap_origins(0, padded_h - fft, step):
+        for x0 in _snap_origins(0, padded_w - fft, step):
+            block_valid = valid_p[y0 : y0 + fft, x0 : x0 + fft]
+            if not np.any(block_valid):
+                continue
+            filtered_i, filtered_q = _snap_filter_block(
+                real_p[y0 : y0 + fft, x0 : x0 + fft],
+                imag_p[y0 : y0 + fft, x0 : x0 + fft],
+                float(alpha),
+                half_window,
+                coherence,
+                y0,
+                x0,
+                height,
+                width,
+                adaptive=adaptive,
+                alpha_min=float(alpha_min),
+                alpha_max=float(alpha_max),
+            )
+            _snap_accumulate(
+                acc_i, acc_q, covered, filtered_i, filtered_q, block_valid, y0, x0, height, width, half
+            )
+    out = np.zeros((height, width), dtype=np.complex64)
+    out[covered] = (acc_i[covered] + 1j * acc_q[covered]).astype(np.complex64)
+    out[~valid] = 0
+    if coherence_mask and coherence is not None:
+        coh = np.asarray(coherence, dtype=np.float64)
+        if coh.shape != ifg.shape:
+            raise ValueError("coherence shape must match the interferogram")
+        restore = valid & np.isfinite(coh) & (coh >= 0.0) & (coh <= 1.0) & (coh < float(coherence_threshold))
+        out[restore] = np.asarray(ifg[restore], dtype=np.complex64)
+    return out
+
+
+def _snap_origins(start: int, last: int, step: int) -> list[int]:
+    if last < start:
+        return []
+    origins = list(range(start, last + 1, step))
+    if origins[-1] != last:
+        origins.append(last)
+    return origins
+
+
+def _snap_filter_block(
+    block_i,
+    block_q,
+    alpha,
+    half_window,
+    coherence,
+    y0,
+    x0,
+    height,
+    width,
+    *,
+    adaptive,
+    alpha_min,
+    alpha_max,
+):
+    packed = np.asarray(block_q, dtype=np.float64) + 1j * np.asarray(block_i, dtype=np.float64)
+    spectrum = np.fft.fft2(packed)
+    smooth = _box_mean_skip_zeros(np.abs(spectrum), int(half_window))
+    if adaptive and coherence is not None:
+        y1 = min(height, y0 + block_i.shape[0])
+        x1 = min(width, x0 + block_i.shape[1])
+        block_alpha = float(alpha)
+        if y0 < height and x0 < width and y1 > max(y0, 0) and x1 > max(x0, 0):
+            view = np.asarray(coherence)[max(y0, 0) : y1, max(x0, 0) : x1]
+            finite = view[np.isfinite(view) & (view >= 0.0) & (view <= 1.0)]
+            if finite.size:
+                block_alpha = float(np.clip(1.0 - np.mean(finite), alpha_min, alpha_max))
+    else:
+        block_alpha = float(alpha)
+    weight = np.ones(smooth.shape, dtype=np.float64)
+    if block_alpha != 0.0:
+        weight = np.zeros(smooth.shape, dtype=np.float64)
+        nonzero = smooth > 0.0
+        weight[nonzero] = np.power(smooth[nonzero], block_alpha)
+    restored = np.fft.ifft2(spectrum * weight)
+    return restored.imag, restored.real
+
+
+def _box_mean_skip_zeros(power: np.ndarray, half: int) -> np.ndarray:
+    """Mean of the non-zero bins in a clamped ``(2*half+1)`` box."""
+    if half <= 0:
+        return np.array(power, dtype=np.float64, copy=True)
+    height, width = power.shape
+    integral = np.zeros((height + 1, width + 1), dtype=np.float64)
+    count = np.zeros_like(integral)
+    present = power != 0.0
+    np.cumsum(np.cumsum(np.where(present, power, 0.0), axis=0), axis=1, out=integral[1:, 1:])
+    np.cumsum(np.cumsum(present.astype(np.float64), axis=0), axis=1, out=count[1:, 1:])
+    y = np.arange(height)[:, None]
+    x = np.arange(width)[None, :]
+    y1 = np.clip(y - half, 0, height)
+    y2 = np.clip(y + half + 1, 0, height)
+    x1 = np.clip(x - half, 0, width)
+    x2 = np.clip(x + half + 1, 0, width)
+    total = integral[y2, x2] - integral[y1, x2] - integral[y2, x1] + integral[y1, x1]
+    number = count[y2, x2] - count[y1, x2] - count[y2, x1] + count[y1, x1]
+    mean = np.zeros(power.shape, dtype=np.float64)
+    good = number > 0
+    mean[good] = total[good] / number[good]
+    return mean
+
+
+def _snap_accumulate(acc_i, acc_q, covered, filtered_i, filtered_q, block_valid, y0, x0, height, width, half):
+    fft_n = filtered_i.shape[0]
+    y_start = max(y0, 0)
+    x_start = max(x0, 0)
+    y_stop = min(y0 + fft_n, height)
+    x_stop = min(x0 + fft_n, width)
+    if y_stop <= y_start or x_stop <= x_start:
+        return
+    yy = np.arange(y_start, y_stop)
+    xx = np.arange(x_start, x_stop)
+    weight_y = 1.0 - np.abs(yy - y0 - half + 0.5) / half
+    weight_x = 1.0 - np.abs(xx - x0 - half + 0.5) / half
+    weight = weight_y[:, None] * weight_x[None, :]
+    local_y = yy - y0
+    local_x = xx - x0
+    take = block_valid[np.ix_(local_y, local_x)]
+    acc_i[np.ix_(yy, xx)] += np.where(take, filtered_i[np.ix_(local_y, local_x)] * weight, 0.0)
+    acc_q[np.ix_(yy, xx)] += np.where(take, filtered_q[np.ix_(local_y, local_x)] * weight, 0.0)
+    covered[np.ix_(yy, xx)] |= take
+
+
 def filter_stack(
     interferograms: np.ndarray,
     *,

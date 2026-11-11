@@ -1568,18 +1568,52 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.config.goldstein_alpha = alpha
         self.workspace.config.goldstein_window = fft_size
         self.workspace.config.goldstein_spectrum_smooth = int(params["window_size"])
-        if params.get("adaptive") or params.get("coherence_mask"):
-            self._goldstein_with_coherence(params)
-        else:
-            self._log(
-                f"Goldstein constant alpha={alpha:.2f}, FFT size={fft_size}, "
-                f"window={int(params['window_size'])}. Suffix {PRODUCT_SUFFIX['goldstein']}."
-            )
-            self.run_filter()
+        self._goldstein_snap(params)
+        self._log(
+            f"Goldstein alpha={alpha:.2f}, FFT size={fft_size}, "
+            f"window={int(params['window_size'])}, "
+            f"coherence mask {'on' if params.get('coherence_mask') else 'off'}. "
+            f"Suffix {PRODUCT_SUFFIX['goldstein']}."
+        )
         if request.open_in_app:
             self._preferred_layer = "Filtered phase"
         if request.save:
             self._save_request(request, self.workspace.filtered, PRODUCT_SUFFIX["goldstein"])
+
+    def _goldstein_snap(self, params: dict) -> None:
+        from ai_insar.pipeline.filtering import goldstein_snap
+
+        if self.workspace.interferograms is None:
+            raise RuntimeError("Form an interferogram before Goldstein filtering.")
+        adaptive = bool(params.get("adaptive"))
+        use_mask = bool(params.get("coherence_mask"))
+        if (adaptive or use_mask) and self.workspace.coherence is None:
+            raise RuntimeError(
+                "Adaptive alpha or the coherence mask needs a coherence image "
+                "of the same shape as the interferogram."
+            )
+        if self.workspace.coherence is not None and self.workspace.coherence.shape != self.workspace.interferograms.shape:
+            raise RuntimeError("Coherence and interferogram shapes differ.")
+        filtered = np.empty_like(self.workspace.interferograms, dtype=np.complex64)
+        for index in range(self.workspace.interferograms.shape[0]):
+            coherence = None if self.workspace.coherence is None else self.workspace.coherence[index]
+            filtered[index] = goldstein_snap(
+                self.workspace.interferograms[index],
+                alpha=float(params["alpha"]),
+                fft_size=int(params["fft_size"]),
+                window_size=int(params["window_size"]),
+                coherence=coherence,
+                adaptive=adaptive,
+                alpha_min=float(params.get("alpha_min", 0.2)),
+                alpha_max=float(params.get("alpha_max", 1.0)),
+                coherence_mask=use_mask,
+                coherence_threshold=float(params.get("coherence_threshold", 0.2)),
+            )
+        self.workspace.filtered = filtered
+        self.workspace.unwrapped = None
+        self.workspace.los_m = None
+        self.workspace.velocity_m_yr = None
+        self.workspace.mask = None
 
     def _goldstein_with_coherence(self, params: dict) -> None:
         if self.workspace.interferograms is None or self.workspace.coherence is None:
@@ -2177,10 +2211,12 @@ class MainWindow(QtWidgets.QMainWindow):
             finite = heights[np.isfinite(heights)]
             missing = int(heights.size - finite.size)
             spread = float(np.std(finite)) if finite.size else float("nan")
+            valid = int(np.count_nonzero(np.isfinite(np.real(image))))
             self._log(
                 f"Range-Doppler terrain correction sampled {dem.provenance}. "
                 f"Ellipsoidal height std {spread:.2f} m, no-data pixels {missing}. "
-                f"Orthometric datum {dem.orthometric_datum}."
+                f"Orthometric datum {dem.orthometric_datum}. "
+                f"{valid} output pixels fall inside the source; the rest are NaN."
             )
         stored = image if params.get("output_complex") else np.abs(image).astype(np.float32)
         self.workspace.geocoded = stored
