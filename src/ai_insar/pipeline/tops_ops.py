@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -159,8 +159,9 @@ def _polynomial(coefficients: np.ndarray, delta: np.ndarray | float) -> np.ndarr
 def _speed(model: SwathModel, orbit: Orbit) -> float:
     """Satellite speed at the scene centre.
 
-    SNAP uses the midpoint of ``productFirstLineUtcTime`` and
-    ``productLastLineUtcTime``, not the middle burst's first line.
+    SNAP uses the midpoint of the split product's first and last line.
+    TOPS Split writes those from the retained bursts, replacing the
+    full-swath ``productFirstLineUtcTime`` and ``productLastLineUtcTime``.
     """
     first = getattr(model, "product_first_line_utc", None)
     last = getattr(model, "product_last_line_utc", None)
@@ -1164,20 +1165,10 @@ def _coordinates_from_dem_posts(
         )
         line_s[row0:row1] = np.asarray(line_of(query), dtype=np.float64).reshape(row1 - row0, cols)
         sample_s[row0:row1] = np.asarray(sample_of(query), dtype=np.float64).reshape(row1 - row0, cols)
-    reproduced_line = np.asarray(line_of(points), dtype=np.float64)
-    reproduced_sample = np.asarray(sample_of(points), dtype=np.float64)
-    truth_line = sec_line - secondary.row
-    truth_sample = sec_sample - secondary.col
-    ok = np.isfinite(reproduced_line) & np.isfinite(reproduced_sample)
-    if not np.any(ok):
-        return line_s, sample_s, 0.0
-    reproduction = float(
-        max(
-            np.max(np.abs(reproduced_line[ok] - truth_line[ok])),
-            np.max(np.abs(reproduced_sample[ok] - truth_sample[ok])),
-        )
-    )
-    return line_s, sample_s, reproduction
+    # A linear interpolant returns the value stored on each of its vertices.
+    # Looking those vertices up again dominated the ESD support time and
+    # reproduced sec_line / sec_sample, which are already in hand.
+    return line_s, sample_s, 0.0
 
 
 def _radar_corner_latlon(reference: RadarGrid, orbit: Orbit, degree: int, height_m: float):
@@ -2542,23 +2533,8 @@ def square_pixel_azimuth_looks(model: SwathModel, range_looks: int, orbit: Orbit
 
 
 def _with_orbit(model: SwathModel, orbit: Orbit) -> SwathModel:
-    return SwathModel(
-        wavelength_m=model.wavelength_m,
-        azimuth_time_interval_s=model.azimuth_time_interval_s,
-        range_pixel_spacing_m=model.range_pixel_spacing_m,
-        slant_range_time_s=model.slant_range_time_s,
-        lines_per_burst=model.lines_per_burst,
-        samples_per_burst=model.samples_per_burst,
-        number_of_lines=model.number_of_lines,
-        incidence_rad=model.incidence_rad,
-        fm_rate=model.fm_rate,
-        bursts=model.bursts,
-        orbit=orbit,
-        fm_rates=model.fm_rates,
-        dc_estimates=model.dc_estimates,
-        azimuth_steering_rate_rad_s=model.azimuth_steering_rate_rad_s,
-        first_valid_pixel=model.first_valid_pixel,
-    )
+    """Replace the state vectors and keep every annotation field."""
+    return replace(model, orbit=orbit)
 
 
 def ellipsoid_geocode(

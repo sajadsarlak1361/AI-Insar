@@ -1350,21 +1350,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(description)
         self._log(
             f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
-            f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field."
+            f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field. "
+            "The stored swath numbers those bursts from 0 and keeps the full FM-rate list."
         )
         self._split_product_ids.add(product.product_id)
         self._remember_split_product(product)
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
         """Keep the split window as a radar grid. Zip annotations are read in place."""
-        from ai_insar.pipeline.s1_annotation import read_swath_from_product
+        from ai_insar.pipeline.s1_annotation import read_swath_from_product, split_annotation
         from ai_insar.pipeline.tops_ops import RadarGrid
 
         if not measurement.annotation_href:
             self._log("TOPS Split kept the burst lines. The measurement has no annotation.")
             return
-        model = read_swath_from_product(product, measurement)
-        grid = RadarGrid(int(row), 0, np.asarray(data, dtype=np.complex64), model)
+        full = read_swath_from_product(product, measurement)
+        lines = int(full.lines_per_burst)
+        absolute = int(row)
+        burst_first = absolute // lines + 1
+        burst_last = (absolute + int(data.shape[0]) - 1) // lines + 1
+        model = split_annotation(full, burst_first, burst_last)
+        local_row = absolute - (burst_first - 1) * lines
+        grid = RadarGrid(local_row, 0, np.asarray(data, dtype=np.complex64), model)
         selected = any(
             item.is_reference and item.product_id == product.product_id for item in self.workspace.safe_inputs
         )
@@ -1376,7 +1383,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "measurement": measurement,
             "role": role,
             "row": int(row),
-            "first_line": model.line_time(int(row)),
+            "first_line": model.line_time(local_row),
             "dimap": self._split_bindings.get(product.product_id, {}).get("dimap"),
         }
         if role == "reference":

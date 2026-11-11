@@ -109,6 +109,52 @@ def test_split_deramp_uses_annotation_record_zero_not_the_nearest_time():
     assert np.max(np.abs(phase - nearest)) > 1.0
 
 
+def test_tops_split_reads_record_zero_where_the_full_swath_reads_record_four():
+    from ai_insar.pipeline.s1_annotation import BurstTiming, RangePolynomial, split_annotation
+    from ai_insar.pipeline.tops_ops import tops_phase
+
+    orbit = _orbit()
+    reference, _secondary = _models(orbit)
+    lines = 8
+    start = reference.bursts[0].azimuth_time
+    bursts = tuple(
+        BurstTiming(start + np.timedelta64(index, "s"), 0, lines - 1, 0, 20) for index in range(9)
+    )
+    records = tuple(
+        RangePolynomial(bursts[index].azimuth_time, 0.006, np.array([-(1000.0 + 100.0 * index), 0.0]))
+        for index in range(9)
+    )
+    full = reference.__class__(
+        wavelength_m=reference.wavelength_m,
+        azimuth_time_interval_s=reference.azimuth_time_interval_s,
+        range_pixel_spacing_m=reference.range_pixel_spacing_m,
+        slant_range_time_s=reference.slant_range_time_s,
+        lines_per_burst=lines,
+        samples_per_burst=reference.samples_per_burst,
+        number_of_lines=lines * 9,
+        incidence_rad=reference.incidence_rad,
+        fm_rate=np.array([-2000.0, 0.0, 0.0]),
+        bursts=bursts,
+        orbit=orbit,
+        fm_rates=records,
+        dc_estimates=records,
+        azimuth_steering_rate_rad_s=0.0,
+    )
+    window = np.ones((lines, 4), dtype=np.complex64)
+    unsplit = tops_phase(RadarGrid(4 * lines, 0, window, full))
+    split = split_annotation(full, 5, 6)
+    local = tops_phase(RadarGrid(0, 0, window, split))
+    record_zero = full.__class__(
+        **{**split.__dict__, "fm_rates": records[:1], "dc_estimates": records[:1], "bursts": split.bursts[:1]}
+    )
+    record_four = full.__class__(
+        **{**split.__dict__, "fm_rates": records[4:5], "dc_estimates": records[4:5], "bursts": split.bursts[:1]}
+    )
+    assert np.max(np.abs(local - tops_phase(RadarGrid(0, 0, window, record_zero)))) < 1e-6
+    assert np.max(np.abs(unsplit - tops_phase(RadarGrid(0, 0, window, record_four)))) < 1e-6
+    assert np.max(np.abs(local - unsplit)) > 1.0
+
+
 def test_deramp_polynomial_follows_the_burst_not_the_window_origin():
     from ai_insar.pipeline.s1_annotation import BurstTiming, RangePolynomial
     from ai_insar.pipeline.tops_ops import tops_phase
