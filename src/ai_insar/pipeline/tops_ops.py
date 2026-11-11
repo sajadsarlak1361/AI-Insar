@@ -903,9 +903,9 @@ def backgeocode(
     backgeocode.last_residual_px = 0.0
     backgeocode.dem_resampling = str(dem_resampling)
     secondary_phase = tops_phase(secondary, orbit=secondary_orbit)
-    secondary_deramped = (
-        np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
-    ).astype(np.complex64)
+    # Deramp in float64. SNAP keeps I and Q in double until the band is stored.
+    # (I + iQ) * exp(i φ), with φ the burst deramp/demod phase.
+    deramped_real, deramped_imag = _deramp_iq(secondary.data, secondary_phase)
     rows, cols = reference.shape
     if dem is not None:
         posted_line, posted_sample, reproduction = _coordinates_from_dem_posts(
@@ -926,7 +926,15 @@ def backgeocode(
             extent = overlap_extent(overlap)
             backgeocode.last_overlap_extent = extent
             return _resample_overlap(
-                secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+                deramped_real,
+                deramped_imag,
+                secondary_phase,
+                line_s,
+                sample_s,
+                overlap,
+                extent,
+                resampling,
+                reramp,
             )
     backgeocode.last_geometry = "radar-lattice"
     limit = rows * cols if max_solves is None else int(max_solves)
@@ -983,12 +991,29 @@ def backgeocode(
     extent = overlap_extent(overlap)
     backgeocode.last_overlap_extent = extent
     return _resample_overlap(
-        secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+        deramped_real, deramped_imag, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
     )
 
 
+def _deramp_iq(data: np.ndarray, phase: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP ``performDerampDemod``: ``(I + iQ) * exp(i φ)`` in float64."""
+    real = np.asarray(np.real(data), dtype=np.float64)
+    imag = np.asarray(np.imag(data), dtype=np.float64)
+    cosine = np.cos(phase)
+    sine = np.sin(phase)
+    return real * cosine - imag * sine, real * sine + imag * cosine
+
+
+def _reramp_iq(real: np.ndarray, imag: np.ndarray, phase: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP reramp: ``(I + iQ) * exp(-i φ)`` in float64."""
+    cosine = np.cos(phase)
+    sine = np.sin(phase)
+    return real * cosine + imag * sine, -real * sine + imag * cosine
+
+
 def _resample_overlap(
-    secondary_deramped: np.ndarray,
+    deramped_real: np.ndarray,
+    deramped_imag: np.ndarray,
     secondary_phase: np.ndarray,
     line_s: np.ndarray,
     sample_s: np.ndarray,
@@ -997,30 +1022,26 @@ def _resample_overlap(
     resampling: str,
     reramp: bool,
 ) -> np.ndarray:
-    """Resample only the common-overlap box. Everywhere else stays zero."""
+    """Resample only the common-overlap box. Everywhere else stays zero.
+
+    I, Q, and the deramp phase stay float64 through the kernel. The complex64
+    cast is the stored band, which is where SNAP writes the float32 sample.
+    """
     sampled = np.zeros(line_s.shape, dtype=np.complex64)
     if extent is None:
         return sampled
     r0, r1, c0, c1 = extent
     box = overlap[r0:r1, c0:c1]
-    sampled_box = resample_complex(
-        secondary_deramped,
-        line_s[r0:r1, c0:c1],
-        sample_s[r0:r1, c0:c1],
-        resampling,
-        mask=box,
-    )
+    line = line_s[r0:r1, c0:c1]
+    sample = sample_s[r0:r1, c0:c1]
+    sampled_real = resample_real(deramped_real, line, sample, resampling, mask=box)
+    sampled_imag = resample_real(deramped_imag, line, sample, resampling, mask=box)
     if reramp:
-        phase_at_source = resample_real(
-            secondary_phase,
-            line_s[r0:r1, c0:c1],
-            sample_s[r0:r1, c0:c1],
-            resampling,
-            mask=box,
-        )
-        sampled_box = (sampled_box * np.exp(-1j * phase_at_source)).astype(np.complex64)
-        sampled_box[~box] = 0
-    sampled[r0:r1, c0:c1] = sampled_box
+        phase_at_source = resample_real(secondary_phase, line, sample, resampling, mask=box)
+        sampled_real, sampled_imag = _reramp_iq(sampled_real, sampled_imag, phase_at_source)
+        sampled_real = np.where(box, sampled_real, 0.0)
+        sampled_imag = np.where(box, sampled_imag, 0.0)
+    sampled[r0:r1, c0:c1] = (sampled_real + 1j * sampled_imag).astype(np.complex64)
     return sampled
 
 
@@ -1810,9 +1831,18 @@ def _hann_apply(real_part, imag_part, line, sample, lut, half, complex_flag):
         return _hann_apply_numpy(real_part, imag_part, line, sample, lut, int(half), int(complex_flag))
 
 
+def _bisinc_taps(frac: float, half: int) -> np.ndarray:
+    """SNAP BiSinc weights at one fractional offset. No lookup table."""
+    offsets = np.arange(-int(half), int(half) + 1, dtype=np.float64)
+    delta = float(frac) - offsets
+    span = float(half) if half else 1.0
+    weights = np.sinc(delta) * 0.5 * (1.0 + np.cos(np.pi * np.clip(delta / span, -1.0, 1.0)))
+    weights[np.abs(delta) > float(half)] = 0.0
+    return weights
+
+
 def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_flag):
-    bins = lut.shape[0]
-    taps = lut.shape[1]
+    del lut
     height, width = real_part.shape
     rows, cols = line.shape
     out_real = np.zeros((rows, cols), dtype=np.float64)
@@ -1826,8 +1856,8 @@ def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_fla
                 continue
             y0 = int(np.floor(y))
             x0 = int(np.floor(x))
-            wy = lut[min(int((y - y0) * bins), bins - 1)]
-            wx = lut[min(int((x - x0) * bins), bins - 1)]
+            wy = _bisinc_taps(y - y0, half)
+            wx = _bisinc_taps(x - x0, half)
             # SNAP BiSinc keeps every window tap and repeats the edge sample.
             # Dropping the tap and renormalising is the unwindowed-edge bias.
             sy = float(np.sum(wy))
@@ -1867,14 +1897,16 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
 
         @numba.njit(parallel=True, cache=True)
         def _kernel(real_part, imag_part, line, sample, lut, half, complex_flag):
-            bins = lut.shape[0]
             height = real_part.shape[0]
             width = real_part.shape[1]
             rows = line.shape[0]
             cols = line.shape[1]
+            ntaps = 2 * half + 1
             out_real = np.zeros((rows, cols), dtype=np.float64)
             out_imag = np.zeros((rows, cols), dtype=np.float64)
             for row in numba.prange(rows):
+                wy = np.empty(ntaps, dtype=np.float64)
+                wx = np.empty(ntaps, dtype=np.float64)
                 for col in range(cols):
                     y = line[row, col]
                     x = sample[row, col]
@@ -1882,47 +1914,53 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
                         continue
                     y0 = int(np.floor(y))
                     x0 = int(np.floor(x))
-                    iy = int((y - y0) * bins)
-                    ix = int((x - x0) * bins)
-                    if iy < 0:
-                        iy = 0
-                    if ix < 0:
-                        ix = 0
-                    if iy >= bins:
-                        iy = bins - 1
-                    if ix >= bins:
-                        ix = bins - 1
+                    frac_y = y - y0
+                    frac_x = x - x0
                     sy = 0.0
                     sx = 0.0
-                    for tap in range(lut.shape[1]):
-                        sy += lut[iy, tap]
-                        sx += lut[ix, tap]
+                    for tap in range(ntaps):
+                        dy = frac_y - (tap - half)
+                        dx = frac_x - (tap - half)
+                        wy[tap] = _bisinc_delta(dy, half)
+                        wx[tap] = _bisinc_delta(dx, half)
+                        sy += wy[tap]
+                        sx += wx[tap]
                     if sy == 0.0 or sx == 0.0:
                         continue
                     acc_r = 0.0
                     acc_i = 0.0
-                    for ty in range(lut.shape[1]):
+                    for ty in range(ntaps):
                         yy = y0 + ty - half
                         if yy < 0:
                             yy = 0
                         elif yy >= height:
                             yy = height - 1
-                        wy = lut[iy, ty] / sy
-                        if wy == 0.0:
+                        if wy[ty] == 0.0:
                             continue
-                        for tx in range(lut.shape[1]):
+                        wyn = wy[ty] / sy
+                        for tx in range(ntaps):
                             xx = x0 + tx - half
                             if xx < 0:
                                 xx = 0
                             elif xx >= width:
                                 xx = width - 1
-                            weight = wy * (lut[ix, tx] / sx)
+                            weight = wyn * (wx[tx] / sx)
                             acc_r += weight * real_part[yy, xx]
                             if complex_flag != 0:
                                 acc_i += weight * imag_part[yy, xx]
                     out_real[row, col] = acc_r
                     out_imag[row, col] = acc_i
             return out_real, out_imag
+
+        @numba.njit(cache=True)
+        def _bisinc_delta(delta, half):
+            if abs(delta) > half:
+                return 0.0
+            if delta == 0.0:
+                sinc = 1.0
+            else:
+                sinc = np.sin(np.pi * delta) / (np.pi * delta)
+            return sinc * 0.5 * (1.0 + np.cos(np.pi * delta / half))
 
         _hann_apply_numba.compiled = _kernel
     return _hann_apply_numba.compiled(real_part, imag_part, line, sample, lut, half, complex_flag)
