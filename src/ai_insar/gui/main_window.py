@@ -11,6 +11,7 @@ from ai_insar.conventions import C_BAND_WAVELENGTH_M, CONVENTIONS_TEXT, LIMITATI
 from ai_insar.gmtsar_flow import FLOWCHART_TEXT
 from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 from ai_insar.gui.render import amplitude_rgb, colorize, overlay_mask, symmetric_limits
+from ai_insar.gui.aoi_dialog import AoiDialog
 from ai_insar.gui.batch4_dialogs import (
     BatchSnaphuUnwrapDialog,
     MultilookDialog,
@@ -169,12 +170,12 @@ QTreeWidget::item:selected { background: #2d6cdf; }
 """
 
 
-def _crop(array, row0: int, row1: int, col0: int, col1: int):
+def _crop(array, row0: int, row1: int, col0: int, col1: int, step_y: int = 1, step_x: int = 1):
     if array is None:
         return None
     if array.shape[-2] < row1 or array.shape[-1] < col1:
         return array
-    return np.array(array[..., row0:row1, col0:col1], copy=True)
+    return np.array(array[..., row0:row1:step_y, col0:col1:step_x], copy=True)
 
 
 def _covers(grid, start: int, stop: int) -> bool:
@@ -933,6 +934,9 @@ class MainWindow(QtWidgets.QMainWindow):
             item = menu.addAction(label)
             item.setObjectName(object_name)
             item.triggered.connect(self._click(callback, None))
+        area = menu.addAction("Processing area…")
+        area.setObjectName("radarProcessingArea")
+        area.triggered.connect(self._click(self.open_aoi_dialog, None))
         subset = menu.addAction("Subset…")
         subset.setObjectName("radarSubset")
         subset.triggered.connect(self._click(self.open_subset_dialog, None))
@@ -940,9 +944,58 @@ class MainWindow(QtWidgets.QMainWindow):
         save_as.setObjectName("radarSaveProductAs")
         save_as.triggered.connect(self._click(self.open_save_product_dialog, None))
 
+    def open_aoi_dialog(self) -> None:
+        reference, secondary = self._aoi_footprints()
+        wkt = ""
+        if self.workspace.aoi:
+            wkt = str(self.workspace.aoi.get("clipped_wkt") or self.workspace.aoi.get("requested_wkt") or "")
+        elif self.workspace.config.aoi_wkt:
+            wkt = self.workspace.config.aoi_wkt
+        dialog = AoiDialog(self, reference=reference, secondary=secondary, wkt=wkt)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        report = dialog.report()
+        if report is None:
+            return
+        self._remember_aoi(report)
+
+    def _aoi_footprints(self) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
+        products = list(self.safe_products)
+        if self.safe_product is not None and self.safe_product not in products:
+            products.insert(0, self.safe_product)
+        rings = []
+        for product in products:
+            ring = tuple((float(lon), float(lat)) for lat, lon in product.footprint)
+            if len(ring) >= 3:
+                rings.append(ring)
+        reference = rings[0] if rings else ()
+        secondary = rings[1] if len(rings) > 1 else ()
+        return reference, secondary
+
+    def _remember_aoi(self, report) -> None:
+        from ai_insar.pipeline.aoi import chain_aoi
+
+        self.workspace.config.aoi_wkt = report.clipped_wkt or report.requested_wkt
+        self.workspace.aoi = report.to_dict()
+        self.workspace.aoi_stages = chain_aoi(report)
+        self._log(report.message)
+
     def open_split_dialog(self) -> None:
         dialog = TopsSplitDialog(self)
         self._bind_split_dialog(dialog)
+        reference, secondary = self._aoi_footprints()
+        remembered = ""
+        bursts = ()
+        if self.workspace.aoi:
+            remembered = str(self.workspace.aoi.get("clipped_wkt") or "")
+            first = self.workspace.aoi.get("burst_first")
+            last = self.workspace.aoi.get("burst_last")
+            if first and last:
+                bursts = (int(first), int(last))
+        dialog.set_aoi_context(reference=reference, secondary=secondary, wkt=remembered or self.workspace.config.aoi_wkt)
+        if len(bursts) == 2:
+            dialog.burst_first.setValue(bursts[0])
+            dialog.burst_last.setValue(bursts[1])
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_split(dialog.parameters())
@@ -1003,6 +1056,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_terrain_dialog(self) -> None:
         dialog = TerrainCorrectionDialog(self, sources=self._source_names())
+        if self.workspace.config.aoi_wkt:
+            dialog.geo_region.setPlainText(self.workspace.config.aoi_wkt)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_terrain_correction(dialog.parameters())
@@ -1012,6 +1067,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if height < 1 or width < 1:
             raise RuntimeError("Subset needs a loaded raster. Nothing is loaded.")
         dialog = SubsetDialog(self, height=height, width=width)
+        if self.workspace.config.aoi_wkt:
+            dialog.geo_region.setPlainText(self.workspace.config.aoi_wkt)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         self.apply_subset(dialog.parameters())
@@ -1213,6 +1270,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from ai_insar.sentinel import date_from_text
 
         product = resolve_safe(params["source"])
+        params = self._apply_split_aoi(params, product)
         data, measurement, (row, height, width) = split_swath(
             product,
             swath=params["swath"],
@@ -1292,21 +1350,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(description)
         self._log(
             f"Raster line 0 is absolute row {row}. Its zero-Doppler time is the annotation "
-            f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field."
+            f"burst {int(params['burst_first'])} azimuth time, not the DIMAP scene-start field. "
+            "The stored swath numbers those bursts from 0 and keeps the full FM-rate list."
         )
         self._split_product_ids.add(product.product_id)
         self._remember_split_product(product)
 
     def _store_split_grid(self, product, measurement, data: np.ndarray, row: int) -> None:
         """Keep the split window as a radar grid. Zip annotations are read in place."""
-        from ai_insar.pipeline.s1_annotation import read_swath_from_product
+        from ai_insar.pipeline.s1_annotation import read_swath_from_product, split_annotation
         from ai_insar.pipeline.tops_ops import RadarGrid
 
         if not measurement.annotation_href:
             self._log("TOPS Split kept the burst lines. The measurement has no annotation.")
             return
-        model = read_swath_from_product(product, measurement)
-        grid = RadarGrid(int(row), 0, np.asarray(data, dtype=np.complex64), model)
+        full = read_swath_from_product(product, measurement)
+        lines = int(full.lines_per_burst)
+        absolute = int(row)
+        burst_first = absolute // lines + 1
+        burst_last = (absolute + int(data.shape[0]) - 1) // lines + 1
+        model = split_annotation(full, burst_first, burst_last)
+        local_row = absolute - (burst_first - 1) * lines
+        grid = RadarGrid(local_row, 0, np.asarray(data, dtype=np.complex64), model)
         selected = any(
             item.is_reference and item.product_id == product.product_id for item in self.workspace.safe_inputs
         )
@@ -1318,7 +1383,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "measurement": measurement,
             "role": role,
             "row": int(row),
-            "first_line": model.line_time(int(row)),
+            "first_line": model.line_time(local_row),
             "dimap": self._split_bindings.get(product.product_id, {}).get("dimap"),
         }
         if role == "reference":
@@ -1526,6 +1591,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 degree=degree,
                 height_m=0.0,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
             )
         if params.get("subtract_topo"):
             dem = self._interferogram_dem(params, early, early_orbit)
@@ -1536,6 +1604,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 dem=dem,
                 degree=degree,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
+                tile_extension_percent=int(params.get("tile_extension_percent") or 100),
             )
             phase = phase + residual
             self._topo_removed = True
@@ -1545,9 +1617,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if params.get("output_topo"):
                 self.workspace.topo_phase = residual
             self._log(
-                f"Topographic phase is -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "Topographic phase is the radar-coded slave range difference, "
+                "triangulated from DEM posts. "
                 f"Tile extension {int(params.get('tile_extension_percent') or 100)}%. "
-                "DEM samples are the geocoded pixel centres. "
+                "Each raw sample is placed at the GIS centre minus half a post. "
                 f"External DEM geoid {'not applied' if params.get('dem_path') else 'follows the named model'}."
             )
         ifg = self.workspace.interferograms
@@ -2169,10 +2242,9 @@ class MainWindow(QtWidgets.QMainWindow):
             local_x0 = x0 - int(early.col)
             local_x1 = x1 - int(early.col) + 1
             overlap_lines = burst_overlap_rows(model, index)[0][1] - burst_overlap_rows(model, index)[0][0]
-            # A split product keeps the full FM list and indexes it by the burst
-            # number inside the raster, which is 0 for the first written burst.
-            fm_index = index - int(early.row) // int(model.lines_per_burst)
-            separation = spectral_separation_hz(model, max(fm_index, 0), overlap_lines)
+            # Split-local burst ordinal. The annotation list is not trimmed,
+            # and the window origin must not change which record is read.
+            separation = spectral_separation_hz(model, index, overlap_lines)
             estimate = estimate_overlap(
                 _slice(early, start_a, stop_a)[:, local_x0:local_x1],
                 _slice(early, start_b, stop_b)[:, local_x0:local_x1],
@@ -2279,6 +2351,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 out_rows=out_rows,
                 out_cols=out_cols,
                 resampling=resampling,
+                geo_region=str(params.get("geoRegion") or "") or None,
             )
             self._log(
                 f"Ellipsoid geocoding at height 0, not terrain correction. "
@@ -2297,6 +2370,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 resampling=resampling,
                 dem_resampling=str(params.get("dem_resampling") or "BILINEAR_INTERPOLATION"),
                 projection=mode,
+                geo_region=str(params.get("geoRegion") or "") or None,
             )
             finite = heights[np.isfinite(heights)]
             missing = int(heights.size - finite.size)
@@ -2384,22 +2458,138 @@ class MainWindow(QtWidgets.QMainWindow):
         self._install_precise_orbit(str(orbit_path), degree, copied)
         return True
 
+    def _remember_geographic_subset(self, wkt: str, params: dict) -> None:
+        from ai_insar.pipeline.aoi import AoiError, LonLatPolygon, prepare_aoi, refuse_if_outside
+
+        reference_ring, secondary_ring = self._aoi_footprints()
+
+        def _ring(points):
+            if not points:
+                return None
+            return LonLatPolygon(tuple(points))
+
+        try:
+            report = prepare_aoi(
+                wkt,
+                reference=_ring(reference_ring),
+                secondary=_ring(secondary_ring) if secondary_ring else None,
+            )
+            report = refuse_if_outside(report)
+        except AoiError as exc:
+            raise RuntimeError(str(exc)) from exc
+        report.sub_sampling_x = int(params.get("subSamplingX") or 1)
+        report.sub_sampling_y = int(params.get("subSamplingY") or 1)
+        report.source_bands = tuple(params.get("sourceBands") or ())
+        report.copy_metadata = bool(params.get("copyMetadata", True))
+        if isinstance(params.get("region"), dict):
+            report.pixel_region = dict(params["region"])
+        stored = self.workspace.aoi or {}
+        if stored.get("burst_first"):
+            report.burst_first = int(stored["burst_first"])
+            report.burst_last = int(stored["burst_last"])
+            report.burst_ids = tuple(int(item) for item in stored.get("burst_ids") or ())
+            pair = stored.get("esd_overlap_bursts")
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                report.esd_overlap_bursts = (int(pair[0]), int(pair[1]))
+            report.subswath = str(stored.get("subswath") or report.subswath)
+        self._remember_aoi(report)
+
+    def _apply_split_aoi(self, params: dict, product) -> dict:
+        """Clip a TOPS Split WKT to the overlap and keep the bursts that cover it."""
+        from ai_insar.pipeline.aoi import (
+            AoiError,
+            azimuth_burst_footprints,
+            footprint_polygon,
+            prepare_aoi,
+            refuse_if_outside,
+        )
+
+        wkt = str(params.get("wktAoi") or self.workspace.config.aoi_wkt or "").strip()
+        if not wkt:
+            return params
+        reference_ring, secondary_ring = self._aoi_footprints()
+        from ai_insar.pipeline.aoi import LonLatPolygon
+
+        def _ring(points):
+            if not points:
+                return None
+            return LonLatPolygon(tuple(points))
+
+        scene = footprint_polygon(product.footprint)
+        count = len(
+            next(
+                (
+                    item.bursts
+                    for item in product.measurements
+                    if item.swath.upper() == str(params.get("swath", "")).upper() and item.bursts
+                ),
+                (),
+            )
+        )
+        stored_early = self.workspace.aoi or {}
+        saved_wkt = str(stored_early.get("clipped_wkt") or "")
+        footprints = ()
+        if saved_wkt and wkt == saved_wkt and stored_early.get("burst_first"):
+            count = 0
+        if scene is not None and count > 1:
+            try:
+                footprints = azimuth_burst_footprints(scene, count)
+            except AoiError:
+                footprints = ()
+        try:
+            report = prepare_aoi(
+                wkt,
+                reference=_ring(reference_ring),
+                secondary=_ring(secondary_ring) if secondary_ring else None,
+                burst_footprints=footprints or None,
+                subswath=str(params.get("swath") or "IW1"),
+                polarisation=str(params.get("polarisation") or "VV"),
+            )
+            report = refuse_if_outside(report)
+        except AoiError as exc:
+            raise RuntimeError(str(exc)) from exc
+        stored = self.workspace.aoi or {}
+        if report.burst_first is None and stored.get("burst_first") and stored.get("burst_last"):
+            report.burst_first = int(stored["burst_first"])
+            report.burst_last = int(stored["burst_last"])
+            report.burst_ids = tuple(int(item) for item in stored.get("burst_ids") or ())
+            pair = stored.get("esd_overlap_bursts")
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                report.esd_overlap_bursts = (int(pair[0]), int(pair[1]))
+        self._remember_aoi(report)
+        updated = dict(params)
+        if report.burst_first is not None and report.burst_last is not None:
+            updated["burst_first"] = int(report.burst_first)
+            updated["burst_last"] = int(report.burst_last)
+        updated["wktAoi"] = report.clipped_wkt or wkt
+        return updated
+
     def apply_subset(self, params: dict) -> None:
+        from ai_insar.pipeline.aoi import AoiError, subset_from_parameters
         from ai_insar.pipeline.tops_ops import RadarGrid
 
-        row0 = int(params["row_start"])
-        row1 = int(params["row_end"])
-        col0 = int(params["col_start"])
-        col1 = int(params["col_end"])
+        try:
+            window = subset_from_parameters(params)
+        except AoiError as exc:
+            raise RuntimeError(str(exc)) from exc
+        geo = str(params.get("geoRegion") or "").strip()
+        if geo:
+            self._remember_geographic_subset(geo, params)
+        row0 = window.row_start
+        row1 = window.row_end
+        col0 = window.column_start
+        col1 = window.column_end
+        step_y = window.sub_sampling_y
+        step_x = window.sub_sampling_x
         if row0 >= row1 or col0 >= col1:
             raise RuntimeError("The subset is empty.")
         changed = False
         if self.workspace.stack is not None:
-            self.workspace.stack.data = _crop(self.workspace.stack.data, row0, row1, col0, col1)
+            self.workspace.stack.data = _crop(self.workspace.stack.data, row0, row1, col0, col1, step_y, step_x)
             changed = True
         for name in ("interferograms", "filtered", "coherence", "unwrapped", "los_m", "geocoded"):
             value = getattr(self.workspace, name)
-            cropped = _crop(value, row0, row1, col0, col1)
+            cropped = _crop(value, row0, row1, col0, col1, step_y, step_x)
             if cropped is not value:
                 setattr(self.workspace, name, cropped)
                 changed = True
@@ -2413,7 +2603,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 RadarGrid(
                     grid.row + row0,
                     grid.col + col0,
-                    np.array(grid.data[row0:row1, col0:col1], copy=True),
+                    np.array(grid.data[row0:row1:step_y, col0:col1:step_x], copy=True),
                     grid.model,
                 ),
             )
@@ -2422,16 +2612,25 @@ class MainWindow(QtWidgets.QMainWindow):
         if mask is not None and mask.shape[0] >= row1 and mask.shape[1] >= col1:
             from ai_insar.pipeline.tops_ops import overlap_extent, overlap_metadata
 
-            cropped_mask = mask[row0:row1, col0:col1]
+            cropped_mask = mask[row0:row1:step_y, col0:col1:step_x]
             self.workspace.common_overlap_mask = cropped_mask
             self.workspace.common_overlap_extent = overlap_extent(cropped_mask)
             self.workspace.common_overlap_meta = overlap_metadata(cropped_mask)
             changed = True
+        if params.get("copyMetadata") is False:
+            self.workspace.geocode_bounds = None
         if not changed:
             raise RuntimeError("Subset found no raster of that size.")
+        bands = params.get("sourceBands") or []
+        band_text = f" Bands: {', '.join(bands)}." if bands else ""
+        spacing = ""
+        if step_x != 1 or step_y != 1:
+            spacing = " Subsampling above 1 keeps the first pixel's radar time and does not rewrite the line interval."
         self._log(
-            f"Subset rows {row0}:{row1}, samples {col0}:{col1}. "
+            f"Subset rows {row0}:{row1} step {step_y}, samples {col0}:{col1} step {step_x}. "
+            f"subSamplingX {step_x}, subSamplingY {step_y}.{band_text} "
             "The copy is in memory. Source files were not modified."
+            + spacing
         )
         self._preferred_layer = "SLC amplitude"
 
@@ -2579,7 +2778,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.workspace.interferograms[0] = subtract_phase(self.workspace.interferograms[0], residual)
             self.workspace.dem_m = heights
             self._log(
-                "Topographic Phase Removal used -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "Topographic Phase Removal radar-coded the DEM posts and triangulated "
+                "-4π/λ (R_slave(ellipsoid) - R_slave(DEM)). "
                 "The perpendicular-baseline formula was not used."
             )
             self.workspace.filtered = None

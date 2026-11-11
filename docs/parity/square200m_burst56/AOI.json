@@ -1,0 +1,83 @@
+{
+  "requested_wkt": "POLYGON ((13.277904397663 50.230756285166, 13.275211941418 50.231256292114, 13.274432529058 50.229529182623, 13.277124896207 50.229029193585, 13.277904397663 50.230756285166))",
+  "clipped_wkt": "POLYGON ((13.277904397663 50.230756285166, 13.275211941418 50.231256292114, 13.274432529058 50.229529182623, 13.277124896207 50.229029193585, 13.277904397663 50.230756285166))",
+  "area_km2": 0.04000000000573315,
+  "outside": false,
+  "message": "200 m square on the IW1 burst 5/6 seam, area 0.040000 km\u00b2. Centre latitude 50.23014275, longitude 13.27616844. ESD uses the overlap between bursts 5 and 6.",
+  "subswath": "IW1",
+  "polarisation": "VV",
+  "burst_first": 5,
+  "burst_last": 6,
+  "burst_ids": [
+    359478,
+    359479
+  ],
+  "centre_latitude": 50.230142746893,
+  "centre_longitude": 13.276168441086,
+  "north": 50.231256292114,
+  "south": 50.229029193585,
+  "west": 13.274432529058,
+  "east": 13.277904397663,
+  "pixel_region": null,
+  "esd_overlap_bursts": [
+    5,
+    6
+  ],
+  "copy_metadata": true,
+  "source_bands": [],
+  "sub_sampling_x": 1,
+  "sub_sampling_y": 1,
+  "placement": {
+    "replaces": "docs/parity/square100m_9e0457d",
+    "reference_product": "S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B",
+    "secondary_product": "S1A_IW_SLC__1SDV_20210712T052605_20210712T052632_038740_049246_C00B",
+    "relative_orbit": 168,
+    "dates": [
+      "2021-06-30",
+      "2021-07-12"
+    ],
+    "edge_m": 200.0,
+    "lines_from_100m_square_to_overlap_zone": 1098,
+    "burst_gap_s": 2.756501,
+    "azimuth_interval_s": 0.002055556299999998,
+    "lines_per_burst": 1508,
+    "overlap_lines": 166,
+    "ground_m_per_line": 12.400850123770615,
+    "square_100m_centre_latitude": 50.37578508812358,
+    "square_100m_centre_longitude": 13.326061878105238,
+    "centre_note": "Measured 200 m seam square. Centre 50.230142746893 N, 13.276168441086 E. The independently derived midpoint is 1.557 m from the previous centre.",
+    "coverage": {
+      "burst_first": 5,
+      "burst_last": 6,
+      "overlap_lines": 166,
+      "square_line_start": 1427.1860367231345,
+      "square_line_stop": 1443.3139632768655,
+      "overlap_line_start": 1362.5,
+      "overlap_line_stop": 1508.0,
+      "boundary_line": 1435.25,
+      "overlap_inside_square": 16.12792655373096,
+      "square_straddles_boundary": true
+    },
+    "esd": "The square contains the burst 5/6 overlap. Stage 5-15 parity skips ESD until that estimator is revised.",
+    "snap_parameters": {
+      "TOPS Split": [
+        "subswath",
+        "selectedPolarisations",
+        "firstBurstIndex",
+        "lastBurstIndex",
+        "wktAoi"
+      ],
+      "Subset": [
+        "region",
+        "geoRegion",
+        "subSamplingX",
+        "subSamplingY",
+        "sourceBands",
+        "copyMetadata"
+      ],
+      "Range Doppler Terrain Correction": [
+        "geoRegion"
+      ]
+    }
+  }
+}

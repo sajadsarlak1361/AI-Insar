@@ -67,8 +67,19 @@ class ElevationModel:
         lon_deg: float,
         *,
         method: str = "BILINEAR_INTERPOLATION",
+        half_cell: bool = False,
     ) -> tuple[float, bool]:
-        """Return ``(h_ellipsoid, valid)``. Invalid samples are no-data, not zero."""
+        """Return ``(h_ellipsoid, valid)``. Invalid samples are no-data, not zero.
+
+        ``half_cell`` shifts the query by half a post, which is SNAP's
+        FileElevationModel pixel-is-area convention:
+        ``H(lat, lon) = H_centre(lat + dy/2, lon + dx/2)``. ``dy`` is negative
+        on a north-up raster and ``dx`` is positive.
+        """
+        if half_cell:
+            lat_deg, lon_deg = self._snap_half_cell(lat_deg, lon_deg)
+            lat_deg = float(np.asarray(lat_deg).reshape(-1)[0])
+            lon_deg = float(np.asarray(lon_deg).reshape(-1)[0])
         if not self.covers(lat_deg, lon_deg):
             return float("nan"), False
         name = str(method).strip().upper()
@@ -104,10 +115,13 @@ class ElevationModel:
         lon_deg: np.ndarray,
         *,
         method: str = "BILINEAR_INTERPOLATION",
+        half_cell: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Ellipsoidal heights for many locations. Invalid samples are NaN."""
         lat = np.asarray(lat_deg, dtype=np.float64)
         lon = np.asarray(lon_deg, dtype=np.float64)
+        if half_cell:
+            lat, lon = self._snap_half_cell(lat, lon)
         name = str(method).strip().upper()
         if name not in {"BILINEAR_INTERPOLATION", "NEAREST_NEIGHBOUR"}:
             raise ValueError(f"DEM resampling {method} is not implemented.")
@@ -160,6 +174,16 @@ class ElevationModel:
         undulation = self.geoid.undulations(lat, lon)
         height = np.where(valid, sampled + undulation, np.nan)
         return height, valid
+
+    def _snap_half_cell(self, lat: np.ndarray | float, lon: np.ndarray | float):
+        """Move a centre-based query onto SNAP's half-cell corner convention."""
+        lat_arr = np.asarray(lat, dtype=np.float64)
+        lon_arr = np.asarray(lon, dtype=np.float64)
+        if self.lat_deg.size < 2 or self.lon_deg.size < 2:
+            return lat_arr, lon_arr
+        dy = float(self.lat_deg[1] - self.lat_deg[0])
+        dx = float(self.lon_deg[1] - self.lon_deg[0])
+        return lat_arr + 0.5 * dy, lon_arr + 0.5 * dx
 
     def covers(self, lat_deg: float, lon_deg: float) -> bool:
         lat = float(lat_deg)

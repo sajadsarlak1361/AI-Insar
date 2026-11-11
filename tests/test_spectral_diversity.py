@@ -161,7 +161,11 @@ def test_bisinc5_uses_a_normalised_hann_window_and_keeps_phase_in_float64():
 
     taps = np.array([weight(4.5 - index) for index in range(2, 7)])
     taps /= np.sum(taps)
-    assert abs(float(half[0, 0].real) - float(taps[2])) < 1e-4
+    assert abs(float(half[0, 0].real) - float(taps[2])) < 1e-6
+    odd = resample_real(np.real(image).astype(np.float64), np.array([[4.3]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
+    odd_taps = np.array([weight(4.3 - index) for index in range(2, 7)])
+    odd_taps /= np.sum(odd_taps)
+    assert abs(float(odd[0, 0]) - float(odd_taps[2])) < 1e-12
     phase = np.full((9, 9), 1000.0)
     restored = resample_real(phase, np.array([[4.25]]), np.array([[4.0]]), "BISINC_5_POINT_INTERPOLATION")
     assert restored.dtype == np.float64

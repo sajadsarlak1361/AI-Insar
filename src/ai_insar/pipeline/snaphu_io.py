@@ -47,8 +47,11 @@ def export_snaphu(
     corr = np.asarray(coherence, dtype=np.float64)
     if phase.ndim != 2 or corr.shape != phase.shape:
         raise ValueError("phase and coherence must be 2-D and the same shape")
-    if not np.isfinite(phase).all() or not np.isfinite(corr).all():
-        raise ValueError("phase and coherence must be finite")
+    # SNAP writes little-endian float32 radians and unscaled coherence.
+    # A missing sample is 0, which is the no-data value SnaphuExport uses
+    # when the source real band's no-data is 0. Nothing is scaled to a byte.
+    phase = np.where(np.isfinite(phase), phase, 0.0)
+    corr = np.where(np.isfinite(corr), corr, 0.0)
     mode = str(stat_mode).strip().upper()
     method = str(init_method).strip().upper()
     if mode not in _STAT_MODES:

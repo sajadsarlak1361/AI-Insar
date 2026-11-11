@@ -8,8 +8,9 @@ not a crop and not an amplitude correlation.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -87,12 +88,12 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
         local_stop = min(burst_stop, grid.row + rows)
         if local_start >= local_stop:
             continue
-        # A split raster addresses the first written burst as record 0.
-        # The absolute SAFE burst number is not that index.
-        local_burst = burst_index - int(grid.row) // int(model.lines_per_burst)
-        record = local_burst if 0 <= local_burst < len(model.fm_rates) else burst_index
-        fm = model.fm_rates[min(max(record, 0), len(model.fm_rates) - 1)]
-        dc = model.dc_estimates[min(max(record, 0), len(model.dc_estimates) - 1)]
+        # TOPS Split keeps the full annotation list and restarts burst
+        # numbering at 0. Retained bursts 5 and 6 therefore read records 0
+        # and 1, not the nearest-time records 4 and 5. The index is the
+        # burst's place in this product, not the window origin.
+        fm = _split_polynomial(model.fm_rates, burst_index)
+        dc = _split_polynomial(model.dc_estimates, burst_index)
         ka = _polynomial(fm.coefficients, tau - fm.t0_s)
         fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
         ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
@@ -109,6 +110,39 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
     return phase
 
 
+def _split_polynomial(polynomials: tuple, burst_index: int):
+    """Annotation record for one burst after TOPS Split.
+
+    SNAP indexes ``azimuthFmRate`` and ``dcEstimate`` by the burst ordinal
+    in the split product. The list itself is not trimmed, so the first
+    retained burst reads record 0.
+    """
+    if not polynomials:
+        raise ValueError("the swath has no range polynomial for this burst")
+    index = int(burst_index)
+    if index < 0 or index >= len(polynomials):
+        raise ValueError(
+            f"split burst {index} is outside the {len(polynomials)} annotation records"
+        )
+    return polynomials[index]
+
+
+def _polynomial_for_burst(polynomials: tuple, azimuth_time: np.datetime64):
+    """The range polynomial dated nearest this burst.
+
+    This is the physical record. Deramp and reramp do not use it: SNAP's
+    split product addresses the untrimmed list by the restarted burst number.
+    """
+    if not polynomials:
+        raise ValueError("the swath has no range polynomial for this burst")
+    target = np.datetime64(azimuth_time, "ns").astype(np.int64)
+    best = min(
+        polynomials,
+        key=lambda item: abs(int(np.datetime64(item.azimuth_time, "ns").astype(np.int64) - target)),
+    )
+    return best
+
+
 def _two_way(model: SwathModel, sample: float) -> float:
     return float(model.slant_range_time_s + 2.0 * float(sample) * model.range_pixel_spacing_m / 299_792_458.0)
 
@@ -123,7 +157,18 @@ def _polynomial(coefficients: np.ndarray, delta: np.ndarray | float) -> np.ndarr
 
 
 def _speed(model: SwathModel, orbit: Orbit) -> float:
-    when = model.bursts[len(model.bursts) // 2].azimuth_time
+    """Satellite speed at the scene centre.
+
+    SNAP uses the midpoint of the split product's first and last line.
+    TOPS Split writes those from the retained bursts, replacing the
+    full-swath ``productFirstLineUtcTime`` and ``productLastLineUtcTime``.
+    """
+    first = getattr(model, "product_first_line_utc", None)
+    last = getattr(model, "product_last_line_utc", None)
+    if first is not None and last is not None:
+        when = first + (last - first) / 2
+    else:
+        when = model.bursts[len(model.bursts) // 2].azimuth_time
     _position, velocity = orbit.interpolate(when, 3)
     return float(np.linalg.norm(velocity))
 
@@ -292,6 +337,9 @@ def flat_earth_phase(
     height_m: float = 0.0,
     dem: object | None = None,
     max_solves: int | None = None,
+    polynomial_degree: int | None = None,
+    polynomial_points: int | None = None,
+    orbit_states: int = 8,
 ) -> np.ndarray:
     """SNAP flat-earth phase in radians.
 
@@ -299,6 +347,17 @@ def flat_earth_phase(
     ``exp(-j phi)``. ``dem`` evaluates the same expression at the DEM height
     of each pixel centre. A missing DEM sample stays NaN.
     """
+    if polynomial_points is not None and dem is None and float(height_m) == 0.0:
+        return snap_flat_earth_polynomial(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            degree=degree,
+            polynomial_degree=5 if polynomial_degree is None else int(polynomial_degree),
+            polynomial_points=int(polynomial_points),
+            orbit_states=int(orbit_states),
+        )
     phase, _heights = geometric_phase(
         early,
         later,
@@ -308,8 +367,206 @@ def flat_earth_phase(
         height_m=height_m,
         dem=dem,
         max_solves=max_solves,
+        half_cell=dem is not None,
     )
     return phase
+
+
+def simulated_topographic_phase(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    dem: object,
+    degree: int = 3,
+    tile_extension_percent: int = 100,
+) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP topographic phase: radar-code DEM posts, then triangulate.
+
+    For each post, the phase is ``-4π/λ (R_slave(ellipsoid) - R_slave(DEM))``
+    at the master line and sample of that post. Flat-earth phase is not in
+    this term. Height on the radar grid is the same triangulation of the
+    post heights, which is not a direct DEM query at the pixel's latitude.
+    """
+    phase = np.zeros(early.shape, dtype=np.float64)
+    heights = np.full(early.shape, np.nan, dtype=np.float64)
+    # SNAP tileExtensionPercent 100 widens the DEM by the min-to-max height
+    # shift, then again if that hull still misses the radar window.
+    for margin_scale in (1.0, 2.0, 4.0):
+        post_lat, post_lon, post_height = _dem_posts_covering(
+            early,
+            early_orbit,
+            degree,
+            dem,
+            tile_extension_percent=int(tile_extension_percent),
+            margin_scale=margin_scale,
+        )
+        if post_lat.size < 3:
+            continue
+        phase, heights = _topographic_phase_from_posts(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            dem=dem,
+            degree=degree,
+            post_lat=post_lat,
+            post_lon=post_lon,
+            post_height=post_height,
+        )
+        if np.isfinite(heights).all():
+            return phase, heights
+    missing = int(np.count_nonzero(~np.isfinite(heights)))
+    raise ValueError(
+        f"Topographic phase is missing on {missing} of {heights.size} radar pixels. "
+        "The DEM posts do not cover the window, so the phase is not set to zero."
+    )
+
+
+def _topographic_phase_from_posts(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    dem: object,
+    degree: int,
+    post_lat: np.ndarray,
+    post_lon: np.ndarray,
+    post_height: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    phase = np.zeros(early.shape, dtype=np.float64)
+    heights = np.full(early.shape, np.nan, dtype=np.float64)
+    dy = float(dem.lat_deg[1] - dem.lat_deg[0]) if dem.lat_deg.size > 1 else 0.0
+    dx = float(dem.lon_deg[1] - dem.lon_deg[0]) if dem.lon_deg.size > 1 else 0.0
+    # Native geopos of the raw sample is the GIS centre minus half a post.
+    # The half-cell query that reads a height at a latitude is the other way.
+    lat, lon = _topo_post_geopos(post_lat, post_lon, dy, dx)
+    height = np.asarray(post_height, dtype=np.float64)
+    xyz = geodetic_to_ecef(np.deg2rad(lat), np.deg2rad(lon), height)
+    lines = int(early.model.lines_per_burst)
+    first = max(0, int(early.row) // lines)
+    last = min(len(early.model.bursts) - 1, (int(early.row) + early.shape[0] - 1) // lines)
+    ratio = _range_azimuth_ratio(early, early_orbit, degree)
+    for burst in range(first, last + 1):
+        guess = _burst_guess(early.model, burst, xyz.shape[0])
+        try:
+            when = early_orbit.zero_doppler_times(xyz, guess, degree)
+        except ValueError:
+            continue
+        position, _velocity = early_orbit.interpolate(when, degree)
+        slant = np.linalg.norm(xyz - position, axis=1)
+        burst_index = np.full(xyz.shape[0], burst, dtype=np.int64)
+        line = _lines_from_times(early.model, when, burst_index)
+        sample = (slant - early.model.slant_range_m(0.0)) / early.model.range_pixel_spacing_m
+        start = burst * lines
+        stop = start + lines
+        # Keep posts that radar-code just outside the burst so the triangles
+        # cover the first and last lines. SNAP's extended DEM tile does this.
+        margin = max(8.0, 0.25 * lines)
+        inside = (line >= start - margin) & (line <= stop + margin) & np.isfinite(sample)
+        if int(np.count_nonzero(inside)) < 3:
+            continue
+        ellip = ground_points_at_height(
+            early_orbit,
+            when[inside],
+            slant[inside],
+            np.zeros(int(np.count_nonzero(inside))),
+            degree=degree,
+        )
+        slave_burst = min(burst, len(later.model.bursts) - 1)
+        slave_guess = np.full(
+            int(np.count_nonzero(inside)),
+            np.datetime64(later.model.bursts[slave_burst].azimuth_time, "ns"),
+        )
+        slave_dem = _slave_ranges(later_orbit, xyz[inside], slave_guess, degree)
+        slave_ellip = _slave_ranges(later_orbit, ellip, slave_guess, degree)
+        post_phase = -4.0 * np.pi / float(early.model.wavelength_m) * (slave_ellip - slave_dem)
+        _triangulate_burst(
+            phase,
+            heights,
+            early,
+            line[inside],
+            sample[inside],
+            post_phase,
+            height[inside],
+            ratio,
+            burst,
+        )
+    return phase, heights
+
+
+def _topo_post_geopos(lat, lon, dy: float, dx: float):
+    """SNAP's geopos of a raw DEM sample stored at the GIS pixel centre.
+
+    ``geopos = centre - (dy, dx) / 2``. Adding half a cell is the query
+    convention and is not this coordinate.
+    """
+    return np.asarray(lat, dtype=np.float64) - 0.5 * float(dy), np.asarray(lon, dtype=np.float64) - 0.5 * float(dx)
+
+
+def _slave_ranges(orbit: Orbit, xyz: np.ndarray, guess: np.ndarray, degree: int) -> np.ndarray:
+    when = orbit.zero_doppler_times(xyz, guess, degree)
+    position, _velocity = orbit.interpolate(when, degree)
+    return np.linalg.norm(xyz - position, axis=1)
+
+
+def _range_azimuth_ratio(grid: RadarGrid, orbit: Orbit, degree: int) -> float:
+    """Ground range spacing divided by azimuth spacing, for SNAP's triangulation."""
+    rows, cols = grid.shape
+    if rows < 2 or cols < 2:
+        return 1.0
+    corners_row = np.array([0, 0, rows - 1, rows - 1], dtype=np.int64)
+    corners_col = np.array([0, cols - 1, 0, cols - 1], dtype=np.int64)
+    azimuth = _line_times(grid.model, grid.row + corners_row)
+    slant = _slant_ranges(grid.model, grid.col + corners_col.astype(np.float64))
+    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(4), degree=degree)
+    range_spacing = 0.5 * (
+        float(np.linalg.norm(ground[0] - ground[1])) + float(np.linalg.norm(ground[2] - ground[3]))
+    ) / max(cols - 1, 1)
+    azimuth_spacing = 0.5 * (
+        float(np.linalg.norm(ground[0] - ground[2])) + float(np.linalg.norm(ground[1] - ground[3]))
+    ) / max(rows - 1, 1)
+    if azimuth_spacing <= 0.0:
+        return 1.0
+    return range_spacing / azimuth_spacing
+
+
+def _triangulate_burst(
+    phase: np.ndarray,
+    heights: np.ndarray,
+    grid: RadarGrid,
+    line: np.ndarray,
+    sample: np.ndarray,
+    post_phase: np.ndarray,
+    post_height: np.ndarray,
+    ratio: float,
+    burst: int,
+) -> None:
+    """Linear triangulation of radar-coded posts onto one burst's rows."""
+    from scipy.interpolate import LinearNDInterpolator
+    from scipy.spatial import QhullError
+
+    points = np.column_stack((line, sample * float(ratio)))
+    try:
+        phase_of = LinearNDInterpolator(points, post_phase, fill_value=np.nan)
+        height_of = LinearNDInterpolator(points, post_height, fill_value=np.nan)
+    except QhullError:
+        return
+    lines = int(grid.model.lines_per_burst)
+    row0 = max(burst * lines, int(grid.row))
+    row1 = min((burst + 1) * lines, int(grid.row) + grid.shape[0])
+    if row1 <= row0:
+        return
+    rows = np.arange(row0, row1, dtype=np.float64)
+    cols = (int(grid.col) + np.arange(grid.shape[1])).astype(np.float64)
+    mesh_row, mesh_col = np.meshgrid(rows, cols, indexing="ij")
+    query = np.column_stack((mesh_row.ravel(), mesh_col.ravel() * float(ratio)))
+    local0 = row0 - int(grid.row)
+    local1 = row1 - int(grid.row)
+    phase[local0:local1] = np.asarray(phase_of(query), dtype=np.float64).reshape(mesh_row.shape)
+    heights[local0:local1] = np.asarray(height_of(query), dtype=np.float64).reshape(mesh_row.shape)
 
 
 def topographic_residual_phase(
@@ -321,38 +578,34 @@ def topographic_residual_phase(
     dem: object,
     degree: int = 3,
     max_solves: int | None = None,
+    polynomial_degree: int | None = None,
+    polynomial_points: int | None = None,
+    orbit_states: int = 8,
+    tile_extension_percent: int = 100,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Topographic phase after the ellipsoid term has been removed.
+    """SNAP topographic phase on the radar grid.
 
-    SNAP's topographic term is the DEM-height range phase minus the
-    ellipsoid range phase, both ``-4π/λ (R_early - R_later)``. The DEM is
-    read at the geocoded pixel centre. The returned height is NaN where the
-    DEM has no sample; the residual there is 0 so the interferogram is left
-    unchanged.
+    The value is the triangulated slave range difference
+    ``-4π/λ (R_slave(ellipsoid) - R_slave(DEM))``, not the dense height
+    phase minus the flat-earth polynomial. Height is that same
+    triangulation. A window the posts do not cover raises instead of
+    storing a zero phase.
     """
-    dem_phase, heights = geometric_phase(
+    del polynomial_degree, polynomial_points, orbit_states, max_solves
+    # SNAP TopoPhase.radarCode: each DEM post is radar-coded, the slave range
+    # to that post is compared with the slave range to the ellipsoid point at
+    # the same master line and sample, and the phase is triangulated onto the
+    # radar grid. It is not Phi(H_DEM) - Phi(H=0), so it does not cancel a
+    # fitted flat-earth polynomial.
+    return simulated_topographic_phase(
         early,
         later,
         early_orbit=early_orbit,
         later_orbit=later_orbit,
-        degree=degree,
         dem=dem,
-        max_solves=max_solves,
-    )
-    flat, _flat_heights = geometric_phase(
-        early,
-        later,
-        early_orbit=early_orbit,
-        later_orbit=later_orbit,
         degree=degree,
-        height_m=0.0,
-        dem=None,
-        max_solves=max_solves,
+        tile_extension_percent=int(tile_extension_percent),
     )
-    residual = dem_phase - flat
-    missing = ~np.isfinite(heights)
-    residual[missing] = 0.0
-    return residual, heights
 
 
 def geometric_phase(
@@ -365,6 +618,7 @@ def geometric_phase(
     height_m: float = 0.0,
     dem: object | None = None,
     max_solves: int | None = None,
+    half_cell: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``-4π/λ (R_early - R_later)`` and the height used at each pixel."""
     if early.shape != later.shape or early.row != later.row or early.col != later.col:
@@ -383,7 +637,9 @@ def geometric_phase(
     valid = np.ones(absolute.shape[0], dtype=bool)
     used_height = np.full(absolute.shape, float(height_m), dtype=np.float64)
     if dem is not None:
-        ground, valid = _ground_on_dem(ground, azimuth, slant, early_orbit, dem, degree, valid)
+        ground, valid = _ground_on_dem(
+            ground, azimuth, slant, early_orbit, dem, degree, valid, half_cell=half_cell
+        )
         lat, lon, got = ecef_to_geodetic(ground)
         used_height = np.asarray(got, dtype=np.float64).reshape(-1)
         used_height[~valid] = np.nan
@@ -411,6 +667,137 @@ def geometric_phase(
         phase = np.where(hole > 0.5, phase, np.nan)
         heights = np.where(hole > 0.5, heights, np.nan)
     return phase, heights
+
+
+def _distribute_points(count: int, max_line: int, max_pixel: int) -> np.ndarray:
+    """SNAP ``MathUtils.distributePoints`` on an inclusive burst window.
+
+    The window is line ``0..max_line`` and sample ``0..max_pixel``. Returned
+    pairs are ``(line, sample)`` as integers.
+    """
+    lines = float(max_line + 1)
+    pixels = float(max_pixel + 1)
+    win_p = math.sqrt(count / (lines / pixels))
+    win_l = count / win_p
+    if win_l < win_p:
+        win_l = win_p
+    win_l_int = max(int(math.floor(win_l)), 2)
+    delta_lin = (lines - 1.0) / float(win_l_int - 1)
+    total_pix = int(math.floor(pixels * win_l_int))
+    delta_pix = (total_pix - 1.0) / float(count - 1)
+    pix = -delta_pix
+    points = np.empty((count, 2), dtype=np.int64)
+    counter = 0
+    for index in range(count):
+        pix += delta_pix
+        while math.floor(pix) >= pixels:
+            pix -= pixels
+            counter += 1
+        line = counter * delta_lin
+        points[index, 0] = int(math.floor(line))
+        points[index, 1] = int(math.floor(pix))
+    return points
+
+
+def _normalize2(value: np.ndarray, low: float, high: float) -> np.ndarray:
+    """Doris ``PolyUtils.normalize2``: map ``[low, high]`` onto ``[-1, 1]``."""
+    return (np.asarray(value, dtype=np.float64) - 0.5 * (low + high)) / (0.5 * (high - low))
+
+
+def _snap_monomials(line: np.ndarray, sample: np.ndarray, degree: int, max_line: int, max_sample: int) -> np.ndarray:
+    """Columns ``posL**(j-k) * posP**k`` for ``j = 0..degree``, ``k = 0..j``."""
+    pos_l = _normalize2(line, 0.0, float(max_line))
+    pos_p = _normalize2(sample, 0.0, float(max_sample))
+    columns = []
+    for power in range(degree + 1):
+        for cross in range(power + 1):
+            columns.append((pos_l ** (power - cross)) * (pos_p ** cross))
+    return np.column_stack(columns)
+
+
+def snap_flat_earth_polynomial(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    degree: int = 3,
+    polynomial_degree: int = 5,
+    polynomial_points: int = 501,
+    orbit_states: int = 8,
+) -> np.ndarray:
+    """Per-burst degree-5 polynomial of the ellipsoid flat-earth phase.
+
+    SNAP fits 21 coefficients on 501 points spread over the burst, using a
+    cubic least-squares orbit through 8 state vectors. The polynomial is
+    normalised on the full burst, then evaluated on this window.
+    """
+    if early.shape != later.shape or early.row != later.row or early.col != later.col:
+        raise ValueError("flat-earth phase needs two windows on the same radar grid")
+    if int(polynomial_degree) < 1 or int(polynomial_points) < 21:
+        raise ValueError("SNAP flat-earth needs degree >= 1 and at least 21 points")
+    phase = np.zeros(early.shape, dtype=np.float64)
+    lines = int(early.model.lines_per_burst)
+    samples = int(early.model.samples_per_burst)
+    if lines < 2 or samples < 2:
+        raise ValueError("a burst needs at least two lines and two samples")
+    first = int(early.row) // lines
+    last = (int(early.row) + early.shape[0] - 1) // lines
+    for burst in range(first, last + 1):
+        points = _distribute_points(int(polynomial_points), lines - 1, samples - 1)
+        absolute = burst * lines + points[:, 0]
+        observed = _ellipsoid_phase_at(
+            early.model,
+            later.model,
+            early_orbit,
+            later_orbit,
+            absolute,
+            points[:, 1].astype(np.float64),
+            degree,
+            int(orbit_states),
+        )
+        design = _snap_monomials(points[:, 0], points[:, 1], int(polynomial_degree), lines - 1, samples - 1)
+        coefficients, *_rest = np.linalg.lstsq(design, observed, rcond=None)
+        row0 = max(burst * lines, int(early.row))
+        row1 = min((burst + 1) * lines, int(early.row) + early.shape[0])
+        local = np.arange(row0, row1, dtype=np.float64) - burst * lines
+        sample = (int(early.col) + np.arange(early.shape[1])).astype(np.float64)
+        mesh_line, mesh_sample = np.meshgrid(local, sample, indexing="ij")
+        evaluated = _snap_monomials(
+            mesh_line.ravel(), mesh_sample.ravel(), int(polynomial_degree), lines - 1, samples - 1
+        ) @ coefficients
+        phase[row0 - int(early.row) : row1 - int(early.row), :] = evaluated.reshape(mesh_line.shape)
+    return phase
+
+
+def _ellipsoid_phase_at(
+    early_model: SwathModel,
+    later_model: SwathModel,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    absolute_lines: np.ndarray,
+    samples: np.ndarray,
+    degree: int,
+    states: int,
+) -> np.ndarray:
+    """``-4π/λ (R_early - R_later)`` at height 0, one 8-state cubic per burst."""
+    lines = np.asarray(absolute_lines, dtype=np.int64)
+    sample = np.asarray(samples, dtype=np.float64)
+    early_time = early_model.line_time(int(np.median(lines)))
+    later_lines = _repeat_times(early_model, lines, later_model)
+    later_time = later_lines[len(later_lines) // 2]
+    early = early_orbit.nearest_window(early_time, states)
+    later = later_orbit.nearest_window(later_time, states)
+    used = min(int(states), int(early.time.shape[0]), int(later.time.shape[0]))
+    azimuth = _line_times(early_model, lines)
+    slant = _slant_ranges(early_model, sample)
+    ground = ground_points_at_height(early, azimuth, slant, np.zeros(lines.shape[0]), degree=degree, states=used)
+    early_position, _velocity = early.interpolate(azimuth, degree, states=used)
+    early_range = np.linalg.norm(ground - early_position, axis=1)
+    when = later.zero_doppler_times(ground, later_lines, degree, states=used)
+    later_position, _later_velocity = later.interpolate(when, degree, states=used)
+    later_range = np.linalg.norm(ground - later_position, axis=1)
+    return -4.0 * np.pi / float(early_model.wavelength_m) * (early_range - later_range)
 
 
 def polynomial_phase(phase: np.ndarray, degree: int, count: int) -> np.ndarray:
@@ -550,9 +937,9 @@ def backgeocode(
     backgeocode.last_residual_px = 0.0
     backgeocode.dem_resampling = str(dem_resampling)
     secondary_phase = tops_phase(secondary, orbit=secondary_orbit)
-    secondary_deramped = (
-        np.asarray(secondary.data, dtype=np.complex64) * np.exp(1j * secondary_phase)
-    ).astype(np.complex64)
+    # Deramp in float64. SNAP keeps I and Q in double until the band is stored.
+    # (I + iQ) * exp(i φ), with φ the burst deramp/demod phase.
+    deramped_real, deramped_imag = _deramp_iq(secondary.data, secondary_phase)
     rows, cols = reference.shape
     if dem is not None:
         posted_line, posted_sample, reproduction = _coordinates_from_dem_posts(
@@ -573,7 +960,15 @@ def backgeocode(
             extent = overlap_extent(overlap)
             backgeocode.last_overlap_extent = extent
             return _resample_overlap(
-                secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+                deramped_real,
+                deramped_imag,
+                secondary_phase,
+                line_s,
+                sample_s,
+                overlap,
+                extent,
+                resampling,
+                reramp,
             )
     backgeocode.last_geometry = "radar-lattice"
     limit = rows * cols if max_solves is None else int(max_solves)
@@ -630,12 +1025,29 @@ def backgeocode(
     extent = overlap_extent(overlap)
     backgeocode.last_overlap_extent = extent
     return _resample_overlap(
-        secondary_deramped, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
+        deramped_real, deramped_imag, secondary_phase, line_s, sample_s, overlap, extent, resampling, reramp
     )
 
 
+def _deramp_iq(data: np.ndarray, phase: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP ``performDerampDemod``: ``(I + iQ) * exp(i φ)`` in float64."""
+    real = np.asarray(np.real(data), dtype=np.float64)
+    imag = np.asarray(np.imag(data), dtype=np.float64)
+    cosine = np.cos(phase)
+    sine = np.sin(phase)
+    return real * cosine - imag * sine, real * sine + imag * cosine
+
+
+def _reramp_iq(real: np.ndarray, imag: np.ndarray, phase: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """SNAP reramp: ``(I + iQ) * exp(-i φ)`` in float64."""
+    cosine = np.cos(phase)
+    sine = np.sin(phase)
+    return real * cosine + imag * sine, -real * sine + imag * cosine
+
+
 def _resample_overlap(
-    secondary_deramped: np.ndarray,
+    deramped_real: np.ndarray,
+    deramped_imag: np.ndarray,
     secondary_phase: np.ndarray,
     line_s: np.ndarray,
     sample_s: np.ndarray,
@@ -644,30 +1056,26 @@ def _resample_overlap(
     resampling: str,
     reramp: bool,
 ) -> np.ndarray:
-    """Resample only the common-overlap box. Everywhere else stays zero."""
+    """Resample only the common-overlap box. Everywhere else stays zero.
+
+    I, Q, and the deramp phase stay float64 through the kernel. The complex64
+    cast is the stored band, which is where SNAP writes the float32 sample.
+    """
     sampled = np.zeros(line_s.shape, dtype=np.complex64)
     if extent is None:
         return sampled
     r0, r1, c0, c1 = extent
     box = overlap[r0:r1, c0:c1]
-    sampled_box = resample_complex(
-        secondary_deramped,
-        line_s[r0:r1, c0:c1],
-        sample_s[r0:r1, c0:c1],
-        resampling,
-        mask=box,
-    )
+    line = line_s[r0:r1, c0:c1]
+    sample = sample_s[r0:r1, c0:c1]
+    sampled_real = resample_real(deramped_real, line, sample, resampling, mask=box)
+    sampled_imag = resample_real(deramped_imag, line, sample, resampling, mask=box)
     if reramp:
-        phase_at_source = resample_real(
-            secondary_phase,
-            line_s[r0:r1, c0:c1],
-            sample_s[r0:r1, c0:c1],
-            resampling,
-            mask=box,
-        )
-        sampled_box = (sampled_box * np.exp(-1j * phase_at_source)).astype(np.complex64)
-        sampled_box[~box] = 0
-    sampled[r0:r1, c0:c1] = sampled_box
+        phase_at_source = resample_real(secondary_phase, line, sample, resampling, mask=box)
+        sampled_real, sampled_imag = _reramp_iq(sampled_real, sampled_imag, phase_at_source)
+        sampled_real = np.where(box, sampled_real, 0.0)
+        sampled_imag = np.where(box, sampled_imag, 0.0)
+    sampled[r0:r1, c0:c1] = (sampled_real + 1j * sampled_imag).astype(np.complex64)
     return sampled
 
 
@@ -692,7 +1100,9 @@ def _coordinates_from_dem_posts(
     rows, cols = reference.shape
     empty_line = np.full((rows, cols), np.nan, dtype=np.float64)
     empty_sample = np.full((rows, cols), np.nan, dtype=np.float64)
-    lat_deg, lon_deg, height = _dem_posts_covering(reference, reference_orbit, degree, dem)
+    lat_deg, lon_deg, height = _dem_posts_covering(
+        reference, reference_orbit, degree, dem, snap_geopos=True
+    )
     if height.size < 3:
         return empty_line, empty_sample, 0.0
     xyz = geodetic_to_ecef(np.deg2rad(lat_deg), np.deg2rad(lon_deg), height)
@@ -755,41 +1165,103 @@ def _coordinates_from_dem_posts(
         )
         line_s[row0:row1] = np.asarray(line_of(query), dtype=np.float64).reshape(row1 - row0, cols)
         sample_s[row0:row1] = np.asarray(sample_of(query), dtype=np.float64).reshape(row1 - row0, cols)
-    reproduced_line = np.asarray(line_of(points), dtype=np.float64)
-    reproduced_sample = np.asarray(sample_of(points), dtype=np.float64)
-    truth_line = sec_line - secondary.row
-    truth_sample = sec_sample - secondary.col
-    ok = np.isfinite(reproduced_line) & np.isfinite(reproduced_sample)
-    if not np.any(ok):
-        return line_s, sample_s, 0.0
-    reproduction = float(
-        max(
-            np.max(np.abs(reproduced_line[ok] - truth_line[ok])),
-            np.max(np.abs(reproduced_sample[ok] - truth_sample[ok])),
-        )
-    )
-    return line_s, sample_s, reproduction
+    # A linear interpolant returns the value stored on each of its vertices.
+    # Looking those vertices up again dominated the ESD support time and
+    # reproduced sec_line / sec_sample, which are already in hand.
+    return line_s, sample_s, 0.0
 
 
-def _dem_posts_covering(reference: RadarGrid, orbit: Orbit, degree: int, dem: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Latitude, longitude, and ellipsoidal height of the DEM posts around the window."""
+def _radar_corner_latlon(reference: RadarGrid, orbit: Orbit, degree: int, height_m: float):
+    """Latitude and longitude of the window corners at one ellipsoidal height."""
     rows, cols = reference.shape
     corner_row = np.array([0, 0, rows - 1, rows - 1, rows // 2], dtype=np.int64)
     corner_col = np.array([0, cols - 1, 0, cols - 1, cols // 2], dtype=np.int64)
     azimuth = _line_times(reference.model, reference.row + corner_row)
     slant = _slant_ranges(reference.model, reference.col + corner_col.astype(np.float64))
-    ground = ground_points_at_height(orbit, azimuth, slant, np.zeros(corner_row.size), degree=degree)
+    ground = ground_points_at_height(
+        orbit, azimuth, slant, np.full(corner_row.shape, float(height_m)), degree=degree
+    )
     lat, lon, _height = ecef_to_geodetic(ground)
-    lat_deg = np.rad2deg(lat)
-    lon_deg = np.rad2deg(lon)
+    return np.rad2deg(lat), np.rad2deg(lon)
+
+
+def _dem_posts_covering(
+    reference: RadarGrid,
+    orbit: Orbit,
+    degree: int,
+    dem: object,
+    *,
+    snap_geopos: bool = False,
+    tile_extension_percent: int = 100,
+    margin_scale: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Latitude, longitude, and ellipsoidal height of the DEM posts around the window.
+
+    The box is the union of the ellipsoid footprint and the same corners at
+    the DEM's minimum and maximum height. SNAP's ``tileExtensionPercent``
+    of 100 scales that maximum by two before measuring the extra latitude
+    and longitude (``defineExtraPhiLam``). ``margin_scale`` widens that
+    extra again when the first hull still misses the radar window.
+
+    ``snap_geopos`` places each post on SNAP's pixel geopos and reads the
+    elevation there, which is what Back-Geocoding passes to ``getPosition``.
+    Topographic phase keeps the raw sample and applies the minus-half-cell
+    geopos itself.
+    """
     dem_lat = np.asarray(dem.lat_deg, dtype=np.float64)
     dem_lon = np.asarray(dem.lon_deg, dtype=np.float64)
     lat_step = float(np.max(np.abs(np.diff(dem_lat)))) if dem_lat.size > 1 else 0.01
     lon_step = float(np.max(np.abs(np.diff(dem_lon)))) if dem_lon.size > 1 else 0.01
-    lat_min = float(np.min(lat_deg)) - 20.0 * lat_step
-    lat_max = float(np.max(lat_deg)) + 20.0 * lat_step
-    lon_min = float(np.min(lon_deg)) - 20.0 * lon_step
-    lon_max = float(np.max(lon_deg)) + 20.0 * lon_step
+    lat0, lon0 = _radar_corner_latlon(reference, orbit, degree, 0.0)
+    probe = _posts_in_box(
+        dem,
+        float(np.min(lat0)) - 20.0 * lat_step,
+        float(np.max(lat0)) + 20.0 * lat_step,
+        float(np.min(lon0)) - 20.0 * lon_step,
+        float(np.max(lon0)) + 20.0 * lon_step,
+        snap_geopos=False,
+    )
+    if probe[2].size:
+        height_min = float(np.nanmin(probe[2]))
+        height_max = float(np.nanmax(probe[2]))
+    else:
+        height_min, height_max = 0.0, 0.0
+    # tileExtensionPercent 100 -> max height is doubled, then the centre
+    # pixel's lat/lon change between those heights is the extra margin.
+    scale = 1.0 + float(tile_extension_percent) / 100.0
+    height_hi = height_max * scale
+    height_lo = height_min
+    lat_lo, lon_lo = _radar_corner_latlon(reference, orbit, degree, height_lo)
+    lat_hi, lon_hi = _radar_corner_latlon(reference, orbit, degree, height_hi)
+    rows, cols = reference.shape
+    centre_az = _line_times(reference.model, np.array([reference.row + rows // 2]))
+    centre_rg = _slant_ranges(reference.model, np.array([float(reference.col + cols // 2)]))
+    centre_lo = ground_points_at_height(orbit, centre_az, centre_rg, np.array([height_lo]), degree=degree)
+    centre_hi = ground_points_at_height(orbit, centre_az, centre_rg, np.array([height_hi]), degree=degree)
+    lat_c_lo, lon_c_lo, _h = ecef_to_geodetic(centre_lo)
+    lat_c_hi, lon_c_hi, _h = ecef_to_geodetic(centre_hi)
+    extra_lat = abs(float(np.rad2deg(np.asarray(lat_c_hi).reshape(-1)[0] - np.asarray(lat_c_lo).reshape(-1)[0])))
+    extra_lon = abs(float(np.rad2deg(np.asarray(lon_c_hi).reshape(-1)[0] - np.asarray(lon_c_lo).reshape(-1)[0])))
+    extra_lat *= float(margin_scale)
+    extra_lon *= float(margin_scale)
+    lat_min = min(float(np.min(lat0)), float(np.min(lat_lo)), float(np.min(lat_hi))) - extra_lat - lat_step
+    lat_max = max(float(np.max(lat0)), float(np.max(lat_lo)), float(np.max(lat_hi))) + extra_lat + lat_step
+    lon_min = min(float(np.min(lon0)), float(np.min(lon_lo)), float(np.min(lon_hi))) - extra_lon - lon_step
+    lon_max = max(float(np.max(lon0)), float(np.max(lon_lo)), float(np.max(lon_hi))) + extra_lon + lon_step
+    return _posts_in_box(dem, lat_min, lat_max, lon_min, lon_max, snap_geopos=snap_geopos)
+
+
+def _posts_in_box(
+    dem: object,
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+    *,
+    snap_geopos: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dem_lat = np.asarray(dem.lat_deg, dtype=np.float64)
+    dem_lon = np.asarray(dem.lon_deg, dtype=np.float64)
     lat_index = np.flatnonzero((dem_lat >= lat_min) & (dem_lat <= lat_max))
     lon_index = np.flatnonzero((dem_lon >= lon_min) & (dem_lon <= lon_max))
     if lat_index.size == 0 or lon_index.size == 0:
@@ -798,7 +1270,11 @@ def _dem_posts_covering(reference: RadarGrid, orbit: Orbit, degree: int, dem: ob
     post_lon = dem_lon[lon_index]
     mesh_lat, mesh_lon = np.meshgrid(post_lat, post_lon, indexing="ij")
     method = str(getattr(backgeocode, "dem_resampling", "BILINEAR_INTERPOLATION"))
-    height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method)
+    if snap_geopos and hasattr(dem, "_snap_half_cell"):
+        height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method, half_cell=True)
+        mesh_lat, mesh_lon = dem._snap_half_cell(mesh_lat, mesh_lon)
+    else:
+        height, valid = dem.ellipsoidal_heights(mesh_lat, mesh_lon, method=method)
     keep = np.asarray(valid, dtype=bool) & np.isfinite(height)
     if not np.any(keep):
         return np.empty(0), np.empty(0), np.empty(0)
@@ -1043,7 +1519,7 @@ _DEM_HEIGHT_TOLERANCE_M = 1e-3
 _DEM_HEIGHT_MAX_UPDATES = 30
 
 
-def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid):
+def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid, half_cell: bool = False):
     """Put each ground point on the DEM and stop when the height settles.
 
     A point is finished when the DEM sample moved by less than 1 mm and the
@@ -1062,6 +1538,7 @@ def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid):
             np.rad2deg(np.asarray(lat, dtype=np.float64)).reshape(count),
             np.rad2deg(np.asarray(lon, dtype=np.float64)).reshape(count),
             method=method,
+            half_cell=bool(half_cell),
         )
         sampled = np.asarray(sampled, dtype=np.float64).reshape(count)
         inside = np.asarray(inside, dtype=bool).reshape(count)
@@ -1378,52 +1855,52 @@ def _hann_apply(real_part, imag_part, line, sample, lut, half, complex_flag):
         return _hann_apply_numpy(real_part, imag_part, line, sample, lut, int(half), int(complex_flag))
 
 
+def _bisinc_taps_array(frac: np.ndarray, half: int) -> np.ndarray:
+    """SNAP BiSinc weights for many fractional offsets. No lookup table."""
+    offsets = np.arange(-int(half), int(half) + 1, dtype=np.float64)
+    delta = np.asarray(frac, dtype=np.float64)[..., None] - offsets
+    span = float(half) if half else 1.0
+    weights = np.sinc(delta) * 0.5 * (1.0 + np.cos(np.pi * np.clip(delta / span, -1.0, 1.0)))
+    weights = np.where(np.abs(delta) > float(half), 0.0, weights)
+    return weights
+
+
+def _bisinc_taps(frac: float, half: int) -> np.ndarray:
+    """SNAP BiSinc weights at one fractional offset. No lookup table."""
+    return _bisinc_taps_array(np.asarray(frac, dtype=np.float64), half)
+
+
 def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_flag):
-    bins = lut.shape[0]
-    taps = lut.shape[1]
+    """Vectorised BiSinc. Edge taps repeat the border sample, as SNAP clamps them."""
+    del lut
     height, width = real_part.shape
     rows, cols = line.shape
     out_real = np.zeros((rows, cols), dtype=np.float64)
     out_imag = np.zeros((rows, cols), dtype=np.float64)
-    offsets = np.arange(-half, half + 1)
-    for row in range(rows):
-        for col in range(cols):
-            y = line[row, col]
-            x = sample[row, col]
-            if not np.isfinite(y) or not np.isfinite(x):
-                continue
-            y0 = int(np.floor(y))
-            x0 = int(np.floor(x))
-            wy = lut[min(int((y - y0) * bins), bins - 1)].copy()
-            wx = lut[min(int((x - x0) * bins), bins - 1)].copy()
-            for index, offset in enumerate(offsets):
-                if y0 + offset < 0 or y0 + offset >= height:
-                    wy[index] = 0.0
-                if x0 + offset < 0 or x0 + offset >= width:
-                    wx[index] = 0.0
-            sy = float(np.sum(wy))
-            sx = float(np.sum(wx))
-            if sy == 0.0 or sx == 0.0:
-                continue
-            wy /= sy
-            wx /= sx
-            acc_r = 0.0
-            acc_i = 0.0
-            for iy, oy in enumerate(offsets):
-                if wy[iy] == 0.0:
-                    continue
-                yy = y0 + int(oy)
-                for ix, ox in enumerate(offsets):
-                    if wx[ix] == 0.0:
-                        continue
-                    xx = x0 + int(ox)
-                    weight = wy[iy] * wx[ix]
-                    acc_r += weight * real_part[yy, xx]
-                    if complex_flag:
-                        acc_i += weight * imag_part[yy, xx]
-            out_real[row, col] = acc_r
-            out_imag[row, col] = acc_i
-    return out_real, out_imag
+    finite = np.isfinite(line) & np.isfinite(sample)
+    if not np.any(finite):
+        return out_real, out_imag
+    y0 = np.floor(line).astype(np.int64)
+    x0 = np.floor(sample).astype(np.int64)
+    wy = _bisinc_taps_array(np.where(finite, line - y0, 0.0), half)
+    wx = _bisinc_taps_array(np.where(finite, sample - x0, 0.0), half)
+    sy = np.sum(wy, axis=-1)
+    sx = np.sum(wx, axis=-1)
+    sy = np.where(sy == 0.0, 1.0, sy)
+    sx = np.where(sx == 0.0, 1.0, sx)
+    wy = wy / sy[..., None]
+    wx = wx / sx[..., None]
+    ntaps = 2 * int(half) + 1
+    for ty in range(ntaps):
+        yy = np.clip(y0 + ty - int(half), 0, height - 1)
+        azimuth_weight = wy[..., ty]
+        for tx in range(ntaps):
+            xx = np.clip(x0 + tx - int(half), 0, width - 1)
+            weight = azimuth_weight * wx[..., tx]
+            out_real += weight * real_part[yy, xx]
+            if complex_flag:
+                out_imag += weight * imag_part[yy, xx]
+    return np.where(finite, out_real, 0.0), np.where(finite, out_imag, 0.0)
 
 
 def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_flag):
@@ -1433,14 +1910,16 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
 
         @numba.njit(parallel=True, cache=True)
         def _kernel(real_part, imag_part, line, sample, lut, half, complex_flag):
-            bins = lut.shape[0]
             height = real_part.shape[0]
             width = real_part.shape[1]
             rows = line.shape[0]
             cols = line.shape[1]
+            ntaps = 2 * half + 1
             out_real = np.zeros((rows, cols), dtype=np.float64)
             out_imag = np.zeros((rows, cols), dtype=np.float64)
             for row in numba.prange(rows):
+                wy = np.empty(ntaps, dtype=np.float64)
+                wx = np.empty(ntaps, dtype=np.float64)
                 for col in range(cols):
                     y = line[row, col]
                     x = sample[row, col]
@@ -1448,42 +1927,37 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
                         continue
                     y0 = int(np.floor(y))
                     x0 = int(np.floor(x))
-                    iy = int((y - y0) * bins)
-                    ix = int((x - x0) * bins)
-                    if iy < 0:
-                        iy = 0
-                    if ix < 0:
-                        ix = 0
-                    if iy >= bins:
-                        iy = bins - 1
-                    if ix >= bins:
-                        ix = bins - 1
+                    frac_y = y - y0
+                    frac_x = x - x0
                     sy = 0.0
                     sx = 0.0
-                    for tap in range(lut.shape[1]):
-                        offset = tap - half
-                        yy = y0 + offset
-                        xx = x0 + offset
-                        if 0 <= yy < height:
-                            sy += lut[iy, tap]
-                        if 0 <= xx < width:
-                            sx += lut[ix, tap]
+                    for tap in range(ntaps):
+                        dy = frac_y - (tap - half)
+                        dx = frac_x - (tap - half)
+                        wy[tap] = _bisinc_delta(dy, half)
+                        wx[tap] = _bisinc_delta(dx, half)
+                        sy += wy[tap]
+                        sx += wx[tap]
                     if sy == 0.0 or sx == 0.0:
                         continue
                     acc_r = 0.0
                     acc_i = 0.0
-                    for ty in range(lut.shape[1]):
+                    for ty in range(ntaps):
                         yy = y0 + ty - half
-                        if yy < 0 or yy >= height:
+                        if yy < 0:
+                            yy = 0
+                        elif yy >= height:
+                            yy = height - 1
+                        if wy[ty] == 0.0:
                             continue
-                        wy = lut[iy, ty] / sy
-                        if wy == 0.0:
-                            continue
-                        for tx in range(lut.shape[1]):
+                        wyn = wy[ty] / sy
+                        for tx in range(ntaps):
                             xx = x0 + tx - half
-                            if xx < 0 or xx >= width:
-                                continue
-                            weight = wy * (lut[ix, tx] / sx)
+                            if xx < 0:
+                                xx = 0
+                            elif xx >= width:
+                                xx = width - 1
+                            weight = wyn * (wx[tx] / sx)
                             acc_r += weight * real_part[yy, xx]
                             if complex_flag != 0:
                                 acc_i += weight * imag_part[yy, xx]
@@ -1491,8 +1965,20 @@ def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_fla
                     out_imag[row, col] = acc_i
             return out_real, out_imag
 
+        @numba.njit(cache=True)
+        def _bisinc_delta(delta, half):
+            if abs(delta) > half:
+                return 0.0
+            if delta == 0.0:
+                sinc = 1.0
+            else:
+                sinc = np.sin(np.pi * delta) / (np.pi * delta)
+            return sinc * 0.5 * (1.0 + np.cos(np.pi * delta / half))
+
         _hann_apply_numba.compiled = _kernel
     return _hann_apply_numba.compiled(real_part, imag_part, line, sample, lut, half, complex_flag)
+
+
 
 
 def _solve_stride(rows: int, cols: int, max_solves: int) -> int:
@@ -1974,7 +2460,7 @@ def shift_secondary_in_overlap(
         phase = phase_full[row_a:row_b, c0:c1]
         baseband = tile * np.exp(1j * phase)
         baseband = _azimuth_shift(baseband, float(azimuth_px), interval)
-        shifted_phase = _azimuth_shift(phase.astype(np.complex64), float(azimuth_px), interval).real
+        shifted_phase = _azimuth_shift_real(phase, float(azimuth_px), interval)
         corrected = (baseband * np.exp(-1j * shifted_phase)).astype(np.complex64)
         tile_valid = valid[row_a:row_b, c0:c1]
         corrected[~tile_valid] = 0
@@ -1995,6 +2481,24 @@ def _azimuth_shift(image: np.ndarray, pixels: float, azimuth_time_interval_s: fl
     if not pixels:
         return np.asarray(image, dtype=np.complex64)
     return apply_azimuth_pixel_shift(image, float(pixels), float(azimuth_time_interval_s))
+
+
+def _azimuth_shift_real(phase: np.ndarray, pixels: float, azimuth_time_interval_s: float) -> np.ndarray:
+    """Azimuth Fourier shift of a real phase, kept in float64.
+
+    Casting a large deramp phase to complex64 before the transform moves it
+    by several milliradians. SNAP's double FFT does not.
+    """
+    data = np.asarray(phase, dtype=np.float64)
+    if not pixels:
+        return data
+    spectrum = np.fft.fft(data, axis=0)
+    frequency = np.fft.fftfreq(data.shape[0], d=float(azimuth_time_interval_s))
+    seconds = float(pixels) * float(azimuth_time_interval_s)
+    shape = [1] * spectrum.ndim
+    shape[0] = spectrum.shape[0]
+    spectrum = spectrum * np.exp(-1j * 2.0 * np.pi * frequency.reshape(shape) * seconds)
+    return np.fft.ifft(spectrum, axis=0).real
 
 
 def deburst_window(data: np.ndarray, model: SwathModel, row: int, col: int) -> RadarGrid:
@@ -2029,23 +2533,8 @@ def square_pixel_azimuth_looks(model: SwathModel, range_looks: int, orbit: Orbit
 
 
 def _with_orbit(model: SwathModel, orbit: Orbit) -> SwathModel:
-    return SwathModel(
-        wavelength_m=model.wavelength_m,
-        azimuth_time_interval_s=model.azimuth_time_interval_s,
-        range_pixel_spacing_m=model.range_pixel_spacing_m,
-        slant_range_time_s=model.slant_range_time_s,
-        lines_per_burst=model.lines_per_burst,
-        samples_per_burst=model.samples_per_burst,
-        number_of_lines=model.number_of_lines,
-        incidence_rad=model.incidence_rad,
-        fm_rate=model.fm_rate,
-        bursts=model.bursts,
-        orbit=orbit,
-        fm_rates=model.fm_rates,
-        dc_estimates=model.dc_estimates,
-        azimuth_steering_rate_rad_s=model.azimuth_steering_rate_rad_s,
-        first_valid_pixel=model.first_valid_pixel,
-    )
+    """Replace the state vectors and keep every annotation field."""
+    return replace(model, orbit=orbit)
 
 
 def ellipsoid_geocode(
@@ -2057,6 +2546,7 @@ def ellipsoid_geocode(
     out_cols: int = 8,
     degree: int = 3,
     resampling: str = "BILINEAR_INTERPOLATION",
+    geo_region: str | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     """Inverse range-Doppler resample at one ellipsoidal height.
 
@@ -2071,6 +2561,7 @@ def ellipsoid_geocode(
         degree=degree,
         resampling=resampling,
         surface="ellipsoid",
+        geo_region=geo_region,
     )
 
 
@@ -2085,6 +2576,7 @@ def terrain_correct(
     resampling: str = "BILINEAR_INTERPOLATION",
     dem_resampling: str = "BILINEAR_INTERPOLATION",
     projection: str = "geographic",
+    geo_region: str | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float], np.ndarray]:
     """Inverse range-Doppler resample using a DEM height at every output coordinate.
 
@@ -2095,7 +2587,7 @@ def terrain_correct(
         raise ValueError("Terrain correction needs a DEM. Ellipsoid height 0 is not a substitute.")
 
     def height_of(lat_deg: float, lon_deg: float) -> tuple[float, bool]:
-        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling)
+        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling, half_cell=True)
 
     image, bounds, heights = _geocode(
         grid,
@@ -2107,6 +2599,7 @@ def terrain_correct(
         resampling=resampling,
         surface="dem",
         projection=projection,
+        geo_region=geo_region,
     )
     return image, bounds, heights
 
@@ -2122,6 +2615,7 @@ def _geocode(
     resampling: str,
     surface: str,
     projection: str = "geographic",
+    geo_region: str | None = None,
 ):
     if int(out_rows) < 2 or int(out_cols) < 2:
         raise ValueError("output grid must be at least 2 by 2")
@@ -2130,7 +2624,10 @@ def _geocode(
         raise ValueError(f"{projection} is not implemented. Use geographic or UTM.")
     rows, cols = grid.shape
     if surface == "dem":
-        lats, lons = _footprint_latlon(grid, orbit, height_of, degree)
+        # The annotation terrain-height list is SNAP's first height estimate.
+        # The loop still replaces it with the DEM sample.
+        start = float(getattr(grid.model, "terrain_height_m", 0.0) or 0.0)
+        lats, lons = _footprint_latlon(grid, orbit, height_of, degree, start_height=start)
     else:
         lats, lons = _footprint_latlon(grid, orbit, lambda _lat, _lon: (0.0, True), degree, height_m=0.0)
     if not lats:
@@ -2140,6 +2637,14 @@ def _geocode(
         )
     south, north = min(lats), max(lats)
     west, east = min(lons), max(lons)
+    geo_polygon = None
+    if geo_region:
+        from ai_insar.pipeline.aoi import AoiError, limit_geographic_bounds
+
+        try:
+            west, south, east, north, geo_polygon = limit_geographic_bounds(west, south, east, north, geo_region)
+        except AoiError as exc:
+            raise ValueError(str(exc)) from exc
     if mode == "utm":
         from pyproj import Transformer
 
@@ -2183,6 +2688,14 @@ def _geocode(
             line[row_index, col_index] = local_line
             sample[row_index, col_index] = local_sample
     image = resample_complex(grid.data, line, sample, resampling)
+    if geo_polygon is not None:
+        from ai_insar.pipeline.aoi import points_in_polygon
+
+        keep = points_in_polygon(lon_axis, lat_axis, geo_polygon)
+        image = np.array(image, copy=True, dtype=np.complex64)
+        image[~keep] = np.nan + 1j * np.nan
+        heights = np.array(heights, copy=True)
+        heights[~keep] = np.nan
     _geocode.last_surface = surface
     _geocode.last_warning = ""
     if surface == "dem":
@@ -2217,7 +2730,7 @@ def _geocode(
     return image, (west, south, east, north), heights
 
 
-def _footprint_latlon(grid, orbit, height_of, degree, height_m=None):
+def _footprint_latlon(grid, orbit, height_of, degree, height_m=None, start_height: float = 0.0):
     """Latitude and longitude of the source border, at the DEM height.
 
     A zero-elevation box sits hundreds of metres from the same pixels on a
@@ -2241,7 +2754,7 @@ def _footprint_latlon(grid, orbit, height_of, degree, height_m=None):
     for row, col in samples:
         azimuth = grid.model.line_time(grid.row + row)
         slant = grid.model.slant_range_m(grid.col + col)
-        height = 0.0 if height_m is None else float(height_m)
+        height = float(start_height) if height_m is None else float(height_m)
         lat_deg = lon_deg = None
         for _ in range(12):
             ground = ground_point_at_height(orbit, azimuth, slant, height, degree=degree)

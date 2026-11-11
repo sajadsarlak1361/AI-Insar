@@ -296,6 +296,7 @@ including every displacement date. See
 | [docs/cli.md](docs/cli.md) | `ai-insar --help`, exit codes, example `check` output |
 | [docs/limitations.md](docs/limitations.md) | What the chain does not do |
 | [docs/parity/square100m_9e0457d/README.md](docs/parity/square100m_9e0457d/README.md) | SNAP 14 vs `9e0457d` on a 100 m square |
+| [docs/parity/square200m_burst56/README.md](docs/parity/square200m_burst56/README.md) | 200 m AOI on the IW1 burst 5/6 boundary |
 | [WINDOWS.md](WINDOWS.md) | Release zip, `run_windows.bat`, and how to rebuild `dist/ai-insar-windows.zip` |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and how to keep docs honest |
 

@@ -58,6 +58,7 @@ class PipelineConfig:
     nsbas_weight: float = 0.25
     unwrap_method: str = "separable"
     unwrap_sigma: float = 2.0
+    aoi_wkt: str = ""
 
     def __post_init__(self) -> None:
         if self.max_date_span < 1:
@@ -129,6 +130,8 @@ class Workspace:
     common_overlap_mask: np.ndarray | None = None
     common_overlap_extent: tuple[int, int, int, int] | None = None
     common_overlap_meta: dict | None = None
+    aoi: dict | None = None
+    aoi_stages: dict | None = None
 
     def clear_products(self) -> None:
         self.pairs = None
@@ -451,6 +454,8 @@ def compute_detection(workspace: Workspace, log: LogFn | None = None) -> None:
 def run_all(workspace: Workspace, log: LogFn | None = None) -> None:
     """Run stages 2–7. The workspace must already hold an SLC stack."""
     stack = _require_stack(workspace)
+    if workspace.aoi and workspace.aoi.get("message"):
+        _log(log, str(workspace.aoi["message"]))
     _log(
         log,
         f"SLC stack {stack.data.shape} {stack.data.dtype}, "
