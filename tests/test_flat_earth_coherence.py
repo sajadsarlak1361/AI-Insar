@@ -107,3 +107,55 @@ def test_topographic_residual_is_the_dem_phase_minus_the_ellipsoid_phase():
     assert finite.any()
     assert np.max(np.abs((dem_phase - flat)[finite] - residual[finite])) < 1e-4
     assert np.max(np.abs(heights[finite] - 400.0)) < 5.0
+
+
+def test_snap_polynomial_keeps_the_geometric_sign_and_uses_twenty_one_terms():
+    from ai_insar.pipeline.tops_ops import _distribute_points, _snap_monomials
+
+    points = _distribute_points(501, 1507, 22848)
+    assert points.shape == (501, 2)
+    assert int(points[:, 0].min()) >= 0 and int(points[:, 0].max()) <= 1507
+    assert _snap_monomials(points[:, 0], points[:, 1], 5, 1507, 22848).shape[1] == 21
+    early_orbit, later_orbit, early, later = _pair()
+    dense = flat_earth_phase(
+        early, later, early_orbit=early_orbit, later_orbit=later_orbit, degree=3, polynomial_points=None
+    )
+    fitted = flat_earth_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=3,
+        polynomial_degree=5,
+        polynomial_points=501,
+        orbit_states=8,
+    )
+    assert fitted.shape == dense.shape
+    assert np.isfinite(fitted).all()
+    assert fitted[4, 3] * dense[4, 3] > 0.0
+
+
+def test_snap_half_cell_dem_is_not_the_pixel_centre_sample():
+    lat = np.array([10.0, 9.0, 8.0])
+    lon = np.array([20.0, 21.0, 22.0])
+    heights = np.array([[0.0, 10.0, 20.0], [100.0, 110.0, 120.0], [200.0, 210.0, 220.0]])
+    dem = ElevationModel(
+        lat_deg=lat,
+        lon_deg=lon,
+        orthometric_m=heights,
+        nodata=-32768.0,
+        orthometric_datum="EGM2008",
+        geoid=GeoidGrid(
+            lat_deg=np.array([12.0, 6.0]),
+            lon_deg=np.array([18.0, 24.0]),
+            undulation_m=np.zeros((2, 2)),
+            source="test",
+            model="EGM2008",
+        ),
+        provenance="test",
+    )
+    centre, centre_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=False)
+    shifted, shifted_ok = dem.ellipsoidal_height(9.0, 21.0, half_cell=True)
+    assert centre_ok and shifted_ok
+    assert abs(centre - 110.0) < 1e-6
+    assert abs(shifted - centre) > 1.0

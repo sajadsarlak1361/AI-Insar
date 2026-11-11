@@ -1584,6 +1584,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 degree=degree,
                 height_m=0.0,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
             )
         if params.get("subtract_topo"):
             dem = self._interferogram_dem(params, early, early_orbit)
@@ -1594,6 +1597,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 later_orbit=later_orbit,
                 dem=dem,
                 degree=degree,
+                polynomial_degree=int(self._combo_int(params, "flat_earth_degree", 5)),
+                polynomial_points=int(self._combo_int(params, "flat_earth_points", 501)),
+                orbit_states=8,
             )
             phase = phase + residual
             self._topo_removed = True

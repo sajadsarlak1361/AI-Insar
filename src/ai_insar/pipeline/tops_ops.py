@@ -8,6 +8,7 @@ not a crop and not an amplitude correlation.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -292,6 +293,9 @@ def flat_earth_phase(
     height_m: float = 0.0,
     dem: object | None = None,
     max_solves: int | None = None,
+    polynomial_degree: int | None = None,
+    polynomial_points: int | None = None,
+    orbit_states: int = 8,
 ) -> np.ndarray:
     """SNAP flat-earth phase in radians.
 
@@ -299,6 +303,17 @@ def flat_earth_phase(
     ``exp(-j phi)``. ``dem`` evaluates the same expression at the DEM height
     of each pixel centre. A missing DEM sample stays NaN.
     """
+    if polynomial_points is not None and dem is None and float(height_m) == 0.0:
+        return snap_flat_earth_polynomial(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            degree=degree,
+            polynomial_degree=5 if polynomial_degree is None else int(polynomial_degree),
+            polynomial_points=int(polynomial_points),
+            orbit_states=int(orbit_states),
+        )
     phase, _heights = geometric_phase(
         early,
         later,
@@ -308,6 +323,7 @@ def flat_earth_phase(
         height_m=height_m,
         dem=dem,
         max_solves=max_solves,
+        half_cell=dem is not None,
     )
     return phase
 
@@ -321,6 +337,9 @@ def topographic_residual_phase(
     dem: object,
     degree: int = 3,
     max_solves: int | None = None,
+    polynomial_degree: int | None = None,
+    polynomial_points: int | None = None,
+    orbit_states: int = 8,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Topographic phase after the ellipsoid term has been removed.
 
@@ -338,17 +357,31 @@ def topographic_residual_phase(
         degree=degree,
         dem=dem,
         max_solves=max_solves,
+        half_cell=True,
     )
-    flat, _flat_heights = geometric_phase(
-        early,
-        later,
-        early_orbit=early_orbit,
-        later_orbit=later_orbit,
-        degree=degree,
-        height_m=0.0,
-        dem=None,
-        max_solves=max_solves,
-    )
+    if polynomial_points is None:
+        flat, _flat_heights = geometric_phase(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            degree=degree,
+            height_m=0.0,
+            dem=None,
+            max_solves=max_solves,
+        )
+    else:
+        flat = flat_earth_phase(
+            early,
+            later,
+            early_orbit=early_orbit,
+            later_orbit=later_orbit,
+            degree=degree,
+            height_m=0.0,
+            polynomial_degree=5 if polynomial_degree is None else int(polynomial_degree),
+            polynomial_points=int(polynomial_points),
+            orbit_states=orbit_states,
+        )
     residual = dem_phase - flat
     missing = ~np.isfinite(heights)
     residual[missing] = 0.0
@@ -365,6 +398,7 @@ def geometric_phase(
     height_m: float = 0.0,
     dem: object | None = None,
     max_solves: int | None = None,
+    half_cell: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``-4π/λ (R_early - R_later)`` and the height used at each pixel."""
     if early.shape != later.shape or early.row != later.row or early.col != later.col:
@@ -383,7 +417,9 @@ def geometric_phase(
     valid = np.ones(absolute.shape[0], dtype=bool)
     used_height = np.full(absolute.shape, float(height_m), dtype=np.float64)
     if dem is not None:
-        ground, valid = _ground_on_dem(ground, azimuth, slant, early_orbit, dem, degree, valid)
+        ground, valid = _ground_on_dem(
+            ground, azimuth, slant, early_orbit, dem, degree, valid, half_cell=half_cell
+        )
         lat, lon, got = ecef_to_geodetic(ground)
         used_height = np.asarray(got, dtype=np.float64).reshape(-1)
         used_height[~valid] = np.nan
@@ -411,6 +447,137 @@ def geometric_phase(
         phase = np.where(hole > 0.5, phase, np.nan)
         heights = np.where(hole > 0.5, heights, np.nan)
     return phase, heights
+
+
+def _distribute_points(count: int, max_line: int, max_pixel: int) -> np.ndarray:
+    """SNAP ``MathUtils.distributePoints`` on an inclusive burst window.
+
+    The window is line ``0..max_line`` and sample ``0..max_pixel``. Returned
+    pairs are ``(line, sample)`` as integers.
+    """
+    lines = float(max_line + 1)
+    pixels = float(max_pixel + 1)
+    win_p = math.sqrt(count / (lines / pixels))
+    win_l = count / win_p
+    if win_l < win_p:
+        win_l = win_p
+    win_l_int = max(int(math.floor(win_l)), 2)
+    delta_lin = (lines - 1.0) / float(win_l_int - 1)
+    total_pix = int(math.floor(pixels * win_l_int))
+    delta_pix = (total_pix - 1.0) / float(count - 1)
+    pix = -delta_pix
+    points = np.empty((count, 2), dtype=np.int64)
+    counter = 0
+    for index in range(count):
+        pix += delta_pix
+        while math.floor(pix) >= pixels:
+            pix -= pixels
+            counter += 1
+        line = counter * delta_lin
+        points[index, 0] = int(math.floor(line))
+        points[index, 1] = int(math.floor(pix))
+    return points
+
+
+def _normalize2(value: np.ndarray, low: float, high: float) -> np.ndarray:
+    """Doris ``PolyUtils.normalize2``: map ``[low, high]`` onto ``[-1, 1]``."""
+    return (np.asarray(value, dtype=np.float64) - 0.5 * (low + high)) / (0.5 * (high - low))
+
+
+def _snap_monomials(line: np.ndarray, sample: np.ndarray, degree: int, max_line: int, max_sample: int) -> np.ndarray:
+    """Columns ``posL**(j-k) * posP**k`` for ``j = 0..degree``, ``k = 0..j``."""
+    pos_l = _normalize2(line, 0.0, float(max_line))
+    pos_p = _normalize2(sample, 0.0, float(max_sample))
+    columns = []
+    for power in range(degree + 1):
+        for cross in range(power + 1):
+            columns.append((pos_l ** (power - cross)) * (pos_p ** cross))
+    return np.column_stack(columns)
+
+
+def snap_flat_earth_polynomial(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    degree: int = 3,
+    polynomial_degree: int = 5,
+    polynomial_points: int = 501,
+    orbit_states: int = 8,
+) -> np.ndarray:
+    """Per-burst degree-5 polynomial of the ellipsoid flat-earth phase.
+
+    SNAP fits 21 coefficients on 501 points spread over the burst, using a
+    cubic least-squares orbit through 8 state vectors. The polynomial is
+    normalised on the full burst, then evaluated on this window.
+    """
+    if early.shape != later.shape or early.row != later.row or early.col != later.col:
+        raise ValueError("flat-earth phase needs two windows on the same radar grid")
+    if int(polynomial_degree) < 1 or int(polynomial_points) < 21:
+        raise ValueError("SNAP flat-earth needs degree >= 1 and at least 21 points")
+    phase = np.zeros(early.shape, dtype=np.float64)
+    lines = int(early.model.lines_per_burst)
+    samples = int(early.model.samples_per_burst)
+    if lines < 2 or samples < 2:
+        raise ValueError("a burst needs at least two lines and two samples")
+    first = int(early.row) // lines
+    last = (int(early.row) + early.shape[0] - 1) // lines
+    for burst in range(first, last + 1):
+        points = _distribute_points(int(polynomial_points), lines - 1, samples - 1)
+        absolute = burst * lines + points[:, 0]
+        observed = _ellipsoid_phase_at(
+            early.model,
+            later.model,
+            early_orbit,
+            later_orbit,
+            absolute,
+            points[:, 1].astype(np.float64),
+            degree,
+            int(orbit_states),
+        )
+        design = _snap_monomials(points[:, 0], points[:, 1], int(polynomial_degree), lines - 1, samples - 1)
+        coefficients, *_rest = np.linalg.lstsq(design, observed, rcond=None)
+        row0 = max(burst * lines, int(early.row))
+        row1 = min((burst + 1) * lines, int(early.row) + early.shape[0])
+        local = np.arange(row0, row1, dtype=np.float64) - burst * lines
+        sample = (int(early.col) + np.arange(early.shape[1])).astype(np.float64)
+        mesh_line, mesh_sample = np.meshgrid(local, sample, indexing="ij")
+        evaluated = _snap_monomials(
+            mesh_line.ravel(), mesh_sample.ravel(), int(polynomial_degree), lines - 1, samples - 1
+        ) @ coefficients
+        phase[row0 - int(early.row) : row1 - int(early.row), :] = evaluated.reshape(mesh_line.shape)
+    return phase
+
+
+def _ellipsoid_phase_at(
+    early_model: SwathModel,
+    later_model: SwathModel,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    absolute_lines: np.ndarray,
+    samples: np.ndarray,
+    degree: int,
+    states: int,
+) -> np.ndarray:
+    """``-4π/λ (R_early - R_later)`` at height 0, one 8-state cubic per burst."""
+    lines = np.asarray(absolute_lines, dtype=np.int64)
+    sample = np.asarray(samples, dtype=np.float64)
+    early_time = early_model.line_time(int(np.median(lines)))
+    later_lines = _repeat_times(early_model, lines, later_model)
+    later_time = later_lines[len(later_lines) // 2]
+    early = early_orbit.nearest_window(early_time, states)
+    later = later_orbit.nearest_window(later_time, states)
+    used = min(int(states), int(early.time.shape[0]), int(later.time.shape[0]))
+    azimuth = _line_times(early_model, lines)
+    slant = _slant_ranges(early_model, sample)
+    ground = ground_points_at_height(early, azimuth, slant, np.zeros(lines.shape[0]), degree=degree, states=used)
+    early_position, _velocity = early.interpolate(azimuth, degree, states=used)
+    early_range = np.linalg.norm(ground - early_position, axis=1)
+    when = later.zero_doppler_times(ground, later_lines, degree, states=used)
+    later_position, _later_velocity = later.interpolate(when, degree, states=used)
+    later_range = np.linalg.norm(ground - later_position, axis=1)
+    return -4.0 * np.pi / float(early_model.wavelength_m) * (early_range - later_range)
 
 
 def polynomial_phase(phase: np.ndarray, degree: int, count: int) -> np.ndarray:
@@ -1043,7 +1210,7 @@ _DEM_HEIGHT_TOLERANCE_M = 1e-3
 _DEM_HEIGHT_MAX_UPDATES = 30
 
 
-def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid):
+def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid, half_cell: bool = False):
     """Put each ground point on the DEM and stop when the height settles.
 
     A point is finished when the DEM sample moved by less than 1 mm and the
@@ -1062,6 +1229,7 @@ def _ground_on_dem(ground, azimuth, slant, orbit, dem, degree, valid):
             np.rad2deg(np.asarray(lat, dtype=np.float64)).reshape(count),
             np.rad2deg(np.asarray(lon, dtype=np.float64)).reshape(count),
             method=method,
+            half_cell=bool(half_cell),
         )
         sampled = np.asarray(sampled, dtype=np.float64).reshape(count)
         inside = np.asarray(inside, dtype=bool).reshape(count)
@@ -2098,7 +2266,7 @@ def terrain_correct(
         raise ValueError("Terrain correction needs a DEM. Ellipsoid height 0 is not a substitute.")
 
     def height_of(lat_deg: float, lon_deg: float) -> tuple[float, bool]:
-        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling)
+        return dem.ellipsoidal_height(lat_deg, lon_deg, method=dem_resampling, half_cell=True)
 
     image, bounds, heights = _geocode(
         grid,
