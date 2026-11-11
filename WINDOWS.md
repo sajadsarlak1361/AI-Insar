@@ -9,15 +9,15 @@ and installs the local project.
 
 ## Download the Windows zip from Releases
 
-Stable package, tagged on `main` (SBAS only, no Sentinel-1 fetch menu):
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)).
+Current package, tagged on `main` (processing-area selection and the
+SNAP-parity ESD chain):
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0)).
 
-Last uploaded prerelease (Sentinel-1 fetch menu, one menu per time-series
-method, fast unwrap, seasonal fit). It does not include the Goldstein and
-Coherence menus or map export:
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
+Earlier stable package (SBAS only, no Sentinel-1 fetch menu):
+[v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0).
+The last prerelease before this tag is
+[v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4).
 
 Unzip either archive, open the `ai-insar` folder, and double-click
 `run_windows.bat`. Neither zip is stored in the git tree (`dist/` stays

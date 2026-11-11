@@ -62,12 +62,15 @@ def test_gpt_reopens_beam_dimap_complex_values(tmp_path: Path):
 
     from ai_insar.pipeline.dimap import write_beam_dimap
 
+    gpt = "/home/ubuntu/esa-snap/bin/gpt"
+    if not Path(gpt).is_file():
+        pytest.skip("SNAP gpt is not installed")
     values = (np.arange(12) + 1j * np.arange(12)).reshape(3, 4).astype(np.complex64)
     dim = write_beam_dimap(tmp_path, "sample", values, None, band_name="IW1_VV", unit="1")
     destination = tmp_path / "via_subset.dim"
     proc = subprocess.run(
         [
-            "/home/ubuntu/esa-snap/bin/gpt",
+            gpt,
             "Subset",
             f"-Ssource={dim}",
             "-Pregion=0,0,4,3",
@@ -96,7 +99,7 @@ def test_gpt_reopens_beam_dimap_complex_values(tmp_path: Path):
     geocoded_out = tmp_path / "geocoded_subset.dim"
     geocoded_proc = subprocess.run(
         [
-            "/home/ubuntu/esa-snap/bin/gpt",
+            gpt,
             "Subset",
             f"-Ssource={geocoded}",
             "-Pregion=0,0,4,3",
