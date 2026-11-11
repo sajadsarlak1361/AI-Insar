@@ -117,8 +117,17 @@ def test_two_hundred_metre_square_selects_bursts_5_and_6_and_their_overlap():
     assert all(item["burst_first"] == 5 and item["burst_last"] == 6 for item in stages.values())
     assert all(item["esd_overlap_bursts"] == [5, 6] for item in stages.values())
     saved = json.loads(AOI_JSON.read_text(encoding="utf-8"))
-    assert saved["clipped_wkt"] == report.clipped_wkt
-    assert saved["centre_latitude"] == report.centre_latitude
+    measured = (
+        "POLYGON ((13.277904397663 50.230756285166, "
+        "13.275211941418 50.231256292114, "
+        "13.274432529058 50.229529182623, "
+        "13.277124896207 50.229029193585, "
+        "13.277904397663 50.230756285166))"
+    )
+    assert saved["clipped_wkt"] == measured
+    assert saved["requested_wkt"] == measured
+    assert abs(saved["centre_latitude"] - 50.230142746893) < 1e-12
+    assert abs(saved["centre_longitude"] - 13.276168441086) < 1e-12
     assert saved["burst_first"] == 5 and saved["burst_last"] == 6
 
 
