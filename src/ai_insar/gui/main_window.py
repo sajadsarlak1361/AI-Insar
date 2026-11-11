@@ -1438,7 +1438,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if params.get("subtract_flat") or params.get("subtract_topo"):
             self._remove_geometric_phase(params)
         if params.get("output_coherence"):
-            azimuth, range_window = self._coherence_window_sizes(params)
+            azimuth, range_window = self._coherence_window_sizes(params, derive_square=False)
             self.workspace.config.coherence_window = range_window
             self.workspace.config.coherence_azimuth_window = azimuth
             if self._coregistered_pair_ready() and self.workspace.interferograms is not None:
@@ -1462,10 +1462,10 @@ class MainWindow(QtWidgets.QMainWindow):
             and early.col == later.col
         )
 
-    def _coherence_window_sizes(self, params: dict) -> tuple[int, int]:
+    def _coherence_window_sizes(self, params: dict, *, derive_square: bool) -> tuple[int, int]:
         range_window = int(params.get("coherence_range") or 10)
         azimuth = int(params.get("coherence_azimuth") or 2)
-        if params.get("square_pixel"):
+        if derive_square and params.get("square_pixel"):
             model = getattr(self.workspace, "swath_model", None)
             if model is None and self.workspace.reference_grid is not None:
                 model = self.workspace.reference_grid.model
@@ -1474,8 +1474,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 azimuth, range_window = snap_square_windows(model, range_window)
         self._log(
-            f"Coherence window azimuth {azimuth} × range {range_window}"
-            + (" (square pixel)." if params.get("square_pixel") else ".")
+            f"Coherence window azimuth {azimuth} × range {range_window}, "
+            "forward from index-(size-1)//2, exactly that many samples."
         )
         return azimuth, range_window
 
@@ -1499,7 +1499,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(
             "Coherence used the flat-earth"
             + (" and topographic" if getattr(self, "_topo_removed", False) else "")
-            + " interferogram. Even windows are centred with size//2 on each side."
+            + " interferogram. The window is exactly azimuth by range, anchored forward."
         )
 
     def _remove_geometric_phase(self, params: dict) -> None:
@@ -1584,11 +1584,9 @@ class MainWindow(QtWidgets.QMainWindow):
         request = params["request"]
         for line in request.skipped:
             self._log(line)
-        self._set_coherence_windows(
-            int(params["coherence_range"]),
-            None if params["square_pixel"] else int(params["coherence_azimuth"]),
-            square=bool(params["square_pixel"]),
-        )
+        azimuth, range_window = self._coherence_window_sizes(params, derive_square=True)
+        self.workspace.config.coherence_window = range_window
+        self.workspace.config.coherence_azimuth_window = azimuth
         if params["single_reference"]:
             reference = self.workspace.reference_index
             if reference is None:
@@ -1623,6 +1621,18 @@ class MainWindow(QtWidgets.QMainWindow):
                     )
                 self._log(f"Single reference: {relation}. Interferograms were recomputed.")
         self.run_coherence()
+        if self.workspace.coherence is not None:
+            from ai_insar.pipeline.coherence import correct_coherence_bias
+
+            looks = int(azimuth) * int(range_window)
+            self.workspace.coherence = correct_coherence_bias(self.workspace.coherence, looks)
+            from ai_insar.pipeline.engine import restrict_array
+
+            self.workspace.mean_coherence = restrict_array(
+                np.mean(self.workspace.coherence, axis=0).astype(np.float32),
+                self.workspace.common_overlap_mask,
+            )
+            self._log(f"Coherence bias correction uses N = {looks}.")
         if request.open_in_app:
             self._preferred_layer = "Coherence"
         self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])

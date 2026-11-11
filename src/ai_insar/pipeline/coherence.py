@@ -38,10 +38,10 @@ def coherence_map(
     ``product`` is the complex interferogram. When it is omitted the product
     is ``late × conj(early)``. Pass the flat-earth and topo removed
     interferogram so the average is taken after those phases, which is what
-    SNAP does. The window is SNAP's: half the size, integer division, and
-    the box runs from ``centre - half`` through ``centre + half`` inclusive.
-    An even size therefore covers one extra pixel. Edges are clipped, not
-    reflected.
+    SNAP does.     The window is exactly ``azimuth`` lines by ``range`` samples. It starts
+    at ``index - (size - 1) // 2`` and runs forward. Azimuth 2 is the current
+    line and the next line. Range 10 starts four samples before the pixel.
+    Samples outside the image are zero.
     """
     s1 = np.asarray(early)
     s2 = np.asarray(late)
@@ -76,11 +76,26 @@ def snap_square_windows(model, range_window: int) -> tuple[int, int]:
 
 
 def snap_window_bounds(index: int, size: int, length: int) -> tuple[int, int]:
-    """Inclusive ``[centre - size//2, centre + size//2]``, clipped to the axis."""
-    half = int(size) // 2
-    start = max(0, int(index) - half)
-    stop = min(int(length) - 1, int(index) + half)
+    """Inclusive image bounds of a forward window of exactly ``size`` samples.
+
+    The window starts at ``index - (size - 1) // 2``. Ends that fall outside
+    the image are clipped; the missing samples are treated as zero.
+    """
+    start = int(index) - (int(size) - 1) // 2
+    stop = start + int(size) - 1
     return start, stop
+
+
+def correct_coherence_bias(gamma: np.ndarray, n_looks: int) -> np.ndarray:
+    """SNAP's default coherence bias correction.
+
+    ``gamma - (1 - gamma²) / (2 N)`` for ``N >= 2``, floored at 0.
+    """
+    values = np.asarray(gamma, dtype=np.float32)
+    if int(n_looks) < 2:
+        return values
+    bias = (1.0 - values.astype(np.float64) ** 2) / (2.0 * int(n_looks))
+    return np.maximum(0.0, values.astype(np.float64) - bias).astype(np.float32)
 
 
 def coherence_stack(
@@ -121,7 +136,7 @@ def _coherence_plane(
     azimuth: int,
     range_window: int,
 ) -> np.ndarray:
-    """Integral-image boxcar. Even sizes use ``size // 2`` on both sides."""
+    """Integral-image boxcar of exactly ``azimuth`` by ``range_window`` samples."""
     cross = np.asarray(product)
     real = _box_sum(np.real(cross).astype(np.float64), azimuth, range_window)
     imag = _box_sum(np.imag(cross).astype(np.float64), azimuth, range_window)
@@ -140,15 +155,19 @@ def _coherence_plane(
 
 
 def _box_sum(values: np.ndarray, azimuth: int, range_window: int) -> np.ndarray:
+    """Sum of a forward window. Outside the array the addend is zero."""
     height, width = values.shape
-    integral = np.zeros((height + 1, width + 1), dtype=np.float64)
-    np.cumsum(np.cumsum(values, axis=0), axis=1, out=integral[1:, 1:])
-    half_y = int(azimuth) // 2
-    half_x = int(range_window) // 2
+    before_y = (int(azimuth) - 1) // 2
+    before_x = (int(range_window) - 1) // 2
+    after_y = int(azimuth) - 1 - before_y
+    after_x = int(range_window) - 1 - before_x
+    padded = np.pad(np.asarray(values, dtype=np.float64), ((before_y, after_y), (before_x, after_x)))
+    integral = np.zeros((padded.shape[0] + 1, padded.shape[1] + 1), dtype=np.float64)
+    np.cumsum(np.cumsum(padded, axis=0), axis=1, out=integral[1:, 1:])
     y = np.arange(height)[:, None]
     x = np.arange(width)[None, :]
-    y1 = np.clip(y - half_y, 0, height)
-    y2 = np.clip(y + half_y + 1, 0, height)
-    x1 = np.clip(x - half_x, 0, width)
-    x2 = np.clip(x + half_x + 1, 0, width)
+    y1 = y
+    y2 = y + int(azimuth)
+    x1 = x
+    x2 = x + int(range_window)
     return integral[y2, x2] - integral[y1, x2] - integral[y2, x1] + integral[y1, x1]
