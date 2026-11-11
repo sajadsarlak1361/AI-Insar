@@ -88,10 +88,12 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
         local_stop = min(burst_stop, grid.row + rows)
         if local_start >= local_stop:
             continue
-        # The polynomial belongs to this burst's azimuth time. A window that
-        # starts on a later burst must not slide the index back to record 0.
-        fm = _polynomial_for_burst(model.fm_rates, model.bursts[burst_index].azimuth_time)
-        dc = _polynomial_for_burst(model.dc_estimates, model.bursts[burst_index].azimuth_time)
+        # TOPS Split keeps the full annotation list and restarts burst
+        # numbering at 0. Retained bursts 5 and 6 therefore read records 0
+        # and 1, not the nearest-time records 4 and 5. The index is the
+        # burst's place in this product, not the window origin.
+        fm = _split_polynomial(model.fm_rates, burst_index)
+        dc = _split_polynomial(model.dc_estimates, burst_index)
         ka = _polynomial(fm.coefficients, tau - fm.t0_s)
         fdc = _polynomial(dc.coefficients, tau - dc.t0_s)
         ka_anchor = float(_polynomial(fm.coefficients, _two_way(model, anchor) - fm.t0_s))
@@ -108,8 +110,29 @@ def tops_phase(grid: RadarGrid, orbit: Orbit | None = None) -> np.ndarray:
     return phase
 
 
+def _split_polynomial(polynomials: tuple, burst_index: int):
+    """Annotation record for one burst after TOPS Split.
+
+    SNAP indexes ``azimuthFmRate`` and ``dcEstimate`` by the burst ordinal
+    in the split product. The list itself is not trimmed, so the first
+    retained burst reads record 0.
+    """
+    if not polynomials:
+        raise ValueError("the swath has no range polynomial for this burst")
+    index = int(burst_index)
+    if index < 0 or index >= len(polynomials):
+        raise ValueError(
+            f"split burst {index} is outside the {len(polynomials)} annotation records"
+        )
+    return polynomials[index]
+
+
 def _polynomial_for_burst(polynomials: tuple, azimuth_time: np.datetime64):
-    """The range polynomial dated nearest this burst, not nearest the window origin."""
+    """The range polynomial dated nearest this burst.
+
+    This is the physical record. Deramp and reramp do not use it: SNAP's
+    split product addresses the untrimmed list by the restarted burst number.
+    """
     if not polynomials:
         raise ValueError("the swath has no range polynomial for this burst")
     target = np.datetime64(azimuth_time, "ns").astype(np.int64)
@@ -134,7 +157,17 @@ def _polynomial(coefficients: np.ndarray, delta: np.ndarray | float) -> np.ndarr
 
 
 def _speed(model: SwathModel, orbit: Orbit) -> float:
-    when = model.bursts[len(model.bursts) // 2].azimuth_time
+    """Satellite speed at the scene centre.
+
+    SNAP uses the midpoint of ``productFirstLineUtcTime`` and
+    ``productLastLineUtcTime``, not the middle burst's first line.
+    """
+    first = getattr(model, "product_first_line_utc", None)
+    last = getattr(model, "product_last_line_utc", None)
+    if first is not None and last is not None:
+        when = first + (last - first) / 2
+    else:
+        when = model.bursts[len(model.bursts) // 2].azimuth_time
     _position, velocity = orbit.interpolate(when, 3)
     return float(np.linalg.norm(velocity))
 
@@ -1831,63 +1864,52 @@ def _hann_apply(real_part, imag_part, line, sample, lut, half, complex_flag):
         return _hann_apply_numpy(real_part, imag_part, line, sample, lut, int(half), int(complex_flag))
 
 
-def _bisinc_taps(frac: float, half: int) -> np.ndarray:
-    """SNAP BiSinc weights at one fractional offset. No lookup table."""
+def _bisinc_taps_array(frac: np.ndarray, half: int) -> np.ndarray:
+    """SNAP BiSinc weights for many fractional offsets. No lookup table."""
     offsets = np.arange(-int(half), int(half) + 1, dtype=np.float64)
-    delta = float(frac) - offsets
+    delta = np.asarray(frac, dtype=np.float64)[..., None] - offsets
     span = float(half) if half else 1.0
     weights = np.sinc(delta) * 0.5 * (1.0 + np.cos(np.pi * np.clip(delta / span, -1.0, 1.0)))
-    weights[np.abs(delta) > float(half)] = 0.0
+    weights = np.where(np.abs(delta) > float(half), 0.0, weights)
     return weights
 
 
+def _bisinc_taps(frac: float, half: int) -> np.ndarray:
+    """SNAP BiSinc weights at one fractional offset. No lookup table."""
+    return _bisinc_taps_array(np.asarray(frac, dtype=np.float64), half)
+
+
 def _hann_apply_numpy(real_part, imag_part, line, sample, lut, half, complex_flag):
+    """Vectorised BiSinc. Edge taps repeat the border sample, as SNAP clamps them."""
     del lut
     height, width = real_part.shape
     rows, cols = line.shape
     out_real = np.zeros((rows, cols), dtype=np.float64)
     out_imag = np.zeros((rows, cols), dtype=np.float64)
-    offsets = np.arange(-half, half + 1)
-    for row in range(rows):
-        for col in range(cols):
-            y = line[row, col]
-            x = sample[row, col]
-            if not np.isfinite(y) or not np.isfinite(x):
-                continue
-            y0 = int(np.floor(y))
-            x0 = int(np.floor(x))
-            wy = _bisinc_taps(y - y0, half)
-            wx = _bisinc_taps(x - x0, half)
-            # SNAP BiSinc keeps every window tap and repeats the edge sample.
-            # Dropping the tap and renormalising is the unwindowed-edge bias.
-            sy = float(np.sum(wy))
-            sx = float(np.sum(wx))
-            if sy == 0.0 or sx == 0.0:
-                continue
-            acc_r = 0.0
-            acc_i = 0.0
-            for iy, oy in enumerate(offsets):
-                yy = y0 + int(oy)
-                if yy < 0:
-                    yy = 0
-                elif yy >= height:
-                    yy = height - 1
-                wy_n = wy[iy] / sy
-                if wy_n == 0.0:
-                    continue
-                for ix, ox in enumerate(offsets):
-                    xx = x0 + int(ox)
-                    if xx < 0:
-                        xx = 0
-                    elif xx >= width:
-                        xx = width - 1
-                    weight = wy_n * (wx[ix] / sx)
-                    acc_r += weight * real_part[yy, xx]
-                    if complex_flag:
-                        acc_i += weight * imag_part[yy, xx]
-            out_real[row, col] = acc_r
-            out_imag[row, col] = acc_i
-    return out_real, out_imag
+    finite = np.isfinite(line) & np.isfinite(sample)
+    if not np.any(finite):
+        return out_real, out_imag
+    y0 = np.floor(line).astype(np.int64)
+    x0 = np.floor(sample).astype(np.int64)
+    wy = _bisinc_taps_array(np.where(finite, line - y0, 0.0), half)
+    wx = _bisinc_taps_array(np.where(finite, sample - x0, 0.0), half)
+    sy = np.sum(wy, axis=-1)
+    sx = np.sum(wx, axis=-1)
+    sy = np.where(sy == 0.0, 1.0, sy)
+    sx = np.where(sx == 0.0, 1.0, sx)
+    wy = wy / sy[..., None]
+    wx = wx / sx[..., None]
+    ntaps = 2 * int(half) + 1
+    for ty in range(ntaps):
+        yy = np.clip(y0 + ty - int(half), 0, height - 1)
+        azimuth_weight = wy[..., ty]
+        for tx in range(ntaps):
+            xx = np.clip(x0 + tx - int(half), 0, width - 1)
+            weight = azimuth_weight * wx[..., tx]
+            out_real += weight * real_part[yy, xx]
+            if complex_flag:
+                out_imag += weight * imag_part[yy, xx]
+    return np.where(finite, out_real, 0.0), np.where(finite, out_imag, 0.0)
 
 
 def _hann_apply_numba(real_part, imag_part, line, sample, lut, half, complex_flag):
@@ -2626,7 +2648,10 @@ def _geocode(
         raise ValueError(f"{projection} is not implemented. Use geographic or UTM.")
     rows, cols = grid.shape
     if surface == "dem":
-        lats, lons = _footprint_latlon(grid, orbit, height_of, degree)
+        # The annotation terrain-height list is SNAP's first height estimate.
+        # The loop still replaces it with the DEM sample.
+        start = float(getattr(grid.model, "terrain_height_m", 0.0) or 0.0)
+        lats, lons = _footprint_latlon(grid, orbit, height_of, degree, start_height=start)
     else:
         lats, lons = _footprint_latlon(grid, orbit, lambda _lat, _lon: (0.0, True), degree, height_m=0.0)
     if not lats:
@@ -2729,7 +2754,7 @@ def _geocode(
     return image, (west, south, east, north), heights
 
 
-def _footprint_latlon(grid, orbit, height_of, degree, height_m=None):
+def _footprint_latlon(grid, orbit, height_of, degree, height_m=None, start_height: float = 0.0):
     """Latitude and longitude of the source border, at the DEM height.
 
     A zero-elevation box sits hundreds of metres from the same pixels on a
@@ -2753,7 +2778,7 @@ def _footprint_latlon(grid, orbit, height_of, degree, height_m=None):
     for row, col in samples:
         azimuth = grid.model.line_time(grid.row + row)
         slant = grid.model.slant_range_m(grid.col + col)
-        height = 0.0 if height_m is None else float(height_m)
+        height = float(start_height) if height_m is None else float(height_m)
         lat_deg = lon_deg = None
         for _ in range(12):
             ground = ground_point_at_height(orbit, azimuth, slant, height, degree=degree)

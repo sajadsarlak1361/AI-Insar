@@ -47,6 +47,68 @@ def test_flat_earth_phase_is_minus_four_pi_over_lambda_times_reference_minus_sec
     assert abs(phase[row, col] - (-expected)) > 1e-3
 
 
+def test_split_deramp_uses_annotation_record_zero_not_the_nearest_time():
+    from ai_insar.pipeline.s1_annotation import BurstTiming, RangePolynomial
+    from ai_insar.pipeline.tops_ops import tops_phase
+
+    orbit = _orbit()
+    reference, _secondary = _models(orbit)
+    lines = int(reference.lines_per_burst)
+    start = reference.bursts[0].azimuth_time
+    second = reference.bursts[1].azimuth_time
+    # Records 4 and 5 are dated with the retained bursts. SNAP still reads 0 and 1.
+    polynomials = tuple(
+        RangePolynomial(start + np.timedelta64(index, "s"), 0.006, np.array([-(1000.0 + 100.0 * index), 0.0]))
+        for index in range(6)
+    )
+    timed = (
+        RangePolynomial(start, 0.006, np.array([-9000.0, 0.0])),
+        RangePolynomial(second, 0.006, np.array([-8000.0, 0.0])),
+    )
+    records = polynomials[:4] + timed
+    bursts = (
+        BurstTiming(start, 0, lines - 1, 0, 20),
+        BurstTiming(second, 0, lines - 1, 0, 20),
+    )
+    model = reference.__class__(
+        wavelength_m=reference.wavelength_m,
+        azimuth_time_interval_s=reference.azimuth_time_interval_s,
+        range_pixel_spacing_m=reference.range_pixel_spacing_m,
+        slant_range_time_s=reference.slant_range_time_s,
+        lines_per_burst=lines,
+        samples_per_burst=reference.samples_per_burst,
+        number_of_lines=lines * 2,
+        incidence_rad=reference.incidence_rad,
+        fm_rate=np.array([-2000.0, 0.0, 0.0]),
+        bursts=bursts,
+        orbit=orbit,
+        fm_rates=records,
+        dc_estimates=records,
+        azimuth_steering_rate_rad_s=0.0,
+    )
+    phase = tops_phase(RadarGrid(0, 0, np.ones((lines, 8), dtype=np.complex64), model))
+    only_first = tops_phase(
+        RadarGrid(
+            0,
+            0,
+            np.ones((lines, 8), dtype=np.complex64),
+            model.__class__(**{**model.__dict__, "fm_rates": records[:1], "dc_estimates": records[:1], "bursts": bursts[:1]}),
+        )
+    )
+    nearest = tops_phase(
+        RadarGrid(
+            0,
+            0,
+            np.ones((lines, 8), dtype=np.complex64),
+            model.__class__(
+                **{**model.__dict__, "fm_rates": timed[:1], "dc_estimates": timed[:1], "bursts": bursts[:1]}
+            ),
+        )
+    )
+    assert np.max(np.abs(phase - only_first)) < 1e-6
+    assert np.max(np.abs(phase - nearest)) > 1.0
+
+
 def test_deramp_polynomial_follows_the_burst_not_the_window_origin():
     from ai_insar.pipeline.s1_annotation import BurstTiming, RangePolynomial
     from ai_insar.pipeline.tops_ops import tops_phase

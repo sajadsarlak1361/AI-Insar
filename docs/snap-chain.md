@@ -1,5 +1,9 @@
 # 15-step coverage
 
+Which annotation fields each TOPS operator reads, and how a split product
+indexes them, is in
+[snap-annotation-fields.md](snap-annotation-fields.md).
+
 Handwritten order. Dialog labels for steps 1–12 follow the empty-product
 SNAP 14 audits. Steps 13–15 follow the final empty-product audit: Phase to
 Displacement has a blank processing panel, Range-Doppler Terrain Correction
