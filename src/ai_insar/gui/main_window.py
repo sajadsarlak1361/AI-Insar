@@ -1438,21 +1438,73 @@ class MainWindow(QtWidgets.QMainWindow):
         if params.get("subtract_flat") or params.get("subtract_topo"):
             self._remove_geometric_phase(params)
         if params.get("output_coherence"):
-            self._set_coherence_windows(
-                int(params["coherence_range"]),
-                None if params["square_pixel"] else int(params["coherence_azimuth"]),
-                square=bool(params["square_pixel"]),
-            )
-            self.run_coherence()
+            azimuth, range_window = self._coherence_window_sizes(params)
+            self.workspace.config.coherence_window = range_window
+            self.workspace.config.coherence_azimuth_window = azimuth
+            if self._coregistered_pair_ready() and self.workspace.interferograms is not None:
+                self._coherence_after_phase(azimuth, range_window)
+            else:
+                self.run_coherence()
         if request.open_in_app:
             self._preferred_layer = "Coherence" if params.get("output_coherence") else "Interferogram phase"
         self._save_request(request, self.workspace.interferograms, PRODUCT_SUFFIX["interferogram"])
         if params.get("output_coherence") and request.save and self.workspace.coherence is not None:
             self._save_request(request, self.workspace.coherence, PRODUCT_SUFFIX["coherence"])
 
+    def _coregistered_pair_ready(self) -> bool:
+        early = getattr(self.workspace, "reference_grid", None)
+        later = getattr(self.workspace, "secondary_grid", None)
+        return (
+            early is not None
+            and later is not None
+            and early.shape == later.shape
+            and early.row == later.row
+            and early.col == later.col
+        )
+
+    def _coherence_window_sizes(self, params: dict) -> tuple[int, int]:
+        range_window = int(params.get("coherence_range") or 10)
+        azimuth = int(params.get("coherence_azimuth") or 2)
+        if params.get("square_pixel"):
+            model = getattr(self.workspace, "swath_model", None)
+            if model is None and self.workspace.reference_grid is not None:
+                model = self.workspace.reference_grid.model
+            if model is not None:
+                from ai_insar.pipeline.coherence import snap_square_windows
+
+                azimuth, range_window = snap_square_windows(model, range_window)
+        self._log(
+            f"Coherence window azimuth {azimuth} × range {range_window}"
+            + (" (square pixel)." if params.get("square_pixel") else ".")
+        )
+        return azimuth, range_window
+
+    def _coherence_after_phase(self, azimuth: int, range_window: int) -> None:
+        from ai_insar.pipeline.coherence import coherence_map
+
+        early = self.workspace.reference_grid
+        later = self.workspace.secondary_grid
+        ifg = self.workspace.interferograms
+        if ifg is None or early is None or later is None or ifg.shape[1:] != early.shape:
+            raise RuntimeError("Coherence after flat-earth needs the coregistered pair and the interferogram.")
+        plane = coherence_map(
+            early.data,
+            later.data,
+            range_window,
+            azimuth_window=azimuth,
+            product=ifg[0],
+        )
+        self.workspace.coherence = plane[None, ...]
+        self.workspace.mean_coherence = plane
+        self._log(
+            "Coherence used the flat-earth"
+            + (" and topographic" if getattr(self, "_topo_removed", False) else "")
+            + " interferogram. Even windows are centred with size//2 on each side."
+        )
+
     def _remove_geometric_phase(self, params: dict) -> None:
-        """Subtract ellipsoid flat-earth and, when asked, a constant-height topographic term."""
-        from ai_insar.pipeline.tops_ops import RadarGrid, flat_earth_phase, subtract_phase
+        """Subtract SNAP flat-earth and, when asked, the topographic residual."""
+        from ai_insar.pipeline.tops_ops import flat_earth_phase, subtract_phase, topographic_residual_phase
 
         early = getattr(self.workspace, "reference_grid", None)
         later = getattr(self.workspace, "secondary_grid", None)
@@ -1463,23 +1515,41 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Flat-earth or topographic subtraction needs both radar windows and both precise orbits. "
                 "They are not on this stack."
             )
-        dem = None
+        degree = int(self._combo_int(params, "orbit_degree", 3))
+        phase = np.zeros(early.shape, dtype=np.float64)
+        self._topo_removed = False
+        if params.get("subtract_flat"):
+            phase = flat_earth_phase(
+                early,
+                later,
+                early_orbit=early_orbit,
+                later_orbit=later_orbit,
+                degree=degree,
+                height_m=0.0,
+            )
         if params.get("subtract_topo"):
-            dem = getattr(self.workspace, "elevation", None)
-            if dem is None:
-                raise RuntimeError(
-                    "Topographic subtraction needs an elevation model sampled at each pixel. "
-                    "A single DEM mean is not used."
-                )
-        phase = flat_earth_phase(
-            early,
-            later,
-            early_orbit=early_orbit,
-            later_orbit=later_orbit,
-            degree=int(self._combo_int(params, "orbit_degree", 3)),
-            height_m=0.0,
-            dem=dem,
-        )
+            dem = self._interferogram_dem(params, early, early_orbit)
+            residual, heights = topographic_residual_phase(
+                early,
+                later,
+                early_orbit=early_orbit,
+                later_orbit=later_orbit,
+                dem=dem,
+                degree=degree,
+            )
+            phase = phase + residual
+            self._topo_removed = True
+            self.workspace.elevation = dem
+            if params.get("output_elevation"):
+                self.workspace.dem_m = heights
+            if params.get("output_topo"):
+                self.workspace.topo_phase = residual
+            self._log(
+                f"Topographic phase is -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                f"Tile extension {int(params.get('tile_extension_percent') or 100)}%. "
+                "DEM samples are the geocoded pixel centres. "
+                f"External DEM geoid {'not applied' if params.get('dem_path') else 'follows the named model'}."
+            )
         ifg = self.workspace.interferograms
         if ifg is None or ifg.shape[0] < 1 or ifg.shape[1:] != phase.shape:
             raise RuntimeError("The interferogram grid does not match the radar windows.")
@@ -1487,10 +1557,20 @@ class MainWindow(QtWidgets.QMainWindow):
         ifg[0] = subtract_phase(ifg[0], phase)
         self.workspace.interferograms = ifg
         self._log(
-            "Removed ellipsoid flat-earth phase from pair 0"
-            + (" plus the per-pixel topographic term." if dem is not None else ".")
-            + f" RMS {float(np.sqrt(np.nanmean(phase**2))):.3f} rad."
+            "Removed geometric phase from pair 0. "
+            f"phi = -4π/λ (R_ref - R_sec). RMS {float(np.sqrt(np.nanmean(phase**2))):.3f} rad."
         )
+
+    def _interferogram_dem(self, params: dict, grid, orbit):
+        dem = self._elevation_model(
+            str(params.get("dem_choice") or "Copernicus 30m Global DEM (Auto Download)"),
+            str(params.get("dem_path") or ""),
+            grid,
+            orbit,
+        )
+        if params.get("dem_path"):
+            dem.geoid.undulation_m = np.zeros_like(dem.geoid.undulation_m)
+        return dem
 
     def _combo_int(self, params: dict, key: str, default: int) -> int:
         try:
@@ -2468,6 +2548,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.topo_baseline_perp_m = float(baseline_m)
         self.workspace.topo_slant_range_m = float(slant_range_m)
         self.workspace.topo_incidence_deg = float(incidence_deg)
+        if (
+            self._coregistered_pair_ready()
+            and getattr(self.workspace, "precise_orbit", None) is not None
+            and getattr(self.workspace, "secondary_orbit", None) is not None
+            and getattr(self.workspace, "elevation", None) is not None
+            and hasattr(self.workspace.elevation, "ellipsoidal_heights")
+        ):
+            from ai_insar.pipeline.tops_ops import subtract_phase, topographic_residual_phase
+
+            residual, heights = topographic_residual_phase(
+                self.workspace.reference_grid,
+                self.workspace.secondary_grid,
+                early_orbit=self.workspace.precise_orbit,
+                later_orbit=self.workspace.secondary_orbit,
+                dem=self.workspace.elevation,
+                degree=3,
+            )
+            self.workspace.interferograms = self.workspace.interferograms.copy()
+            self.workspace.interferograms[0] = subtract_phase(self.workspace.interferograms[0], residual)
+            self.workspace.dem_m = heights
+            self._log(
+                "Topographic Phase Removal used -4π/λ (R_ref - R_sec) at the DEM minus the ellipsoid term. "
+                "The perpendicular-baseline formula was not used."
+            )
+            self.workspace.filtered = None
+            self.workspace.unwrapped = None
+            self.workspace.los_m = None
+            self.workspace.velocity_m_yr = None
+            self.workspace.mask = None
+            return
         if abs(float(baseline_m)) < 1e-9:
             self._log(
                 "Topographic phase is 0 because the perpendicular baseline is 0. "

@@ -293,12 +293,80 @@ def flat_earth_phase(
     dem: object | None = None,
     max_solves: int | None = None,
 ) -> np.ndarray:
-    """Geometric reference-surface phase, later minus earlier, in radians.
+    """SNAP flat-earth phase in radians.
 
-    ``phi = -4π/λ (R_later - R_early)``. ``height_m`` is one ellipsoidal
-    height. ``dem`` samples a different ellipsoidal height at every pixel
-    and is the topographic term. A missing DEM sample stays NaN.
+    ``phi = -4π/λ (R_early - R_later)``. The interferogram is multiplied by
+    ``exp(-j phi)``. ``dem`` evaluates the same expression at the DEM height
+    of each pixel centre. A missing DEM sample stays NaN.
     """
+    phase, _heights = geometric_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=degree,
+        height_m=height_m,
+        dem=dem,
+        max_solves=max_solves,
+    )
+    return phase
+
+
+def topographic_residual_phase(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    dem: object,
+    degree: int = 3,
+    max_solves: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Topographic phase after the ellipsoid term has been removed.
+
+    SNAP's topographic term is the DEM-height range phase minus the
+    ellipsoid range phase, both ``-4π/λ (R_early - R_later)``. The DEM is
+    read at the geocoded pixel centre. The returned height is NaN where the
+    DEM has no sample; the residual there is 0 so the interferogram is left
+    unchanged.
+    """
+    dem_phase, heights = geometric_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=degree,
+        dem=dem,
+        max_solves=max_solves,
+    )
+    flat, _flat_heights = geometric_phase(
+        early,
+        later,
+        early_orbit=early_orbit,
+        later_orbit=later_orbit,
+        degree=degree,
+        height_m=0.0,
+        dem=None,
+        max_solves=max_solves,
+    )
+    residual = dem_phase - flat
+    missing = ~np.isfinite(heights)
+    residual[missing] = 0.0
+    return residual, heights
+
+
+def geometric_phase(
+    early: RadarGrid,
+    later: RadarGrid,
+    *,
+    early_orbit: Orbit,
+    later_orbit: Orbit,
+    degree: int = 3,
+    height_m: float = 0.0,
+    dem: object | None = None,
+    max_solves: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``-4π/λ (R_early - R_later)`` and the height used at each pixel."""
     if early.shape != later.shape or early.row != later.row or early.col != later.col:
         raise ValueError("flat-earth phase needs two windows on the same radar grid")
     rows, cols = early.shape
@@ -306,29 +374,43 @@ def flat_earth_phase(
     stride = _solve_stride(rows, cols, limit)
     row_index = _sample_index(rows, stride)
     col_index = _sample_index(cols, stride)
-    coarse = np.empty((row_index.size, col_index.size), dtype=np.float64)
-    wavelength = early.model.wavelength_m
-    for i, row in enumerate(row_index):
-        absolute = early.row + int(row)
-        azimuth = early.model.line_time(absolute)
-        for j, col in enumerate(col_index):
-            slant = early.model.slant_range_m(early.col + int(col))
-            ground = ground_point_at_height(early_orbit, azimuth, slant, height_m, degree=degree)
-            if dem is not None:
-                lat, lon, _got = ecef_to_geodetic(ground)
-                sampled_height, valid = dem.ellipsoidal_height(float(np.rad2deg(lat)), float(np.rad2deg(lon)))
-                if not valid:
-                    coarse[i, j] = np.nan
-                    continue
-                ground = ground_point_at_height(early_orbit, azimuth, slant, sampled_height, degree=degree)
-            early_range = _range_at(early_orbit, azimuth, ground, degree)
-            later_guess = repeat_azimuth_time(early.model, absolute, later.model)
-            later_time = later_orbit.zero_doppler_time(ground, later_guess, degree)
-            later_range = _range_at(later_orbit, later_time, ground, degree)
-            coarse[i, j] = -4.0 * np.pi / wavelength * (later_range - early_range)
+    mesh_row, mesh_col = np.meshgrid(row_index, col_index, indexing="ij")
+    absolute = early.row + mesh_row.ravel().astype(np.int64)
+    samples = early.col + mesh_col.ravel().astype(np.float64)
+    azimuth = _line_times(early.model, absolute)
+    slant = _slant_ranges(early.model, samples)
+    ground = ground_points_at_height(early_orbit, azimuth, slant, np.full(absolute.shape, float(height_m)), degree=degree)
+    valid = np.ones(absolute.shape[0], dtype=bool)
+    used_height = np.full(absolute.shape, float(height_m), dtype=np.float64)
+    if dem is not None:
+        ground, valid = _ground_on_dem(ground, azimuth, slant, early_orbit, dem, degree, valid)
+        lat, lon, got = ecef_to_geodetic(ground)
+        used_height = np.asarray(got, dtype=np.float64).reshape(-1)
+        used_height[~valid] = np.nan
+    early_position, _early_velocity = early_orbit.interpolate(azimuth, degree)
+    early_range = np.linalg.norm(ground - early_position, axis=1)
+    guess = _repeat_times(early.model, absolute, later.model)
+    when = later_orbit.zero_doppler_times(ground, guess, degree)
+    later_position, _later_velocity = later_orbit.interpolate(when, degree)
+    later_range = np.linalg.norm(ground - later_position, axis=1)
+    wavelength = float(early.model.wavelength_m)
+    coarse = -4.0 * np.pi / wavelength * (early_range - later_range)
+    coarse[~valid] = np.nan
+    height_grid = used_height.reshape(mesh_row.shape)
+    phase_grid = coarse.reshape(mesh_row.shape)
     if stride == 1 and row_index.size == rows and col_index.size == cols:
-        return coarse
-    return _interpolate_grid(row_index, col_index, coarse, rows, cols)
+        return phase_grid, height_grid
+    phase = _interpolate_grid(row_index, col_index, np.where(np.isfinite(phase_grid), phase_grid, 0.0), rows, cols)
+    heights = _interpolate_grid(row_index, col_index, np.where(np.isfinite(height_grid), height_grid, 0.0), rows, cols)
+    if dem is not None and not np.isfinite(phase_grid).all():
+        # Knots with no DEM stay NaN. The interpolant above filled them with 0
+        # only so the cubic solve has numbers; put the holes back.
+        hole = _interpolate_grid(
+            row_index, col_index, np.isfinite(phase_grid).astype(np.float64), rows, cols
+        )
+        phase = np.where(hole > 0.5, phase, np.nan)
+        heights = np.where(hole > 0.5, heights, np.nan)
+    return phase, heights
 
 
 def polynomial_phase(phase: np.ndarray, degree: int, count: int) -> np.ndarray:
