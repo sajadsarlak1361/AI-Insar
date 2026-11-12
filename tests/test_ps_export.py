@@ -76,6 +76,33 @@ def test_geotiff_is_north_up_wgs84_and_keeps_only_ps_pixels(tmp_path: Path):
     png = written["png"].read_bytes()
     assert png[25] == 6  # RGBA colour type
     assert written["legend"].read_bytes().startswith(b"\x89PNG")
+    from rasterio.enums import ColorInterp
+    import tifffile
+
+    with rasterio.open(written["rgba"]) as coloured:
+        assert coloured.colorinterp[3] == ColorInterp.alpha
+        assert coloured.profile.get("tiled") is False
+        edge_west = f"{coloured.bounds.left:.16f}"
+        edge_north = f"{coloured.bounds.top:.16f}"
+    with tifffile.TiffFile(written["rgba"]) as handle:
+        page = handle.pages[0]
+        assert page.tags["PhotometricInterpretation"].value == 2
+        assert page.tags["Compression"].value == 1
+        extra = page.tags["ExtraSamples"].value
+        assert int(extra[0]) == 2
+        directory = list(page.tags["GeoKeyDirectoryTag"].value)
+        keys = {}
+        for index in range(4, len(directory), 4):
+            keys[directory[index]] = directory[index + 3]
+        assert keys[1024] == 2  # geographic
+        assert keys[1025] == 1  # PixelIsArea
+        assert keys[2048] == 4326
+    with zipfile.ZipFile(written["overlay"]) as archive:
+        overlay = archive.read("doc.kml").decode("utf-8")
+        assert "<GroundOverlay>" in overlay
+        assert "overlay.png" in archive.namelist()
+    assert f"<west>{edge_west}</west>" in overlay
+    assert f"<north>{edge_north}</north>" in overlay
 
 
 def test_a_safe_tie_point_is_the_geotiff_pixel_centre(tmp_path: Path):

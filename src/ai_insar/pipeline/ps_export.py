@@ -187,8 +187,15 @@ def write_float_geotiff(
 
 
 def write_rgba_geotiff(path: Path, rgba: np.ndarray, bounds: tuple[float, float, float, float]) -> None:
-    """EPSG:4326 RGBA GeoTIFF. Alpha 0 is empty. ``bounds`` are corner centres."""
+    """EPSG:4326 RGBA GeoTIFF. Alpha 0 is empty. ``bounds`` are corner centres.
+
+    Band 4 is unassociated alpha (ExtraSamples = 2) and the file is
+    uncompressed and striped. Google Earth Pro reads that combination
+    through File → Open. A GDAL mask band is not a substitute: Earth
+    leaves band 4 as an undefined extra sample and the drape is gray.
+    """
     import rasterio
+    from rasterio.enums import ColorInterp
     from rasterio.transform import from_bounds
 
     image = np.asarray(rgba, dtype=np.uint8)
@@ -210,10 +217,57 @@ def write_rgba_geotiff(path: Path, rgba: np.ndarray, bounds: tuple[float, float,
         crs="EPSG:4326",
         transform=transform,
         photometric="RGB",
+        tiled=False,
+        interleave="pixel",
     ) as dataset:
         dataset.write(np.moveaxis(image, -1, 0))
-        dataset.write_mask(image[..., 3] > 0)
         dataset.update_tags(AREA_OR_POINT="Area")
+    # Color interpretation set during creation is not written. Updating the
+    # closed file stores ExtraSamples = 2 (unassociated alpha).
+    with rasterio.open(destination, "r+") as dataset:
+        dataset.colorinterp = (
+            ColorInterp.red,
+            ColorInterp.green,
+            ColorInterp.blue,
+            ColorInterp.alpha,
+        )
+
+
+def write_ps_ground_overlay(
+    path: Path,
+    rgba: np.ndarray,
+    bounds: tuple[float, float, float, float],
+) -> None:
+    """KMZ GroundOverlay of the coloured raster.
+
+    ``bounds`` are the outer pixel edges, west, south, east, north, the same
+    numbers as the GeoTIFF's corner coordinates.
+    """
+    west, south, east, north = (float(item) for item in bounds)
+    image = np.asarray(rgba, dtype=np.uint8)
+    if image.ndim != 3 or image.shape[2] != 4:
+        raise ValueError("ground overlay image must be height × width × 4")
+    kml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>\n'
+        "  <name>PS linear overlay</name>\n"
+        "  <GroundOverlay>\n"
+        "    <name>PS linear</name>\n"
+        "    <Icon><href>overlay.png</href></Icon>\n"
+        "    <LatLonBox>\n"
+        f"      <north>{north:.16f}</north>\n"
+        f"      <south>{south:.16f}</south>\n"
+        f"      <east>{east:.16f}</east>\n"
+        f"      <west>{west:.16f}</west>\n"
+        "    </LatLonBox>\n"
+        "  </GroundOverlay>\n"
+        "</Document></kml>\n"
+    )
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("doc.kml", kml)
+        archive.writestr("overlay.png", _png_bytes(image))
 
 
 def write_ps_kmz(
@@ -325,8 +379,11 @@ def export_ps_linear(
     png_path = folder / f"{stem}.png"
     legend_path = folder / f"{stem}_legend.png"
     kmz_path = folder / f"{stem}.kmz"
+    overlay_path = folder / f"{stem}_overlay.kmz"
     write_float_geotiff(float_path, grid, bounds, unit=unit)
     write_rgba_geotiff(rgba_path, rgba, bounds)
+    edges = geographic_edges(bounds, rgba.shape[0], rgba.shape[1])
+    write_ps_ground_overlay(overlay_path, rgba, edges)
     write_png(png_path, rgba)
     write_png(legend_path, legend_image(float(vmin), float(vmax), unit))
     write_ps_kmz(
@@ -347,6 +404,7 @@ def export_ps_linear(
         "png": png_path,
         "legend": legend_path,
         "kmz": kmz_path,
+        "overlay": overlay_path,
     }
 
 
