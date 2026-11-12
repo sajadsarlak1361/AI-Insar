@@ -51,7 +51,47 @@ jobs:
           New-Item -ItemType Directory -Force -Path screenshots | Out-Null
           & $py "$env:AI_INSAR_HOME\scripts\screenshot_create_stack.py" screenshots/create-stack.png
 
+      - name: PS export tests and RGBA alpha check
+        shell: pwsh
+        run: |
+          $py = "$env:AI_INSAR_HOME\.venv\Scripts\python.exe"
+          $env:PYTHONPATH = "$env:AI_INSAR_HOME\src"
+          & $py -m pip install pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py -m pytest "$env:AI_INSAR_HOME\tests\test_ps_export.py" -q --tb=short
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @'
+          import tempfile
+          from pathlib import Path
+          import numpy as np
+          import tifffile
+          import rasterio
+          from rasterio.enums import ColorInterp
+          from ai_insar.pipeline.ps_export import export_ps_linear
+          latitude = np.array([[47.09, 47.08], [47.09, 47.08]])
+          longitude = np.array([[12.45, 12.45], [12.46, 12.46]])
+          values = np.array([[-0.05, 0.02], [np.nan, -0.01]])
+          valid = np.array([[True, True], [False, True]])
+          written = export_ps_linear(values, valid, latitude, longitude, Path(tempfile.mkdtemp()))
+          with tifffile.TiffFile(written["rgba"]) as handle:
+              extra = int(handle.pages[0].tags["ExtraSamples"].value[0])
+              assert extra == 2, extra
+          with rasterio.open(written["rgba"]) as dataset:
+              assert dataset.colorinterp[3] == ColorInterp.alpha
+              print("ColorInterp", dataset.colorinterp[3])
+          assert written["overlay"].is_file()
+          print("ExtraSamples", extra)
+          print("overlay", written["overlay"].name)
+          '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\alpha_check.py"
+          & $py "$env:RUNNER_TEMP\alpha_check.py"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v4
         with:
           name: create-stack-dialog
           path: screenshots/create-stack.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-insar-windows-zip
+          path: dist/ai-insar-windows.zip
