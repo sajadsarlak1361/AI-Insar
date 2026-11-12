@@ -85,6 +85,7 @@ class SafeMeasurement:
     radar_frequency: float | None = None
     slant_range_time: float | None = None
     incidence: float | None = None
+    lines_per_burst: int | None = None
     annotation_ready: bool = False
 
 
@@ -268,6 +269,7 @@ def read_annotation(src: SafeProduct | Path | str, meas: SafeMeasurement) -> Saf
     if information is not None:
         meas.radar_frequency = _optional_float(_child_text(information, "radarFrequency"))
     meas.bursts = _bursts(root)
+    meas.lines_per_burst = _optional_int(_child_text(root, "linesPerBurst"))
     meas.annotation_ready = True
     return meas
 
@@ -901,7 +903,8 @@ def _require_tifffile():
         import tifffile
     except ImportError as exc:
         raise RuntimeError(
-            'Reading a measurement TIFF needs tifffile: pip install "ai-insar[slc]".'
+            "Reading a measurement TIFF needs tifffile. "
+            "Install the project with pip install -e . or run run_windows.bat."
         ) from exc
     return tifffile
 

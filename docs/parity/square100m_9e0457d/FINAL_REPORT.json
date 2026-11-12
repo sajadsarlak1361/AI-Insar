@@ -1,0 +1,2086 @@
+{
+  "build": "UNMERGED PR20 9e0457d",
+  "status": "FRESH_AI_COMPLETE_THROUGH_15_IDENTICAL_SNAP_REFERENCE_REUSED",
+  "no_repository_changes_or_merge": true,
+  "wheel_sha256": "16e2bbe5cb4590cd97f1bb340f81d921201d1fd9154a47fcac317ff98de55f37",
+  "wheel_hash_verified": true,
+  "installed_python_files_identical_to_wheel": true,
+  "changed_package_files": [],
+  "no_SNAP_imagery_in_AI_chain": true,
+  "ESD_skipped": true,
+  "subtractTopographicPhase": true,
+  "DEM": {
+    "file": "/workspace/dual-app-parity/stage03-04/copernicus_roi_ellipsoid_rows.tif",
+    "sha256": "a31261cc59bfe6fe960b11ca00dfe0990624acc936b9f3b8bc5d8b9b30884ef9",
+    "datum": "Copernicus GLO30 H+EGM2008 N preconverted to ellipsoidal; no further geoid",
+    "SNAP_stage5_actual_model_geoid_disabled": true,
+    "native_dem_interpolation_verified": "BILINEAR_INTERPOLATION in installed InterferogramOp.defineDEM and CoherenceOp.defineDEM",
+    "tileExtensionPercent": 100
+  },
+  "ROI": {
+    "geographic_square_original": {
+      "status": "STEP_A_COMPLETE",
+      "centre_latitude": 50.37578508812358,
+      "centre_longitude": 13.326061878105238,
+      "corners_lat_lon": [
+        [
+          50.37613874744699,
+          13.326887869665738
+        ],
+        [
+          50.37631330257908,
+          13.325508840648142
+        ],
+        [
+          50.375431422913316,
+          13.325235898826342
+        ],
+        [
+          50.37525687099057,
+          13.32661490328058
+        ]
+      ],
+      "ellipsoidal_edge_lengths_m": [
+        99.99999999853482,
+        99.99999999721106,
+        99.9999999986407,
+        99.99999999871623
+      ],
+      "reference_split_bounds_half_open": {
+        "row0": 260,
+        "row1": 269,
+        "column0": 2469,
+        "column1": 2492
+      },
+      "secondary_split_bounds_half_open": {
+        "row0": 262,
+        "row1": 271,
+        "column0": 2447,
+        "column1": 2470
+      },
+      "reference_original_SAFE_bounds_half_open": {
+        "row0": 6292,
+        "row1": 6301,
+        "column0": 2469,
+        "column1": 2492
+      },
+      "secondary_original_SAFE_bounds_half_open": {
+        "row0": 6294,
+        "row1": 6303,
+        "column0": 2447,
+        "column1": 2470
+      },
+      "corner_reference_pixel_coordinates_yx": [
+        [
+          260.46713374857944,
+          2469.902178874556
+        ],
+        [
+          260.4671214177977,
+          2491.557741988094
+        ],
+        [
+          268.5329125140802,
+          2491.095673204336
+        ],
+        [
+          268.5329073446804,
+          2469.444445462294
+        ]
+      ],
+      "corner_secondary_pixel_coordinates_yx": [
+        [
+          262.04977289019206,
+          2448.228823478241
+        ],
+        [
+          262.0497085855585,
+          2469.8813797696407
+        ],
+        [
+          270.115460198688,
+          2469.4193150791643
+        ],
+        [
+          270.1155109092603,
+          2447.7713532375974
+        ]
+      ],
+      "bounding_shape": [
+        9,
+        23
+      ],
+      "bounding_pixels": 207,
+      "pixel_centres_inside_exact_ground_square": 191,
+      "all_bounding_pixels_in_AI_common_mask": true,
+      "SNAP_2x10_coherence_median": 0.7858636975288391,
+      "DEM_ellipsoid_height_samples_m": [
+        367.6046142578125,
+        368.1837463378906,
+        367.4736633300781,
+        367.7146301269531,
+        367.1529541015625,
+        367.1905212402344,
+        367.1875915527344,
+        368.0405578613281,
+        367.8101806640625
+      ],
+      "DEM_height_spread_m": 1.030792236328125,
+      "approx_ground_m_per_line": 12.400850123770615,
+      "approx_ground_m_per_sample": 4.618213062368599,
+      "SNAP_one_based_burst": 5,
+      "distance_to_burst_overlap_zone_lines": 1098,
+      "geographic_square_definition": "100m x100m orthogonal axes in local WGS84 azimuthal equidistant tangent projection, range-aligned; edges verified with WGS84 geodesic. Tie-point-grid positions use pixel-centre x+.5,y+.5. Ellipsoidal rather than terrain-following lengths.",
+      "crs_proj4": "+proj=aeqd +lat_0=50.3757850881236 +lon_0=13.3260618781052 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+      "geoRegion_WKT": "POLYGON ((13.326887869666 50.376138747447, 13.325508840648 50.376313302579, 13.325235898826 50.375431422913, 13.326614903281 50.375256870991, 13.326887869666 50.376138747447))",
+      "processing_context": {
+        "row0": 240,
+        "row1": 288,
+        "column0": 2448,
+        "column1": 2512,
+        "shape": [
+          48,
+          64
+        ],
+        "reason": "Minimal modest real-data context around the9x23 square: FFT32 Goldstein and coherence10x2 must not invent samples or clampFFT to9. All comparisons remain191 exact-square pixel centres; surrounding real pixels are kernel context only."
+      }
+    },
+    "reference_physical_corners_and_centre": [
+      [
+        231.07031755831758,
+        2454.361776249027
+      ],
+      [
+        231.07330847615322,
+        2476.67359667426
+      ],
+      [
+        238.2456768515658,
+        2476.365401999144
+      ],
+      [
+        238.24277106883437,
+        2454.3306170183164
+      ],
+      [
+        234.65806896167214,
+        2465.5668751096787
+      ]
+    ],
+    "secondary_physical_corners_and_centre": [
+      [
+        232.6531153634669,
+        2432.690126166379
+      ],
+      [
+        232.65605130834956,
+        2454.998763125329
+      ],
+      [
+        239.82838611620627,
+        2454.6906528931763
+      ],
+      [
+        239.82553481994182,
+        2432.6590658329364
+      ],
+      [
+        236.2408224965675,
+        2443.8936860817726
+      ]
+    ],
+    "radar_bbox": {
+      "row0": 230,
+      "row1": 241,
+      "column0": 2453,
+      "column1": 2479
+    },
+    "coherence_context": {
+      "row0": 229,
+      "row1": 242,
+      "column0": 2448,
+      "column1": 2484
+    },
+    "mask_count": 154,
+    "orbit_files": [
+      "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF",
+      "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF"
+    ],
+    "origin_in_original_SAFE": 6032,
+    "definition": "Same original100m geographic polygon, freshly mapped through Copernicus ellipsoidal DEM and precise orbit to correct the misleading coarse stage3 tie grid. Bounding1pixel interpolation halo; minimal10x2 coherence context. No old SAR products used.",
+    "old_reference_bbox": {
+      "row0": 260,
+      "row1": 269,
+      "column0": 2469,
+      "column1": 2492
+    },
+    "Goldstein_padding": "Far-edge zero extension to64x64, same on both; only genuine square-bbox real SAR data, not a synthetic test.",
+    "backgeo_geometry_context": {
+      "row0": 229,
+      "row1": 242,
+      "column0": 2448,
+      "column1": 2534
+    },
+    "backgeo_context_reason": "Installed new DEM-post triangulation seeds its post selection at0m height with20-post margin; on367m terrain a tiny100m raster misses the hull. An additional50 range samples(geometry-only context) is needed, then immediately cropped before stage5. Same DEM and unmodified public backgeocode."
+  },
+  "comparison_square_radar_shape": [
+    11,
+    26
+  ],
+  "exact_square_radar_count": 154,
+  "stage_comparisons": {
+    "stage05_topographic": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.011795884936814277,
+        "median_abs": 0.00959389688068768,
+        "p99_abs": 0.02918905899065066,
+        "max_abs": 0.03022989322016656,
+        "RMSE": 0.01441142118715227,
+        "mean_signed": -0.009206745868625573
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.008813578511762898,
+      "median_bias_removed": {
+        "mean_abs": 0.009334404058554591,
+        "median_abs": 0.009478757109718572,
+        "p99_abs": 0.024170743083341217,
+        "max_abs": 0.0302778049299377,
+        "RMSE": 0.011094118789455506,
+        "mean_signed": -0.00039316735686267525
+      },
+      "correlation_raw_samples": 0.622322135484026,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.13342946379037465,
+      "LOS_10mm_verdict": "PASS",
+      "unwrapped_phase_difference_rad": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 0.011795884936814277,
+          "median_abs": 0.00959389688068768,
+          "p99_abs": 0.029189058990650663,
+          "max_abs": 0.03022989322016656,
+          "RMSE": 0.01441142118715227,
+          "mean_signed": -0.009206745868625573
+        },
+        "median_signed_bias_AI_minus_SNAP": -0.008813578511762898,
+        "median_bias_removed": {
+          "mean_abs": 0.009334404058554591,
+          "median_abs": 0.009478757109718572,
+          "p99_abs": 0.024170743083341214,
+          "max_abs": 0.0302778049299377,
+          "RMSE": 0.011094118789455506,
+          "mean_signed": -0.00039316735686267525
+        },
+        "correlation_raw_samples": 0.6223221354840262,
+        "tolerance": 0.05,
+        "raw_verdict": "PASS",
+        "median_bias_removed_verdict": "PASS",
+        "count_above_tolerance": 0,
+        "median_bias_removed_count_above_tolerance": 0
+      }
+    },
+    "stage05_flat_earth": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.010857864248393596,
+        "median_abs": 0.010853968607989373,
+        "p99_abs": 0.011333557712277979,
+        "max_abs": 0.011371573524229461,
+        "RMSE": 0.010861678051788191,
+        "mean_signed": 0.010857864248393596
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.010853968607989373,
+      "median_bias_removed": {
+        "mean_abs": 0.0002510394972048673,
+        "median_abs": 0.00025527557045279536,
+        "p99_abs": 0.0004967312676672008,
+        "max_abs": 0.0005176049162400886,
+        "RMSE": 0.0002878354393879182,
+        "mean_signed": 3.89564040422367e-06
+      },
+      "correlation_raw_samples": 0.9999998231846381,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad"
+    },
+    "stage05_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.009728980540147559,
+        "median_abs": 0.008639012292759735,
+        "p99_abs": 0.030151591188966372,
+        "max_abs": 0.03361448511818255,
+        "RMSE": 0.01197441381085796,
+        "mean_signed": -0.006467340022250568
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.006919996637041681,
+      "median_bias_removed": {
+        "mean_abs": 0.008275942252307114,
+        "median_abs": 0.007611638071933102,
+        "p99_abs": 0.02323159455192469,
+        "max_abs": 0.026694488481140862,
+        "RMSE": 0.010087863855206217,
+        "mean_signed": 0.000452656614791113
+      },
+      "correlation_raw_samples": 0.9999872324466986,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.1483684607233923,
+      "LOS_10mm_verdict": "PASS"
+    },
+    "stage05_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence"
+    },
+    "stage06_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.009728980540147559,
+        "median_abs": 0.008639012292759735,
+        "p99_abs": 0.030151591188966372,
+        "max_abs": 0.03361448511818255,
+        "RMSE": 0.01197441381085796,
+        "mean_signed": -0.006467340022250568
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.006919996637041681,
+      "median_bias_removed": {
+        "mean_abs": 0.008275942252307114,
+        "median_abs": 0.007611638071933102,
+        "p99_abs": 0.02323159455192469,
+        "max_abs": 0.026694488481140862,
+        "RMSE": 0.010087863855206217,
+        "mean_signed": 0.000452656614791113
+      },
+      "correlation_raw_samples": 0.9999872324466986,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.1483684607233923,
+      "LOS_10mm_verdict": "PASS"
+    },
+    "stage07_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.009728980540147559,
+        "median_abs": 0.008639012292759735,
+        "p99_abs": 0.030151591188966372,
+        "max_abs": 0.03361448511818255,
+        "RMSE": 0.01197441381085796,
+        "mean_signed": -0.006467340022250568
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.006919996637041681,
+      "median_bias_removed": {
+        "mean_abs": 0.008275942252307114,
+        "median_abs": 0.007611638071933102,
+        "p99_abs": 0.02323159455192469,
+        "max_abs": 0.026694488481140862,
+        "RMSE": 0.010087863855206217,
+        "mean_signed": 0.000452656614791113
+      },
+      "correlation_raw_samples": 0.9999872324466986,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.1483684607233923,
+      "LOS_10mm_verdict": "PASS"
+    },
+    "stage08_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.01007385617067056,
+        "median_abs": 0.007773563478455925,
+        "p99_abs": 0.03811757699164999,
+        "max_abs": 0.04457808143961106,
+        "RMSE": 0.013196744189362411,
+        "mean_signed": -0.005877529026285374
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.005527316587094044,
+      "median_bias_removed": {
+        "mean_abs": 0.009073170026428767,
+        "median_abs": 0.007858166891060225,
+        "p99_abs": 0.036486745129464274,
+        "max_abs": 0.042205867633025584,
+        "RMSE": 0.011820801939682763,
+        "mean_signed": -0.000350212439191331
+      },
+      "correlation_raw_samples": 0.9698942633019884,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.19675985819635605,
+      "LOS_10mm_verdict": "PASS"
+    },
+    "stage09_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.01007385617067056,
+        "median_abs": 0.007773563478455925,
+        "p99_abs": 0.03811757699164999,
+        "max_abs": 0.04457808143961106,
+        "RMSE": 0.013196744189362411,
+        "mean_signed": -0.005877529026285374
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.005527316587094044,
+      "median_bias_removed": {
+        "mean_abs": 0.009073170026428767,
+        "median_abs": 0.007858166891060225,
+        "p99_abs": 0.036486745129464274,
+        "max_abs": 0.042205867633025584,
+        "RMSE": 0.011820801939682763,
+        "mean_signed": -0.000350212439191331
+      },
+      "correlation_raw_samples": 0.9698942633019884,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "strict_005rad_verdict": "PASS",
+      "LOS_equivalent_max_mm": 0.19675985819635605,
+      "LOS_10mm_verdict": "PASS"
+    },
+    "stage10_export_phase": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.01007385617067056,
+        "median_abs": 0.007773563478455925,
+        "p99_abs": 0.03811757699164999,
+        "max_abs": 0.04457808143961106,
+        "RMSE": 0.013196744189362411,
+        "mean_signed": -0.005877529026285374
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.005527316587094044,
+      "median_bias_removed": {
+        "mean_abs": 0.009073170026428767,
+        "median_abs": 0.007858166891060225,
+        "p99_abs": 0.036486745129464274,
+        "max_abs": 0.042205867633025584,
+        "RMSE": 0.011820801939682763,
+        "mean_signed": -0.000350212439191331
+      },
+      "correlation_raw_samples": 0.9698942633019884,
+      "tolerance": 0.05,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "note": "Phase export is the stage9 phase; source export binaries and SNAPHU configs retained."
+    },
+    "stage12_unwrapped": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.01007386151846353,
+        "median_abs": 0.00777357816696167,
+        "p99_abs": 0.038117458820343016,
+        "max_abs": 0.04457807540893555,
+        "RMSE": 0.013196744976550236,
+        "mean_signed": -0.0058775489980524235
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.0055277347564697266,
+      "median_bias_removed": {
+        "mean_abs": 0.009073178489486893,
+        "median_abs": 0.00785815715789795,
+        "p99_abs": 0.03648633241653442,
+        "max_abs": 0.0422060489654541,
+        "RMSE": 0.01182078109750836,
+        "mean_signed": -0.0003498142415826971
+      },
+      "correlation_raw_samples": 0.9999671053950354,
+      "tolerance": 2.265608536631719,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "global_integer_cycle_removed_n": 0,
+      "integer_cycle_removed": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 0.01007386151846353,
+          "median_abs": 0.00777357816696167,
+          "p99_abs": 0.038117458820343016,
+          "max_abs": 0.04457807540893555,
+          "RMSE": 0.013196744976550236,
+          "mean_signed": -0.0058775489980524235
+        },
+        "median_signed_bias_AI_minus_SNAP": -0.0055277347564697266,
+        "median_bias_removed": {
+          "mean_abs": 0.009073178489486893,
+          "median_abs": 0.00785815715789795,
+          "p99_abs": 0.03648633241653442,
+          "max_abs": 0.0422060489654541,
+          "RMSE": 0.01182078109750836,
+          "mean_signed": -0.0003498142415826971
+        },
+        "correlation_raw_samples": 0.9999671053950354,
+        "tolerance": 2.265608536631719,
+        "raw_verdict": "PASS",
+        "median_bias_removed_verdict": "PASS",
+        "count_above_tolerance": 0,
+        "median_bias_removed_count_above_tolerance": 0
+      }
+    },
+    "stage13_displacement": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.044464197773378976,
+        "median_abs": 0.034310971143147295,
+        "p99_abs": 0.16824315174506185,
+        "max_abs": 0.19675979424839696,
+        "RMSE": 0.05824808984871771,
+        "mean_signed": 0.025942545595655793
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.024398066581381883,
+      "median_bias_removed": {
+        "mean_abs": 0.04004737128606561,
+        "median_abs": 0.03468449435427701,
+        "p99_abs": 0.16104452648479894,
+        "max_abs": 0.1862887402490525,
+        "RMSE": 0.0521747996111834,
+        "mean_signed": 0.00154447901427391
+      },
+      "correlation_raw_samples": 0.9999671054646124,
+      "tolerance": 10.0,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "mm"
+    },
+    "stage14_15_displacement": {
+      "count": 458,
+      "raw": {
+        "mean_abs": 0.43369854464015406,
+        "median_abs": 0.26101576075668476,
+        "p99_abs": 2.281969264854673,
+        "max_abs": 5.234187856263,
+        "RMSE": 0.6736757009745975,
+        "mean_signed": 0.02654037499024262
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.05349927050084613,
+      "median_bias_removed": {
+        "mean_abs": 0.42752428551449634,
+        "median_abs": 0.2654842953652583,
+        "p99_abs": 2.3046170968074353,
+        "max_abs": 5.287687126763847,
+        "RMSE": 0.6736923189603279,
+        "mean_signed": -0.026958895510603507
+      },
+      "correlation_raw_samples": 0.9894729955625631,
+      "tolerance": 10,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "mm",
+      "geographic_registration": "Correct ONLY the proven endpoint/outer-edge geotag convention, then interpolate existing AI raster bilinearly to unchanged SNAP geographic pixel centres. No image-value fit, bias correction, or arbitrary image translation."
+    },
+    "stage06_retained_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence",
+      "retained_from_stage5": true
+    },
+    "stage07_retained_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence",
+      "retained_from_stage5": true
+    },
+    "stage08_retained_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence",
+      "retained_from_stage5": true
+    },
+    "stage09_retained_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence",
+      "retained_from_stage5": true
+    },
+    "stage11_unwrapped": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.01007386151846353,
+        "median_abs": 0.00777357816696167,
+        "p99_abs": 0.038117458820343016,
+        "max_abs": 0.04457807540893555,
+        "RMSE": 0.013196744976550236,
+        "mean_signed": -0.0058775489980524235
+      },
+      "median_signed_bias_AI_minus_SNAP": -0.0055277347564697266,
+      "median_bias_removed": {
+        "mean_abs": 0.009073178489486893,
+        "median_abs": 0.00785815715789795,
+        "p99_abs": 0.03648633241653442,
+        "max_abs": 0.0422060489654541,
+        "RMSE": 0.01182078109750836,
+        "mean_signed": -0.0003498142415826971
+      },
+      "correlation_raw_samples": 0.9999671053950354,
+      "tolerance": 2.265608536631719,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "rad",
+      "global_integer_cycle_removed_n": 0,
+      "integer_cycle_removed": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 0.01007386151846353,
+          "median_abs": 0.00777357816696167,
+          "p99_abs": 0.038117458820343016,
+          "max_abs": 0.04457807540893555,
+          "RMSE": 0.013196744976550236,
+          "mean_signed": -0.0058775489980524235
+        },
+        "median_signed_bias_AI_minus_SNAP": -0.0055277347564697266,
+        "median_bias_removed": {
+          "mean_abs": 0.009073178489486893,
+          "median_abs": 0.00785815715789795,
+          "p99_abs": 0.03648633241653442,
+          "max_abs": 0.0422060489654541,
+          "RMSE": 0.01182078109750836,
+          "mean_signed": -0.0003498142415826971
+        },
+        "correlation_raw_samples": 0.9999671053950354,
+        "tolerance": 2.265608536631719,
+        "raw_verdict": "PASS",
+        "median_bias_removed_verdict": "PASS",
+        "count_above_tolerance": 0,
+        "median_bias_removed_count_above_tolerance": 0
+      },
+      "note": "Actual SNAPHU output values; stage12 imports without resampling."
+    },
+    "stage10_export_coherence": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence",
+      "retained_from_stage5": true
+    },
+    "stage14_geocoded": {
+      "count": 458,
+      "raw": {
+        "mean_abs": 0.43369854464015406,
+        "median_abs": 0.26101576075668476,
+        "p99_abs": 2.281969264854673,
+        "max_abs": 5.234187856263,
+        "RMSE": 0.6736757009745975,
+        "mean_signed": 0.02654037499024262
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.05349927050084613,
+      "median_bias_removed": {
+        "mean_abs": 0.42752428551449634,
+        "median_abs": 0.2654842953652583,
+        "p99_abs": 2.3046170968074353,
+        "max_abs": 5.287687126763847,
+        "RMSE": 0.6736923189603279,
+        "mean_signed": -0.026958895510603507
+      },
+      "correlation_raw_samples": 0.9894729955625631,
+      "tolerance": 10,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "mm",
+      "geographic_registration": "Correct ONLY the proven endpoint/outer-edge geotag convention, then interpolate existing AI raster bilinearly to unchanged SNAP geographic pixel centres. No image-value fit, bias correction, or arbitrary image translation."
+    },
+    "stage15_final": {
+      "count": 458,
+      "raw": {
+        "mean_abs": 0.43369854464015406,
+        "median_abs": 0.26101576075668476,
+        "p99_abs": 2.281969264854673,
+        "max_abs": 5.234187856263,
+        "RMSE": 0.6736757009745975,
+        "mean_signed": 0.02654037499024262
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.05349927050084613,
+      "median_bias_removed": {
+        "mean_abs": 0.42752428551449634,
+        "median_abs": 0.2654842953652583,
+        "p99_abs": 2.3046170968074353,
+        "max_abs": 5.287687126763847,
+        "RMSE": 0.6736923189603279,
+        "mean_signed": -0.026958895510603507
+      },
+      "correlation_raw_samples": 0.9894729955625631,
+      "tolerance": 10,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "mm",
+      "geographic_registration": "Correct ONLY the proven endpoint/outer-edge geotag convention, then interpolate existing AI raster bilinearly to unchanged SNAP geographic pixel centres. No image-value fit, bias correction, or arbitrary image translation.",
+      "note": "KMZ renders the numeric stage14 displacement."
+    }
+  },
+  "stage_verdicts": {
+    "5": {
+      "phase_LOS_10mm": "PASS",
+      "phase_strict_005rad": "PASS",
+      "retained_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS",
+      "DEM_height_arrays_parity_10mm": "FAIL",
+      "AI_height_vs_independent_GIS_centres_10mm": "PASS"
+    },
+    "6": {
+      "phase_LOS_10mm": "PASS",
+      "phase_strict_005rad": "PASS",
+      "retained_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS"
+    },
+    "7": {
+      "phase_LOS_10mm": "PASS",
+      "phase_strict_005rad": "PASS",
+      "retained_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS"
+    },
+    "8": {
+      "phase_LOS_10mm": "PASS",
+      "phase_strict_005rad": "PASS",
+      "retained_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS"
+    },
+    "9": {
+      "phase_LOS_10mm": "PASS",
+      "phase_strict_005rad": "PASS",
+      "retained_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS"
+    },
+    "10": {
+      "exported_phase_strict_005rad": "PASS",
+      "exported_coherence_001": "PASS",
+      "phase_and_coherence_verdict": "PASS"
+    },
+    "11": {
+      "unwrap_10mm_LOS": "PASS"
+    },
+    "12": {
+      "imported_unwrapped_10mm_LOS": "PASS"
+    },
+    "13": {
+      "LOS_10mm": "PASS",
+      "bias_removed_10mm": "PASS"
+    },
+    "14": {
+      "registered_LOS_10mm": "PASS",
+      "bias_removed_10mm": "PASS"
+    },
+    "15": {
+      "registered_LOS_10mm": "PASS",
+      "KMZ_files": "PASS",
+      "horizontal_50m": "PASS"
+    }
+  },
+  "stage13_raw_verdict": "PASS",
+  "stage13_bias_removed_verdict": "PASS",
+  "final_raw_verdict": "PASS",
+  "final_bias_removed_verdict": "PASS",
+  "overall_numerical_verdict": "PASS",
+  "footprint": {
+    "SNAP_bounds_wsen": [
+      13.32506508224071,
+      50.37508599713222,
+      13.326951544337362,
+      50.3764783858226
+    ],
+    "AI_bounds_wsen": [
+      13.325079205373989,
+      50.375028808802334,
+      13.327017321821767,
+      50.3764546618022
+    ],
+    "SNAP_shape": [
+      31,
+      42
+    ],
+    "AI_shape": [
+      33,
+      45
+    ],
+    "SNAP_transform": [
+      4.4915764205976074e-05,
+      0.0,
+      13.32506508224071,
+      0.0,
+      -4.4915764205976074e-05,
+      50.3764783858226
+    ],
+    "AI_transform": [
+      4.306925439507836e-05,
+      0.0,
+      13.325079205373989,
+      0.0,
+      -4.320766666259515e-05,
+      50.3764546618022
+    ],
+    "AI_registered_transform": [
+      4.4048101085875594e-05,
+      0.0,
+      13.325057181323446,
+      0.0,
+      -4.455790624580125e-05,
+      50.376476940755325
+    ],
+    "raster_bound_centre_offset_mm": 5322.409588325809,
+    "centre_offset_m": 5.322409588325809,
+    "per_pixel_geotag_max_m": 2.849867415324688,
+    "horizontal_tolerance_m": 50,
+    "horizontal_verdict": "PASS",
+    "both_bounds_cover_all_square_corners": true,
+    "common_valid_count": 458
+  },
+  "DEM_height_diffs": {
+    "count": 154,
+    "raw": {
+      "mean_abs": 253.22677654685913,
+      "median_abs": 228.08275511488318,
+      "p99_abs": 638.6153153516352,
+      "max_abs": 724.5805691927671,
+      "RMSE": 301.90835508775746,
+      "mean_signed": 80.41786441168227
+    },
+    "median_signed_bias_AI_minus_SNAP": 70.08318929001689,
+    "median_bias_removed": {
+      "mean_abs": 244.99498073060016,
+      "median_abs": 248.79981158301234,
+      "p99_abs": 634.410323994234,
+      "max_abs": 794.663758482784,
+      "RMSE": 291.184524769312,
+      "mean_signed": 10.334675121665388
+    },
+    "correlation_raw_samples": 0.596397290737073,
+    "tolerance": 10,
+    "raw_verdict": "FAIL",
+    "median_bias_removed_verdict": "FAIL",
+    "count_above_tolerance": 149,
+    "median_bias_removed_count_above_tolerance": 150,
+    "unit": "mm",
+    "signed_min_max_mm": [
+      -724.5805691927671,
+      632.2350492700934
+    ],
+    "note": "Actual per-radar-pixel heights used in topographic subtraction; native simulates/interpolates DEM posts in radar geometry, AI iterates per pixel with bilinear DEM.10mm is numerical height-parity control, not surveyed absolute DEM accuracy.",
+    "AI_used_height_vs_GIS_pixel_centres": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.3618333867483458,
+        "median_abs": 0.34248777452739887,
+        "p99_abs": 0.9590678362123435,
+        "max_abs": 0.9864249193342403,
+        "RMSE": 0.432614147235324,
+        "mean_signed": 0.22872589629630305
+      },
+      "median_signed_bias_AI_minus_SNAP": 0.314603982551489,
+      "median_bias_removed": {
+        "mean_abs": 0.28063234177194296,
+        "median_abs": 0.23339099166332744,
+        "p99_abs": 0.9314951040089363,
+        "max_abs": 0.9834950759541243,
+        "RMSE": 0.37711339203275795,
+        "mean_signed": -0.08587808625518599
+      },
+      "correlation_raw_samples": 0.999999207644221,
+      "tolerance": 10,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0
+    },
+    "native_used_height_vs_corner_bilinear_at_AI_geolocation": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 37.67162002040362,
+        "median_abs": 24.663370428053895,
+        "p99_abs": 227.6563497866178,
+        "max_abs": 245.89038058795268,
+        "RMSE": 60.68892482621201,
+        "mean_signed": -8.30023578173056
+      },
+      "median_signed_bias_AI_minus_SNAP": -3.228385220427299,
+      "median_bias_removed": {
+        "mean_abs": 36.883428928587065,
+        "median_abs": 23.04314614753821,
+        "p99_abs": 227.46264667339216,
+        "max_abs": 249.11876580837998,
+        "RMSE": 60.33220823611121,
+        "mean_signed": -5.071850561303262
+      },
+      "correlation_raw_samples": 0.9849996850891569,
+      "tolerance": 10,
+      "raw_verdict": "FAIL",
+      "median_bias_removed_verdict": "FAIL",
+      "count_above_tolerance": 92,
+      "median_bias_removed_count_above_tolerance": 93
+    },
+    "convention": "AI uses TIFF pixel centres, independently checked. Native external DEM uses half-cell-shifted sampling; native topographic simulation also triangulates/interpolates DEM posts. Do not equate terrain-height disagreement with LOS displacement error."
+  },
+  "final_as_delivered_geotags_comparison": {
+    "count": 406,
+    "raw": {
+      "mean_abs": 0.36265897024001936,
+      "median_abs": 0.2145708016364578,
+      "p99_abs": 1.8650701732407586,
+      "max_abs": 4.96383635470214,
+      "RMSE": 0.593021846711367,
+      "mean_signed": -0.0793415343179161
+    },
+    "median_signed_bias_AI_minus_SNAP": -0.016661067122715423,
+    "median_bias_removed": {
+      "mean_abs": 0.3621165392150473,
+      "median_abs": 0.20685424925845908,
+      "p99_abs": 1.8484091061180432,
+      "max_abs": 4.947175287579425,
+      "RMSE": 0.5910234111918474,
+      "mean_signed": -0.06268046719520068
+    },
+    "correlation_raw_samples": 0.9925179831156811,
+    "tolerance": 10,
+    "raw_verdict": "PASS",
+    "median_bias_removed_verdict": "PASS",
+    "count_above_tolerance": 0,
+    "median_bias_removed_count_above_tolerance": 0
+  },
+  "coherence_window_verification": {
+    "InterferogramOp": [
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          -1,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 1.038682017442985e-08,
+        "median_abs": 8.665848844069401e-09,
+        "max_abs": 3.6563526872868124e-08
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          11
+        ],
+        "scipy_origin": [
+          -1,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.03510743244578172,
+        "median_abs": 0.02166074472168003,
+        "max_abs": 0.18469492686102412
+      },
+      {
+        "kernel_az_rg": [
+          3,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 0.06737661707637504,
+        "median_abs": 0.05381718506732275,
+        "max_abs": 0.2752188719591334
+      },
+      {
+        "kernel_az_rg": [
+          3,
+          11
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.07800838623950794,
+        "median_abs": 0.06658891294451508,
+        "max_abs": 0.29339587774100284
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.13892155966568984,
+        "median_abs": 0.11769746548214166,
+        "max_abs": 0.37874506101925376
+      }
+    ],
+    "CoherenceOp_bias_off": [
+      {
+        "kernel_az_rg": [
+          3,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 9.019985752168195e-09,
+        "median_abs": 7.49587342196989e-09,
+        "max_abs": 3.637171530623817e-08
+      },
+      {
+        "kernel_az_rg": [
+          3,
+          11
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.03190255026226927,
+        "median_abs": 0.021783606474827077,
+        "max_abs": 0.17528233885729416
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          -1,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 0.06737661692656939,
+        "median_abs": 0.05381714924192703,
+        "max_abs": 0.27521888849946763
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          11
+        ],
+        "scipy_origin": [
+          -1,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.07187118594094107,
+        "median_abs": 0.05588819908769524,
+        "max_abs": 0.36702787111523505
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.11045363058887214,
+        "median_abs": 0.09410005892679058,
+        "max_abs": 0.3099677711291543
+      }
+    ],
+    "CoherenceOp_default_bias_on": [
+      {
+        "kernel_az_rg": [
+          3,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 0.013829242713832549,
+        "median_abs": 0.014269323193730782,
+        "max_abs": 0.016625178335772775
+      },
+      {
+        "kernel_az_rg": [
+          3,
+          11
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.030438438908126995,
+        "median_abs": 0.01773220068140005,
+        "max_abs": 0.18473080260838604
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          -1,
+          -1
+        ],
+        "count": 154,
+        "mean_abs": 0.07366537975318407,
+        "median_abs": 0.06467329202414551,
+        "max_abs": 0.29115965900632645
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          11
+        ],
+        "scipy_origin": [
+          -1,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.07690620852934593,
+        "median_abs": 0.06478135195402987,
+        "max_abs": 0.3817411286664283
+      },
+      {
+        "kernel_az_rg": [
+          2,
+          10
+        ],
+        "scipy_origin": [
+          0,
+          0
+        ],
+        "count": 154,
+        "mean_abs": 0.11233990755506496,
+        "median_abs": 0.10115098659880822,
+        "max_abs": 0.3226732136247984
+      }
+    ],
+    "requested_parameters": {
+      "cohWinAz": 2,
+      "cohWinRg": 10
+    },
+    "conclusion": "New AI exact2x10 forward window matches native InterferogramOp. The preserved native standalone CoherenceOp squarePixel control uses3x10 plus optional default bias correction; it is a different operator path, not the target Interferogram Formation coherence.",
+    "method": "Actual fresh native topography-removed IFG and original native SLC powers, no synthetic data and no AI resampling/phase residual in this kernel control.",
+    "native_square_pixel_adjustment": "CoherenceOp.initialize invokes getDerivedParameters; overrides cohWinAz to3 for this scene. InterferogramOp retains explicit2x10. Confirmed by real-data residuals at float32 rounding level.",
+    "prior_437b766_AI_kernel": [
+      3,
+      11
+    ],
+    "actual_AI_kernel": [
+      2,
+      10
+    ],
+    "native_controls_reused_from": "/workspace/dual-app-parity/square100m/final_437b766/COHERENCE_WINDOW_CONTROL.json",
+    "fresh_AI_exact2x10_control": {
+      "count": 154,
+      "mean_abs": 8.727575342936572e-09,
+      "max_abs": 2.8948110464277477e-08,
+      "verdict": "PASS",
+      "note": "Actual fresh topo-removed IFG and SLC power windows; float32 output rounding only."
+    }
+  },
+  "runtime_s": {
+    "AI_total": 14.30775256799825,
+    "SNAP_stages": {
+      "1": {
+        "status": "COMPLETE",
+        "runtime_s": 10.158908404999238,
+        "params": {
+          "subswath": "IW1",
+          "pol": "VV",
+          "bursts_one_based": [
+            5,
+            6
+          ],
+          "materialized_context_only": {
+            "row0": 229,
+            "row1": 242,
+            "column0": 2448,
+            "column1": 2534
+          }
+        }
+      },
+      "2": {
+        "status": "COMPLETE",
+        "runtime_s": 0.6752168170023651,
+        "params": {
+          "type": "Sentinel Precise",
+          "degree": 3,
+          "offline_shared_EOFs": [
+            "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF",
+            "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF"
+          ]
+        }
+      },
+      "3": {
+        "status": "COMPLETE",
+        "runtime_s": 2.0048227030019916,
+        "params": {
+          "DEM_resampling": "BILINEAR_INTERPOLATION",
+          "image_resampling": "BISINC_5_POINT_INTERPOLATION",
+          "extra_geoid": false,
+          "maskOutAreaWithoutElevation": true,
+          "ROI_context_only": {
+            "row0": 229,
+            "row1": 242,
+            "column0": 2448,
+            "column1": 2534
+          }
+        }
+      },
+      "5": {
+        "status": "COMPLETE",
+        "runtime_s": 1.1539193899989186,
+        "params": {
+          "subtractFlatEarthPhase": true,
+          "srpPolynomialDegree": 5,
+          "srpNumberPoints": 501,
+          "orbitDegree": 3,
+          "includeCoherence": true,
+          "cohWinAz": 2,
+          "cohWinRg": 10,
+          "squarePixel": true,
+          "subtractTopographicPhase": true,
+          "outputElevation": true,
+          "outputLatLon": false,
+          "outputFlatEarthPhase": true,
+          "outputTopoPhase": true,
+          "demName": "External DEM",
+          "externalDEMFile": "/workspace/dual-app-parity/stage03-04/copernicus_roi_ellipsoid_rows.tif",
+          "externalDEMNoDataValue": -32768.0,
+          "externalDEMApplyEGM": false,
+          "tileExtensionPercent": "100"
+        }
+      },
+      "6": {
+        "status": "COMPLETE",
+        "runtime_s": 35.7735916040001,
+        "params": {
+          "pol": "VV",
+          "physical_radar_bbox": {
+            "row0": 230,
+            "row1": 241,
+            "column0": 2453,
+            "column1": 2479
+          },
+          "note": "Corrected DEM-derived indices instead of the old coarse stage3 tie-grid bounds."
+        }
+      },
+      "7": {
+        "status": "COMPLETE",
+        "runtime_s": 0.03944416399826878,
+        "params": {
+          "nRgLooks": 1,
+          "nAzLooks": 1,
+          "outputIntensity": false,
+          "grSquarePixel": true
+        }
+      },
+      "8": {
+        "status": "COMPLETE",
+        "runtime_s": 0.05936909500087495,
+        "params": {
+          "alpha": 1,
+          "FFT": 64,
+          "step": 16,
+          "window": 3,
+          "adaptive": false,
+          "coherenceMask": false,
+          "edge": "zero-pad far side64x64 and crop; same as shipped AI goldstein_snap"
+        }
+      },
+      "9": {
+        "status": "COMPLETE",
+        "runtime_s": 0.045098659000359476,
+        "params": {
+          "pixel_region_local": [
+            0,
+            0,
+            26,
+            11
+          ],
+          "exact_geographic_mask_count": 154,
+          "metadata_origin": "Zero-origin Subset after retaining the updated first-line time/slant range. Avoid reusing stale full-grid region numbers."
+        }
+      },
+      "10": {
+        "status": "COMPLETE",
+        "runtime_s": 0.031309744001191575,
+        "params": {
+          "statCostMode": "DEFO",
+          "initMethod": "MCF",
+          "tiles": [
+            1,
+            1
+          ],
+          "NPROC": 1,
+          "common_config": "/workspace/dual-app-parity/square100m/final_437b766/SNAPHU_COMMON.json"
+        }
+      },
+      "11": {
+        "status": "COMPLETE",
+        "runtime_s": 0.006126983997091884,
+        "params": {
+          "binary": "/workspace/tools/snaphu-2.0.7/bin/snaphu"
+        }
+      },
+      "12": {
+        "status": "COMPLETE",
+        "runtime_s": 0.03896416000134195,
+        "params": {
+          "doNotKeepWrapped": false
+        }
+      },
+      "13": {
+        "status": "COMPLETE",
+        "runtime_s": 0.029833343000063905,
+        "params": {
+          "formula": "-lambda*phase/(4*pi)",
+          "unit": "m",
+          "LOS_only": true
+        }
+      },
+      "14": {
+        "status": "COMPLETE",
+        "runtime_s": 1.3724713020019408,
+        "params": {
+          "sourceBands": "displacement",
+          "demName": "External DEM",
+          "externalDEMFile": "/workspace/dual-app-parity/stage03-04/copernicus_roi_ellipsoid_rows.tif",
+          "externalDEMNoDataValue": "-32768.0",
+          "externalDEMApplyEGM": "False",
+          "demResamplingMethod": "BILINEAR_INTERPOLATION",
+          "imgResamplingMethod": "BILINEAR_INTERPOLATION",
+          "pixelSpacingInMeter": "5.0",
+          "mapProjection": "WGS84(DD)",
+          "nodataValueAtSea": "False",
+          "saveSelectedSourceBand": "True",
+          "applyRadiometricNormalization": "False",
+          "applyAPDCorrection": "False"
+        }
+      },
+      "15": {
+        "status": "COMPLETE",
+        "runtime_s": 0.12112948000140022,
+        "params": {
+          "exporter": "native SNAP KmzExporter",
+          "signed_diverging_render": true
+        }
+      }
+    },
+    "AI_stages": {
+      "1": {
+        "status": "COMPLETE",
+        "runtime_s": 0.27969906399812317,
+        "params": {
+          "swath": "IW1",
+          "pol": "VV",
+          "bursts_one_based": [
+            5,
+            6
+          ],
+          "API": "burst_pixel_window + installed SAFE read_window (ROI equivalent Split, without full-burst materialization)",
+          "reference_context": {
+            "row0": 229,
+            "row1": 242,
+            "column0": 2448,
+            "column1": 2534
+          },
+          "context_reason": "50 extra range samples necessary for shipped DEM-post hull; cropped after stage3, not accepted outside geographic square."
+        }
+      },
+      "2": {
+        "status": "COMPLETE",
+        "runtime_s": 2.496389318999718,
+        "params": {
+          "degree": 3,
+          "precise_EOF": [
+            "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF",
+            "/workspace/dual-app-parity/runtime/orbits/S1A_OPER_AUX_POEORB_OPOD_20210801T121825_V20210711T225942_20210713T005942.EOF"
+          ],
+          "one_second_table": "fresh precise_orbit_table; samples unchanged"
+        }
+      },
+      "3": {
+        "status": "COMPLETE",
+        "runtime_s": 1.9261899660014024,
+        "params": {
+          "resampling": "BISINC_5_POINT_INTERPOLATION",
+          "DEM_resampling": "BILINEAR_INTERPOLATION",
+          "dense_requested": true,
+          "actual_geometry": "DEM-post triangulation selected by installed package",
+          "tolerance_mm": 10
+        }
+      },
+      "5": {
+        "status": "COMPLETE",
+        "runtime_s": 0.03153127399855293,
+        "params": {
+          "subtractFlatEarthPhase": true,
+          "requested_srpPolynomialDegree": 5,
+          "requested_srpNumberPoints": 501,
+          "limitation": "Dense as-shipped GUI geometric phase; polynomial_phase helper exists but is not wired into GUI. No synthetic polynomial sampling or code patch applied.",
+          "orbitDegree": 3,
+          "coherence_window": [
+            2,
+            10
+          ],
+          "topographic_subtraction": true,
+          "tileExtensionPercent": 100,
+          "DEM": "/workspace/dual-app-parity/stage03-04/copernicus_roi_ellipsoid_rows.tif",
+          "externalDEMApplyEGM": false,
+          "effective_coherence_window_actual": [
+            2,
+            10
+          ],
+          "window_anchor": "exact forward; left=(size-1)//2, right=size//2",
+          "coherence_on": "flat-and-topo-removed IFG"
+        }
+      },
+      "6": {
+        "status": "COMPLETE",
+        "runtime_s": 0.001220305999595439,
+        "params": {
+          "one_burst_interior": true,
+          "physical_bbox": {
+            "row0": 230,
+            "row1": 241,
+            "column0": 2453,
+            "column1": 2479
+          }
+        }
+      },
+      "7": {
+        "status": "COMPLETE",
+        "runtime_s": 0.00024345400015590712,
+        "params": {
+          "range_looks": 1,
+          "azimuth_looks": 1,
+          "output_intensity": false
+        }
+      },
+      "8": {
+        "status": "COMPLETE",
+        "runtime_s": 0.0009012420014187228,
+        "params": {
+          "function": "goldstein_snap",
+          "alpha": 1,
+          "fft_size": 64,
+          "step": 16,
+          "window_size": 3,
+          "adaptive": false,
+          "zero_pad_small_crops": true
+        }
+      },
+      "9": {
+        "status": "COMPLETE",
+        "runtime_s": 0.00011814399840659462,
+        "params": {
+          "radar_bbox": {
+            "row0": 230,
+            "row1": 241,
+            "column0": 2453,
+            "column1": 2479
+          },
+          "geographic_mask_count": 154
+        }
+      },
+      "10": {
+        "status": "COMPLETE",
+        "runtime_s": 0.0006574750004801899,
+        "params": {
+          "stat_mode": "DEFO",
+          "initialization": "MCF",
+          "tiles": [
+            1,
+            1
+          ],
+          "processors": 1,
+          "common_config": "/workspace/dual-app-parity/square100m/final_9e0457d/SNAPHU_COMMON.json"
+        }
+      },
+      "11": {
+        "status": "COMPLETE",
+        "runtime_s": 0.0030811319993517827,
+        "params": {
+          "binary": "/workspace/tools/snaphu-2.0.7/bin/snaphu"
+        }
+      },
+      "12": {
+        "status": "COMPLETE",
+        "runtime_s": 0.0004579600026772823,
+        "params": {}
+      },
+      "13": {
+        "status": "COMPLETE",
+        "runtime_s": 1.7936999938683584e-05,
+        "params": {
+          "formula": "-lambda*phase/(4*pi)",
+          "LOS_only": true,
+          "unit": "m"
+        }
+      },
+      "14": {
+        "status": "COMPLETE",
+        "runtime_s": 8.944341288999567,
+        "params": {
+          "DEM_aware_bounds": true,
+          "image_resampling": "BILINEAR_INTERPOLATION",
+          "DEM_resampling": "BILINEAR_INTERPOLATION",
+          "requested_spacing_m": 5,
+          "projection": "WGS84 geographic",
+          "no_extra_geoid": true,
+          "API_grid_limitation": "No explicit affine/bounds parameter. Own DEM-aware extent and approximate5m angular grid; comparison reprojects to native grid.",
+          "NaN_outside_exact_polygon": true,
+          "support_validation": "Extra actual operator projection of validity mask, included in wall time."
+        }
+      },
+      "15": {
+        "status": "COMPLETE",
+        "runtime_s": 0.0011465530005807523,
+        "params": {
+          "API": "unmodified tops_ops.write_kmz"
+        }
+      }
+    },
+    "note": "AI fresh original SAFE/EOF reads, no earlier AI rasters; timed alone with warm OS caches and fresh venv/Numba. SNAP54.050s is historical runtime of the identical preserved reference; SNAP was not rerun this request.",
+    "SNAP_original_reference_total_s": 54.050471422000555,
+    "SNAP_executed_this_request_s": 0,
+    "SNAP_reference_additional_controls_original_s": 6.534122752000258
+  },
+  "band_names_SNAP": {
+    "5": [
+      "topo_IW1_VV_30Jun2021_12Jul2021",
+      "elevation",
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "fep_IW1_VV_30Jun2021_12Jul2021",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "6": [
+      "topo_IW1_VV_30Jun2021_12Jul2021",
+      "elevation",
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "fep_IW1_VV_30Jun2021_12Jul2021",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "7": [
+      "topo_IW1_VV_30Jun2021_12Jul2021",
+      "elevation",
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "fep_IW1_VV_30Jun2021_12Jul2021",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "8": [
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "9": [
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "12": [
+      "Phase_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "q_ifg_IW1_VV_30Jun2021_12Jul2021",
+      "Intensity_ifg_IW1_VV_30Jun2021_12Jul2021_db",
+      "coh_IW1_VV_30Jun2021_12Jul2021",
+      "Unw_Phase_ifg_30Jun2021_12Jul2021",
+      "i_ifg_IW1_VV_30Jun2021_12Jul2021"
+    ],
+    "13": [
+      "displacement"
+    ],
+    "14": [
+      "displacement_VV"
+    ]
+  },
+  "KMZ": {
+    "SNAP": {
+      "exists": true,
+      "bytes": 2192,
+      "bounds": {
+        "north": 50.3764783858226,
+        "south": 50.37508599713222,
+        "east": 13.326951544337362,
+        "west": 13.32506508224071
+      }
+    },
+    "AI": {
+      "exists": true,
+      "bytes": 1101,
+      "bounds": {
+        "north": 50.37645466,
+        "south": 50.37502881,
+        "east": 13.32701732,
+        "west": 13.32507921
+      }
+    }
+  },
+  "tolerances": {
+    "horizontal_m": 50,
+    "LOS_mm": 10,
+    "phase_strict_rad": 0.05,
+    "coherence_strict": 0.01,
+    "float_rounding_ignored": true
+  },
+  "limitations": [
+    "LOS range change, not independent vertical motion. No absolute surveyed terrain/deformation truth.",
+    "Native SNAP14 GPF engine (same as GPT) used headlessly. Native jLinda+sameDEM per-pixel source geocoding fixes the sparse-tie-point footprint, without AI coordinates. Actual source/script and params retained.",
+    "Native stage5 extra outputFlatEarthPhase/outputTopoPhase/outputElevation bands enabled for diagnostics; no effect on numerical IFG. Native externalDEMApplyEGM=false and actual model applyEarthGravitionalModel(false), verified native bilinear.",
+    "AI dense geometric-phase GUI does not wire degree5/501 native polynomial fit, despite a separate helper existing. Dense as-shipped operation used, without a custom fitting patch. Tile-extension setting is logged but AI dense DEM evaluation has no tile-percent argument.",
+    "BG geometry-only13x86 real context; crop13x36 for coherence;11x26 bbox and154 exact-square centres for acceptance. Goldstein64x64 far-edge zero pad identical.1x1 multilook. All accepted comparisons restricted to the square.",
+    "Final common-world-coordinate comparison analytically corrects only AI known geotag convention within50m; no fitted displacement offset. Median-bias-removed statistics are explicit, not silently applied.",
+    "No corrected-coherence diagnostic is substituted for the current result: every current AI stage ran freshly with the unmodified PR20 wheel. SNAP imagery is reused only as comparison reference, never as AI processing input."
+  ],
+  "native_source_geocoding": {
+    "method": "SNAP jLinda Orbit.lph2ell + native FileElevationModel, bilinear DEM, iterative height then native ComponentGeoCoding",
+    "orbit_degree": 3,
+    "indices": "line=y+1, range=x per native API",
+    "height_iterations_max": 6,
+    "height_convergence_m": 1e-07,
+    "no_AI_coordinates": true,
+    "reason": "Original sparse tie points on a tiny radar subset miss the specified square; native UpdateGeoRef raster also too coarse. Exact native per-pixel source geolocation fixes bounds without altering displacement.",
+    "padding_timestamp_fix": "64x64 artificial pad last_line_time set to first+63*actual line_time_interval before native crop, preserving original11-line time span."
+  },
+  "plot_rows": [
+    {
+      "key": "stage05_topographic",
+      "label": "5 Topographic phase",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage05_phase",
+      "label": "5 Interferogram",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage05_coherence",
+      "label": "5 Coherence",
+      "unit": "coherence",
+      "wrapped": false
+    },
+    {
+      "key": "stage06_phase",
+      "label": "6 Deburst",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage07_phase",
+      "label": "7 Multilook",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage08_phase",
+      "label": "8 Goldstein",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage09_phase",
+      "label": "9 Subset",
+      "unit": "rad",
+      "wrapped": true
+    },
+    {
+      "key": "stage12_unwrapped",
+      "label": "11/12 SNAPHU / import",
+      "unit": "rad",
+      "wrapped": false
+    },
+    {
+      "key": "stage13_displacement",
+      "label": "13 LOS displacement",
+      "unit": "mm",
+      "wrapped": false
+    },
+    {
+      "key": "stage14_15_displacement",
+      "label": "14/15 Geocoded LOS / KMZ",
+      "unit": "mm",
+      "wrapped": false
+    }
+  ],
+  "SNAP_reference": {
+    "reused": true,
+    "directory": "/workspace/dual-app-parity/square100m/final_437b766/snap",
+    "reason": "All SNAP settings identical: topographic subtraction ON, same external ellipsoidal DEM/no added geoid, same coherence2x10, same SNAPHU2.0.7, ESD skipped, same100m square and native source-geocoding treatment.",
+    "no_SNAP_processing_rerun_this_request": true,
+    "original_reference_fresh_runtime_s": 54.050471422000555,
+    "original_raster_hashes_unchanged": {
+      "/workspace/dual-app-parity/square100m/final_437b766/snap/final_displacement_m.tif": true,
+      "/workspace/dual-app-parity/square100m/final_437b766/snap/stage13.data/displacement.img": true
+    }
+  },
+  "AI_fresh_from_original_SAFEs": true,
+  "coherence_fix_verified": {
+    "actual_kernel": [
+      2,
+      10
+    ],
+    "forward_anchor": true,
+    "coherence_against_SNAP": {
+      "count": 154,
+      "raw": {
+        "mean_abs": 0.000805454764079738,
+        "median_abs": 0.0005589723587036133,
+        "p99_abs": 0.0038628133386373513,
+        "max_abs": 0.005747631192207336,
+        "RMSE": 0.0011767646117574935,
+        "mean_signed": -0.00019229157501226895
+      },
+      "median_signed_bias_AI_minus_SNAP": -9.521842002868652e-05,
+      "median_bias_removed": {
+        "mean_abs": 0.0008028143557248178,
+        "median_abs": 0.0005374550819396973,
+        "p99_abs": 0.0038685264438390724,
+        "max_abs": 0.00565241277217865,
+        "RMSE": 0.0011649987549703785,
+        "mean_signed": -9.707315498358243e-05
+      },
+      "correlation_raw_samples": 0.9999751010245014,
+      "tolerance": 0.01,
+      "raw_verdict": "PASS",
+      "median_bias_removed_verdict": "PASS",
+      "count_above_tolerance": 0,
+      "median_bias_removed_count_above_tolerance": 0,
+      "unit": "coherence"
+    },
+    "no_local_2pi_disagreements_remaining": true
+  },
+  "change_effect_vs_437b766": {
+    "comparison_only_no_old_AI_inputs": true,
+    "stage05_ifg_bit_identical": true,
+    "stage13_max_change_mm": 27.73288024556876,
+    "interpretation": "Exact-window correction changes five local unwrap branches by one LOS cycle; geometric-phase outputs remain identical.",
+    "stage13_one_cycle_changed_pixel_count": 5,
+    "stage13_remaining_max_change_mm": 2.10467573924511e-06,
+    "stage13_changed_pixel_count_before_rounding_filter": 13,
+    "stage13_changed_pixel_count_ignoring_rounding": 5
+  },
+  "remaining_differences": [
+    {
+      "issue": "DEM-height sampling/interpolation differs despite identical DEM bytes and datum",
+      "code": [
+        "pipeline/dem.py:203-215",
+        "pipeline/dem.py:256-280",
+        "pipeline/tops_ops.py:315-355",
+        "pipeline/tops_ops.py:385-389"
+      ],
+      "actual_height_stats": {
+        "count": 154,
+        "raw": {
+          "mean_abs": 253.22677654685913,
+          "median_abs": 228.08275511488318,
+          "p99_abs": 638.6153153516352,
+          "max_abs": 724.5805691927671,
+          "RMSE": 301.90835508775746,
+          "mean_signed": 80.41786441168227
+        },
+        "median_signed_bias_AI_minus_SNAP": 70.08318929001689,
+        "median_bias_removed": {
+          "mean_abs": 244.99498073060016,
+          "median_abs": 248.79981158301234,
+          "p99_abs": 634.410323994234,
+          "max_abs": 794.663758482784,
+          "RMSE": 291.184524769312,
+          "mean_signed": 10.334675121665388
+        },
+        "correlation_raw_samples": 0.596397290737073,
+        "tolerance": 10,
+        "raw_verdict": "FAIL",
+        "median_bias_removed_verdict": "FAIL",
+        "count_above_tolerance": 149,
+        "median_bias_removed_count_above_tolerance": 150,
+        "unit": "mm",
+        "signed_min_max_mm": [
+          -724.5805691927671,
+          632.2350492700934
+        ],
+        "note": "Actual per-radar-pixel heights used in topographic subtraction; native simulates/interpolates DEM posts in radar geometry, AI iterates per pixel with bilinear DEM.10mm is numerical height-parity control, not surveyed absolute DEM accuracy.",
+        "AI_used_height_vs_GIS_pixel_centres": {
+          "count": 154,
+          "raw": {
+            "mean_abs": 0.3618333867483458,
+            "median_abs": 0.34248777452739887,
+            "p99_abs": 0.9590678362123435,
+            "max_abs": 0.9864249193342403,
+            "RMSE": 0.432614147235324,
+            "mean_signed": 0.22872589629630305
+          },
+          "median_signed_bias_AI_minus_SNAP": 0.314603982551489,
+          "median_bias_removed": {
+            "mean_abs": 0.28063234177194296,
+            "median_abs": 0.23339099166332744,
+            "p99_abs": 0.9314951040089363,
+            "max_abs": 0.9834950759541243,
+            "RMSE": 0.37711339203275795,
+            "mean_signed": -0.08587808625518599
+          },
+          "correlation_raw_samples": 0.999999207644221,
+          "tolerance": 10,
+          "raw_verdict": "PASS",
+          "median_bias_removed_verdict": "PASS",
+          "count_above_tolerance": 0,
+          "median_bias_removed_count_above_tolerance": 0
+        },
+        "native_used_height_vs_corner_bilinear_at_AI_geolocation": {
+          "count": 154,
+          "raw": {
+            "mean_abs": 37.67162002040362,
+            "median_abs": 24.663370428053895,
+            "p99_abs": 227.6563497866178,
+            "max_abs": 245.89038058795268,
+            "RMSE": 60.68892482621201,
+            "mean_signed": -8.30023578173056
+          },
+          "median_signed_bias_AI_minus_SNAP": -3.228385220427299,
+          "median_bias_removed": {
+            "mean_abs": 36.883428928587065,
+            "median_abs": 23.04314614753821,
+            "p99_abs": 227.46264667339216,
+            "max_abs": 249.11876580837998,
+            "RMSE": 60.33220823611121,
+            "mean_signed": -5.071850561303262
+          },
+          "correlation_raw_samples": 0.9849996850891569,
+          "tolerance": 10,
+          "raw_verdict": "FAIL",
+          "median_bias_removed_verdict": "FAIL",
+          "count_above_tolerance": 92,
+          "median_bias_removed_count_above_tolerance": 93
+        },
+        "convention": "AI uses TIFF pixel centres, independently checked. Native external DEM uses half-cell-shifted sampling; native topographic simulation also triangulates/interpolates DEM posts. Do not equate terrain-height disagreement with LOS displacement error."
+      },
+      "effect": "Topographic-phase residual remains below0.14mm LOS. The previous27.7mm local cycle failures are resolved by this build.",
+      "native_height_interpolation_note": "Actual native topo heights also use radar-domain DEM-post interpolation. Half-cell convention alone does not explain every height difference.",
+      "AI_height_vs_GIS_centres_max_mm": 0.9864249193342403
+    },
+    {
+      "issue": "AI terrain-correction endpoint/GeoTIFF outer-edge convention remains inconsistent",
+      "code": [
+        "pipeline/tops_ops.py:2114-2163",
+        "pipeline/tops_ops.py:2335-2367"
+      ],
+      "effect": "Maximum2.849867415324688m: ACCEPTED under50m, analytically corrected for the geographic LOS comparison. Existing raster values unchanged."
+    }
+  ],
+  "failure_root_causes_LOS_phase_coherence": [],
+  "terrain_height_raw_parity_10mm": "FAIL",
+  "AI_terrain_height_vs_GIS_sampling_10mm": "PASS",
+  "absolute_terrain_or_vertical_motion_accuracy": "NOT_ESTABLISHED: no survey truth; displacement is LOS, not independent vertical motion.",
+  "summary": {
+    "phase_strict_005rad": "PASS",
+    "coherence_001": "PASS",
+    "stage13_LOS_10mm": "PASS",
+    "final_common_geographic_LOS_10mm": "PASS",
+    "horizontal_50m": "PASS",
+    "terrain_height_arrays_same_as_SNAP_10mm": "FAIL",
+    "terrain_height_AI_vs_independent_GIS_sampling": "PASS"
+  },
+  "SNAPHU": {
+    "version": "2.0.7",
+    "same_binary_both": true,
+    "path": "/workspace/tools/snaphu-2.0.7/bin/snaphu",
+    "sha256": "cfaa341c407b367c8524d9ae02b38d026e0144e5a3a59bcc40489a14e364d87d"
+  },
+  "artifacts": {
+    "FINAL_REPORT.json": "/workspace/dual-app-parity/square100m/final_9e0457d/FINAL_REPORT.json",
+    "FINAL_REPORT.txt": "/workspace/dual-app-parity/square100m/final_9e0457d/FINAL_REPORT.txt",
+    "FINAL_SIDE_BY_SIDE.png": "/workspace/dual-app-parity/square100m/final_9e0457d/FINAL_SIDE_BY_SIDE.png",
+    "STAGES05_15_GRID.png": "/workspace/dual-app-parity/square100m/final_9e0457d/STAGES05_15_GRID.png",
+    "VERTICAL_CONTROL.png": "/workspace/dual-app-parity/square100m/final_9e0457d/VERTICAL_CONTROL.png",
+    "STAGE13_SIDE_BY_SIDE.png": "/workspace/dual-app-parity/square100m/final_9e0457d/STAGE13_SIDE_BY_SIDE.png",
+    "DEM_HEIGHT_CONTROL.npz": "/workspace/dual-app-parity/square100m/final_9e0457d/DEM_HEIGHT_CONTROL.npz"
+  },
+  "source_product_sha256": {
+    "/workspace/dual-app-parity/square100m/final_9e0457d/snap/final_displacement_m.tif": "28df8c6a5d0b6ab1b1651e398f4b4796d5f16865a648a1e15002886191e8d916",
+    "/workspace/dual-app-parity/square100m/final_9e0457d/ai-insar/final_displacement_m.tif": "385491147a591ec2cc048c19151984a67a7f83e272ba58a3b35cb6b31522832d",
+    "/workspace/dual-app-parity/square100m/final_9e0457d/ai-insar/stage13_displacement_m.npy": "70f2d9fb4c9fd7c8197f043fed54124a21b9870f51f1dc0db2149fd3fe29fb4e",
+    "/workspace/dual-app-parity/square100m/final_9e0457d/snap/stage13.data/displacement.img": "6a021f3317b23978e5b9cb12ab3fba71841330333e7ca703014a2cb658a8f54c"
+  },
+  "overall_signal_chain_verdict": "PASS",
+  "remaining_failures": [
+    {
+      "field": "Raw topographic DEM-height arrays vs SNAP",
+      "verdict": "FAIL at10mm numerical array parity",
+      "cause": "Different DEM sample-coordinate conventions and native radar-domain DEM-post interpolation; not a remaining phase/LOS failure. AI sampling independently follows TIFF centres within0.986425mm.",
+      "absolute_height_accuracy": "No survey truth to establish absolute10mm accuracy."
+    }
+  ]
+}

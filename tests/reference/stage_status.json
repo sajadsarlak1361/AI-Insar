@@ -1,0 +1,123 @@
+{
+  "snap_gpt": "12.0.0",
+  "snap_gui_audit": "14.0.0",
+  "ai_insar_revision_under_test": "see git HEAD of cursor/snap-stage-parity-9501",
+  "merged_main_wheel": "fb2d5259d5237139a9e5efb149d85fba3f8551df",
+  "pair": {
+    "reference": "S1A_IW_SLC__1SDV_20210630T052604_20210630T052631_038565_048CFD_632B",
+    "secondary": "S1A_IW_SLC__1SDV_20210712T052605_20210712T052632_038740_049246_C00B",
+    "swath": "IW1",
+    "polarisation": "VV",
+    "annotation_burst_indexes_0_based": [4, 5],
+    "snap_burst_indexes_1_based": [5, 6],
+    "burst_4_azimuth_time": "2021-06-30T05:26:15.752882",
+    "burst_5_azimuth_time": "2021-06-30T05:26:18.509383",
+    "range_samples": [11000, 11520],
+    "dem": "/tmp/snap-ref/dem/srtm_39_02.tif",
+    "vertical_datum": "SRTM 3Sec orthometric EGM96 + EGM96 geoid",
+    "resampling": "BILINEAR_INTERPOLATION"
+  },
+  "tolerances_declared_before_backgeo_metrics": {
+    "interior_margin_px": 32,
+    "minimum_amplitude": 1.0,
+    "secondary_amplitude_relative_median": 0.05,
+    "secondary_circular_phase_median_rad": 0.2,
+    "reference_copy_max_abs": 0.0,
+    "esd_coherence_threshold": 0.3,
+    "esd_estimator": "Periodogram"
+  },
+  "commands": {
+    "snap12": "python3 /tmp/run_backgeo_esd.py",
+    "snap12_graph": "tests/snap_graphs/backgeo_esd_roi.xml",
+    "snap12_exit": "0",
+    "snap12_elapsed_s": 72.6,
+    "ai_insar": "PYTHONPATH=src python3 scripts/backgeo_esd_compare.py"
+  },
+  "stages": [
+    {
+      "order": 1,
+      "stage": "TOPS Split",
+      "snap14_full_width": "coordinator compared 44b7457 DIMAP to SNAP 14 on 3016x22849",
+      "snap14_complex_samples": 68912584,
+      "snap14_unequal_pairs": 0,
+      "snap14_max_abs": 0,
+      "snap14_verdict": "PASS on d600cbc. Coordinator SNAP 14 compared both dates: 68912584 complex samples, unequal 0, SHA256 identical, and PRODUCT, first_line_time, last_line_time, subset_offset_y 6032, tie_point_grids, and units matched.",
+      "pixel0_june": "30-JUN-2021 05:26:15.752882",
+      "pixel0_july": "12-JUL-2021 05:26:16.426464",
+      "subset_offset_y": 6032,
+      "scene_start_is_not_pixel0": true,
+      "matched": true,
+      "note": "Coordinator SNAP 14 acceptance of d600cbc is PASS for both dates: all 68,912,584 complex samples, SHA256 identical, and the burst-window metadata (PRODUCT, first_line_time, last_line_time, subset_offset_y 6032, tie grids, units). Scene start stays on the source-band record and is not first_line_time. The same desktop run still showed Product Explorer keeping only the June product after the July split, the next Split dialog returning to the June source and /home/box, and the empty-source note remaining after a product was bound. Those dialog fixes are in this revision and were checked offscreen. The desktop has not opened this revision."
+    },
+    {
+      "order": 2,
+      "stage": "Apply Orbit File",
+      "snap12_orbit": "S1A_OPER_AUX_POEORB_OPOD_20210720T121856_V20210629T225942_20210701T005942.EOF.zip",
+      "state_vector_max_position_difference_m": 0.0008825566446900676,
+      "vector_count": 25,
+      "matched": true,
+      "note": "fe301de matched samples, tie points, the 1 s orbit table, the orbit-file string, and the processing graph on the desktop. The remaining abstracted fields are redefined here: centre is the 10-by-10 corner geocoding sampled at (scene width/2, scene height/2), headings are the spherical forward and reverse azimuth to the pixel 100 lines later, total_size is the split rasters plus the SAFE metadata attribute storage, and incidence text keeps a float32 value that .16g had rounded. This environment does not have the June SAFE, so those four numbers were not recompared to SNAP 14 here. ESD is unchanged."
+    },
+    {
+      "order": 3,
+      "stage": "Back Geocoding",
+      "snap12_product": "/tmp/snap-ref/stage/backgeo_roi.dim",
+      "shape": [3016, 520],
+      "reference_vs_snap_master_max_abs": 0.0,
+      "secondary_amplitude_relative_median": 0.002803569892421365,
+      "secondary_circular_median_abs_rad": 0.002764788456261158,
+      "secondary_circular_mean_rad": 9.078859875444323e-05,
+      "secondary_circular_p95_abs_rad": 0.016510190442204475,
+      "azimuth_step_median_rad": 0.0008685238426551223,
+      "range_step_median_rad": -2.8038310119882226e-05,
+      "interior_count": 1327920,
+      "first_interior_pixel_over_0.20_rad": [37, 327],
+      "map_residual_px_internal": 0.0005309064577545541,
+      "stride": 16,
+      "matched": true,
+      "note": "Median bounds pass: amplitude relative 0.00280 <= 0.05 and circular phase 0.00276 rad <= 0.20. p95 is 0.0165 rad. One interior pixel, row 37 column 327, still exceeds 0.20 rad. Reramp multiplies by the secondary deramp/demod phase at the source coordinate. The reference burst index selects which overlap copy is read. No phase was fitted."
+    },
+    {
+      "order": 4,
+      "stage": "ESD",
+      "snap12_exit": 0,
+      "snap12_estimator": "Periodogram",
+      "snap12_coh_threshold": 0.3,
+      "snap12_num_blocks": 10,
+      "snap12_block_shifts_px": [0.000106, 0.001666, -0.000727, -0.000194, 0.001665, 0.002792, 0.005282, 0.000513, 0.003295, 0.000969],
+      "snap12_block_unit": "pixels",
+      "snap12_applied_azimuth_shift_px": -0.0015113164869487252,
+      "snap12_applied_range_shift_pixels": -0.06640625,
+      "snap12_slave_changed_fraction_vs_backgeo": 0.9979825545806978,
+      "snap12_master_changed_max_abs": 0.0,
+      "ai_insar_roi_whole_overlap_coherence": 0.103,
+      "ai_insar_roi_shift_applied": false,
+      "ai_insar_full_overlap_blocks_px": [-0.0000488, -0.0003067, -0.0015875, -0.0022020, -0.0007776, -0.0019257, -0.0024672, -0.0021575, -0.0006910, -0.0013570],
+      "ai_insar_full_overlap_block_coherence": [0.578, 0.007, 0.996, 0.811, 0.787, 0.210, 0.384, 0.708, 0.118, 0.344],
+      "ai_insar_accepted_block_count": 7,
+      "ai_insar_accepted_mean_px": -0.001513926547609831,
+      "matched": false,
+      "displacement_chain": "not valid",
+      "unit_correction": "An earlier status stored snap12_block_shifts_s and snap12_applied_azimuth_shift_s and described -0.001511 as seconds (about 0.735 lines). That unit was wrong. The SNAP block file and the applied value are pixels. -0.001511 px is about 3.1 microseconds. The keys are now snap12_block_shifts_px and snap12_applied_azimuth_shift_px.",
+      "hypotheses_tested_not_accepted": [
+        "Closed-form angle(sum) versus a constant-separation periodogram (max real part, +/-0.02 px): maximum difference 5e-5 px. Not the block mismatch.",
+        "Deramp both master and slave of each look with that look's burst phase: double difference changed by <1e-9 px. A common deramp cancels.",
+        "Replace |ka| by kt≈1733 Hz/s in the spectral separation: SNAP/vector ratios span about -5.4 to 0.46, so one scale cannot match the list.",
+        "Drop the invalid-line margins (20 lines at the start, 19 at the end; overlap 7394:7521 and 7560:7687): block 2 stays -0.00159 px."
+      ],
+      "snap12_pixels_block2": "Samples 5109:7140, overlap lines 7394:7521 and 7560:7687. SNAP 12 slave phase median vs this build 0.00359 rad, amplitude relative median 0.00326, master max abs 0. Double-difference MLE of SNAP's own pixels: coherence 0.996, shift -0.001477 px. This build: -0.001588 px. The block file says -0.000727 px.",
+      "snap12_pixels_block3": "Samples 7140:9171, same overlap lines. Double-difference MLE of SNAP's own pixels: coherence 0.890, shift -0.002037 px. The block file says -0.000194 px.",
+      "first_block_divergence": "The file is not the amplitude-weighted double-difference tone. On the valid overlap (rows 7394:7521 and 7560:7687) that tone is -0.001477 px on SNAP pixels and -0.001588 px in this build for block 2, against the file value -0.000727 px. Replaying SpectralDiversityOp on those SNAP pixels does reproduce the file.",
+      "snap_block_file_construction": "The azimuth_shift.txt row is the raw per-block Periodogram in pixels. Phase is arg((master_early·conj(slave_early))·conj(master_late·conj(slave_late))). Weight is Inv Quadratic: sqrt(5x5 coherence) of the early interferogram when coherence > 0.3, else 0. The 0.3 gate is that per-pixel weight. It is not a double-difference coherence gate and it was not changed. Spectral separation is kt(range)·(linesPerBurst-overlapLines)·dt, read at column blockIndex·blockWidth (sample 0 of the swath, not the first valid sample). kt uses the first FM polynomial because the split product indexes the uncut FM list by the raster burst. The line after the block row, Mean azimuth shift, is the negated mean of blockShift·meanWeight. On the SNAP 12 back-geocoded overlap this reconstruction matches all 10 file values with maximum absolute difference 3.3e-7 px, and the applied value -0.001511319 px against the file -0.001511316 px.",
+      "this_build_block2_with_that_estimator_px": -0.000497,
+      "overlap_secondary_residual": "On lines 7394:7521 and 7560:7687, block 2 columns 5109:7140, the master matches SNAP with max abs 0. The secondary amplitude relative median is 0.00325. Early-look phase residual median is -0.00129 rad, late-look +0.00190 rad. Bright pixels stay within a few milliradians. About 1.6 percent of the early-look coherence mask has a double-difference phase residual above 0.05 rad, and those pixels are the low-amplitude ones (SNAP amplitude median about 8 versus about 80 on the rest). The periodogram uses a unit phasor, so that tail moves block 2 from the file value -0.000727 px to -0.000497 px. A uniform sub-pixel shift of the SNAP secondary does not reproduce that value. Solving every pixel instead of a strided map does not remove the tail. Replacing the per-pixel range-Doppler lookup with linear interpolation between DEM posts, which is the shape of SNAP's triangle grid, moves block 2 to -0.000630 px and was not adopted.",
+      "note": "On the 2026-11-10 SNAP 14 Copernicus+EGM2008 run the azimuth estimator on SNAP pixels matched to 9e-9 px, but this build's BISINC was an unwindowed sinc and the applied shift was -0.01812 px against SNAP -0.001825 px. BISINC is now a normalised Hann-windowed sinc, including float64 phase, and the whole secondary is Fourier-shifted. The range coefficient is a normalised 512 window correlation. A few dense range samples were still above 1 mm (max about 4.5 mm) in that report and are not claimed closed. This environment does not have the overlap rasters, so the full products were not rerun."
+    },
+    {
+      "order": "5-15",
+      "stage": "Interferogram through KMZ",
+      "matched": false,
+      "note": "Not run as a matched pair. The earlier reference-SLC deburst (2847 lines, max abs 0) is a side test of the deburst operator, not step 6 after the interferogram."
+    }
+  ]
+}

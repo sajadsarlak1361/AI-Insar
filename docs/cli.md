@@ -38,7 +38,9 @@ python -m ai_insar check
 
 Builds the default synthetic stack (`generate_demo_stack`), runs every
 processing stage, and compares the velocity and mask to the known bowl.
-No flags. No window. Exit 0 on `PASS`, exit 1 on `FAIL`.
+No flags. No window. Exit 0 on `PASS`, exit 1 on `FAIL`. When `insardev`
+is installed, stage 2 uses that package, so the bowl score can change.
+`AI_INSAR_BACKEND=numpy` scores the NumPy/Numba interferogram.
 
 The pass rule in `recovery_metrics` is all of:
 
@@ -51,22 +53,23 @@ The pass rule in `recovery_metrics` is all of:
 The headline “truth” is that 3×3 mean, not the single-pixel value logged
 earlier. A user SLC is not scored; `check` always uses the built-in bowl.
 
-Example from version 0.1.0, seed 7 (the text `check` prints):
+Example with the current defaults (batched Goldstein, fast unwrap), seed 7.
+The text `check` prints looks like this:
 
 ```text
 SLC stack (8, 72, 72) complex64, wavelength 0.055466 m, sensor synthetic C-band.
 Synthetic C-band SLC stack, 8 dates every 36 days, Gaussian subsidence bowl sigma=11 px, peak LOS rate -0.2200 m/yr (negative = away from the radar), seed=7.
 Synthetic truth peak LOS velocity -0.2195 m/yr at row 35, col 35 (negative = away from the radar).
-Interferograms: 18 pairs (max date span 3, temporal baselines 36–108 days). Each is later × conjugate(earlier).
+Interferograms: 18 pairs (max date span 3, temporal baselines 36–108 days). Each is later × conjugate(earlier). Backend: Numba.
 First pair dates 0→1 at the peak pixel: deformation phase 4.90 rad (0.78 fringes, positive = subsidence), wrapped SLC interferogram -0.95 rad.
-Goldstein filter: alpha=0.50, window=32. Wrapped residues after filtering: 0 (per pair min 0, max 0).
+Goldstein filter: alpha=0.50, window=32. Wrapped residues after filtering: 0 (per pair min 0, max 0). Backend: batched FFT (numpy).
 Coherence: 5×5 window on each SLC pair. Median 0.886, 5th percentile 0.628.
-Unwrapped filtered phase with quality-guided integration and removed a border plane (4 px). Finite pixels: 100.0%.
-SBAS: displacement at each date (first date = 0) and a linear LOS velocity. Velocity min -0.2253, max 0.0059 m/yr. Negative velocity is motion away from the radar.
-At the synthetic peak pixel (row 35, col 35): estimated -0.2236 m/yr, truth -0.2195 m/yr.
-Displacement mask: 990 pixels (|z| ≥ 3.5 and |velocity| ≥ 28% of the coherent peak, coherence ≥ 0.3).
-Peak LOS velocity -0.2225 m/yr (truth -0.2183, relative error 1.92%).
-Velocity correlation 0.999. Core recall 1.000. Outside false-positive rate 0.000. Mask pixels 990.
+Unwrapped filtered phase with Fast unwrap and removed a border plane (4 px). Finite pixels: 100.0%.
+SBAS: displacement at each date (first date = 0) and a linear LOS velocity. Velocity min -0.2107, max 0.0053 m/yr. Negative velocity is motion away from the radar.
+At the synthetic peak pixel (row 35, col 35): estimated -0.2107 m/yr, truth -0.2195 m/yr.
+Displacement mask: 936 pixels (|z| ≥ 3.5 and |velocity| ≥ 28% of the coherent peak, coherence ≥ 0.3).
+Peak LOS velocity -0.2074 m/yr (truth -0.2183, relative error 5.03%).
+Velocity correlation 0.998. Core recall 1.000. Outside false-positive rate 0.000. Mask pixels 936.
 PASS
 ```
 

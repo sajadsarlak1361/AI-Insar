@@ -13,6 +13,7 @@ _TOP_FILES = (
     "WINDOWS.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "NOTICE",
     "run_windows.bat",
     ".gitignore",
     ".gitattributes",

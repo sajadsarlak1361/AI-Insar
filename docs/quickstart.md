@@ -30,12 +30,17 @@ python -m ai_insar
 The window title is **AI Insar**. On the left are seven stage buttons and
 **Run all stages**. The centre is the viewer. The bottom is the log.
 
+The Pipeline menu follows the GMTSAR stage order (PREPROCESS, ALIGN SLC,
+MAKE TOPO_RA, MAKE INTERFEROGRAMS, UNWRAP PHASE, GEOCODE, then SBAS). The
+drawing is in the README and in [pipeline.md](pipeline.md). **Run all
+stages** does not align, remove topographic phase, or geocode.
+
 Fastest path: click **Run all stages**. That generates the sample SLC if
-none is loaded, then runs interferogram, filter, coherence, quality-guided
+none is loaded, then runs interferogram, filter, coherence, fast separable
 unwrap, SBAS, and the mask. The viewer switches to **Velocity + mask**: a
 blue bowl (motion away from the radar) with an orange mask on it. To use
 another technique, open its menu (Stacking, NSBAS, PS linear, Phase linking,
-Seasonal, or Fast unwrap) and choose **Run**.
+Seasonal, or Quality-guided) and choose **Run**.
 
 Step through it instead if you want to see each product:
 
@@ -70,6 +75,7 @@ date, as `los_m_<date>.*`. See [data-format.md](data-format.md#map-export).
 | Generate sample SLC | File | Ctrl+N |
 | Load a `.npy` SLC stack | File → Load SLC stack… | Ctrl+O |
 | Open a Sentinel-1 SAFE `.zip` (not extracted) | File → Open Sentinel-1 SAFE Product… | |
+| Open many SAFE `.zip` files as one stack | File → Open SAFE stack… | |
 | Open a `.SAFE` folder | File → Open SAFE folder… | |
 | Many SAFE zips → one SLC stack | File or Data → Open SAFE stack… | |
 | Save whatever stages have finished | File → Save products… | Ctrl+S |
@@ -94,6 +100,14 @@ File → Open SAFE stack… loads many SAFE zips (or a folder of zips) as
 several dates in that same cube. Interferogram and Run all stages then
 run on it. The dates share a pixel window; they are not coregistered.
 See [data-format.md](data-format.md#sentinel-1-safe).
+
+File → Open SAFE stack… lists SAFE folders and `.zip` files (File Name,
+Type, Acquisition, Track, Orbit, and an N Products counter). A progress
+line counts them. The dialog’s crop is applied to every product, the dates
+are sorted, and the interferogram checkbox runs stage 2 on that stack.
+The alignment is the shared crop window. It is not coregistration.
+Interferogram, Coherence, Goldstein, Topographic Phase, and Apply Orbit
+File each open a parameter dialog and wait for Run.
 
 ## What “good” looks like on the demo
 

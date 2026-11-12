@@ -10,6 +10,49 @@ velocity and positive unwrapped interferogram phase. See the README for the
 phase equation. The code constants are `C_BAND_WAVELENGTH_M` and
 `phase_from_los` / `los_from_phase` in `ai_insar.conventions`.
 
+Burst-overlap ESD and the provenance of the coregistration and network
+equations are in [spectral-diversity.md](spectral-diversity.md).
+
+Back-geocoding records the common overlap: reference samples that land inside
+the secondary burst's valid lines and samples. With a DEM those coordinates
+are the triangulation of the DEM posts, not a radar-pixel sphere. Resampling,
+ESD, interferogram, coherence, Goldstein, unwrap, multilook, subset, SNAPHU,
+displacement, terrain correction, and KMZ use that mask. Pixels outside it
+stay no-data.
+
+## GMTSAR flowchart
+
+The Pipeline menu and the numbered buttons follow the public GMTSAR pair
+order (David Sandwell and others, UCSD; GPL-3.0). GMTSAR source is not in
+this repository. Each box is MIT code in this project. The same diagram is
+in the [README](../README.md#gmtsar-stage-order). Help → GMTSAR flowchart
+shows the list without the drawing.
+
+```mermaid
+flowchart TD
+  preprocess["1 PREPROCESS: Load SLC or Open SAFE stack"]
+  align["2 ALIGN SLC: amplitude cross-correlation"]
+  topo["3 MAKE TOPO_RA: optional DEM phase"]
+  ifg["4 MAKE INTERFEROGRAMS: Interferogram, Goldstein, Coherence"]
+  unwrap["5 UNWRAP PHASE: Fast unwrap or Quality-guided"]
+  geocode["6 GEOCODE: radar grid unless a transform exists"]
+  sbas["SBAS time series, then the displacement mask"]
+  preprocess --> align --> topo --> ifg --> unwrap --> geocode --> sbas
+```
+
+| GMTSAR stage | AI Insar control | What the code does |
+| --- | --- | --- |
+| PREPROCESS | Button 1, File → Load SLC stack, Open SAFE stack | Read a `complex64` cube. A SAFE manifest can show an orbit number. The crop is not resampled with that orbit. |
+| ALIGN SLC | Pipeline → ALIGN SLC | One constant shift per date from amplitude cross-correlation, applied with an FFT phase ramp (`pipeline/align.py`). |
+| MAKE TOPO_RA | Pipeline → MAKE TOPO_RA | `phase = -4π/λ · B_perp / (R sin θ) · height` when a DEM `.npy` and a non-zero perpendicular baseline are set (`pipeline/topo.py`). Otherwise the interferogram is unchanged. |
+| MAKE INTERFEROGRAMS | Buttons 2–4, or Pipeline → MAKE INTERFEROGRAMS | `later * conj(earlier)`, Goldstein, SLC-pair coherence. |
+| UNWRAP PHASE | Button 5 | Fast unwrap by default. Quality-guided remains a separate menu. A border plane is removed. |
+| GEOCODE | Pipeline → GEOCODE | No radar-to-map transform is stored. Products and map export stay on the radar grid. |
+| SBAS | Button 6, then button 7 | Time series after the pairs, then the displacement mask. |
+
+**Run all stages**, `ai-insar check`, and `ai-insar run` do not call ALIGN SLC,
+MAKE TOPO_RA, or GEOCODE. They process the stack that is already loaded.
+
 ## Stage by stage
 
 ### 1. Generate / load sample SLC
@@ -49,9 +92,27 @@ therefore make 18 pairs (7 + 6 + 5), with temporal baselines of 36, 72, and
 ifg = slc[later] * conj(slc[earlier])
 ```
 
-A reversed index raises `ValueError`. The result is `complex64`, shape
-`(n_pairs, height, width)`. A stack built from many Sentinel-1 SAFE zips
-uses this same function and the same date-gap setting.
+The product is a chunked NumPy multiply (`np.multiply` into a `complex64`
+buffer). Pairs are grouped so the indexed date cubes stay near 32 MiB.
+When Numba is installed (`pip install "ai-insar[fast]"`), that product is
+a compiled parallel loop. It is the stage result when `insardev` is not
+used. A reversed index raises `ValueError`. The result is `complex64`,
+shape `(n_pairs, height, width)`.
+
+`pip install "ai-insar[insardev]"` (Python 3.12+) installs upstream
+`insardev`. Stage 2 then calls `Stack.pairs(...).interferogram()` first,
+with the later date as the reference. A returned complex cube is kept
+even when the values differ from the NumPy/Numba product. The in-tree
+product runs when the package is missing, the call fails, or
+`AI_INSAR_BACKEND=numpy`. The log line names the backend (`NumPy`,
+`Numba`, or `InSARdev`). Accepting the extra means accepting
+InSARdev-SAL-1.0, including a subscription for funded academic use. The
+repository owner has personally accepted that license for this academic
+extra. See [install.md](install.md) and [NOTICE](../NOTICE).
+
+File → Open SAFE stack… is another way to fill the SLC cube: many SAFE
+zips, one crop, time-sorted. Stage 2 then runs on that cube. The crop is
+not a coregistration. See [data-format.md](data-format.md#safe-stack).
 
 ### 3. Goldstein filter
 
@@ -60,11 +121,17 @@ alpha. **Light (α = 0.3)**, **Default (α = 0.5)**, and **Strong (α = 0.8)**
 set alpha and run the stage. The window stays at the Settings value
 (default 32). Pipeline → Goldstein filter is the same call.
 
-`goldstein_filter` overlap-adds Hann-windowed FFTs. With α = 0 the windows
-reconstruct the input (tested). The default is α = 0.5, window 32, overlap
-0.5. The spectrum is smoothed before it is raised to α. Images smaller than
-8 pixels, or a requested window below 8, are returned unchanged. The engine
-logs the count of 2π residues on the wrapped filtered phase.
+`goldstein_filter` overlap-adds a batched FFT of complex patches. With α = 0
+the windows reconstruct the input (tested). The default is α = 0.5, window
+32, overlap 0.5. Each patch spectrum is multiplied by `|FFT| ** alpha`
+after an optional smooth of `|FFT|` (`spectrum_smooth`, default 3). The
+batched transform follows InSARdev `goldstein_numpy` (Alexey Pechnikov),
+ported in-tree with the owner's permission. It does not import `insardev`.
+`AI_INSAR_FILTER=torch` uses PyTorch for that FFT when Torch is installed;
+the default is SciPy. Numba (`pip install "ai-insar[fast]"`) speeds the
+overlap-add. Images smaller than 8 pixels, or a requested window below 8,
+are returned unchanged. The engine logs the count of 2π residues on the
+wrapped filtered phase.
 
 Unwrapping uses this phase. Coherence does not.
 
@@ -86,17 +153,20 @@ The estimate does not read the Goldstein output.
 
 ### 5. Unwrap
 
-The **Quality-guided** menu is the default. Reliability is coherence divided
-by one plus a local phase second-difference. Pixels below
+The **Fast unwrap** menu is the default for **Run all stages**, `ai-insar
+check`, and `ai-insar run`. It smooths the complex interferogram with a
+Gaussian and then calls `numpy.unwrap` along range and azimuth, starting
+from the middle of the image. That is the separable unwrap reimplemented
+from the MIT example in InSARdev/edu `NISAR/nisar_numpy.py`. It is aimed at
+smooth fields and is the performance path on CPU.
+
+The **Quality-guided** menu is still available. Reliability is coherence
+divided by one plus a local phase second-difference. Pixels below
 `unwrap_min_coherence` (default 0.2) are barriers. Integration starts at the
 highest reliability pixel and adds the wrapped neighbour difference
 (`atan2(sin Δ, cos Δ)`). Numba runs that walk when it is installed
-(`pip install "ai-insar[fast]"`); otherwise it is a Python heap.
-
-The **Fast unwrap** menu smooths the complex interferogram with a Gaussian
-and then calls `numpy.unwrap` along range and azimuth, starting from the
-middle of the image. That is the separable unwrap reimplemented from the MIT
-example in InSARdev/edu `NISAR/nisar_numpy.py`. It is aimed at smooth phase.
+(`pip install "ai-insar[fast]"`); otherwise it is a Python heap. Set
+`PipelineConfig.unwrap_method` to `quality` to use it from code.
 
 `remove_ramp` then fits a plane on a border frame (default 4 px, weights at
 least 0.3) and subtracts it, so the stable frame is the phase reference. A
@@ -179,7 +249,7 @@ These stay at the code default unless you construct `PipelineConfig` yourself:
 | `ramp_border_px` | 4 | Border used to fit the plane. |
 | `detection_min_coherence` | 0.3 | Coherence gate. Separate from the unwrap floor. |
 | `detection_min_pixels` | 12 | Smallest connected component kept. |
-| `unwrap_method` | `quality` | `quality` (Quality-guided menu) or `separable` (Fast unwrap menu). |
+| `unwrap_method` | `separable` | `separable` (Fast unwrap menu, the default) or `quality` (Quality-guided menu). |
 | `unwrap_sigma` | 2.0 | Gaussian width, in pixels, for Fast unwrap only. |
 | `ps_da_max` | 0.4 | Amplitude-dispersion ceiling for PS linear. |
 | `ps_min_coherence` | 0.5 | Mean-coherence floor for PS linear. A pixel passes if either test passes. |

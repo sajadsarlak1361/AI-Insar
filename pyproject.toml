@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-insar"
-version = "0.1.0"
+version = "0.2.1rc1"
 description = "SLC-first desktop InSAR workbench: interferograms, coherence, unwrapping, SBAS, and a displacement mask"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,12 +27,29 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.11",
     "PySide6>=6.5",
+    # SAFE measurement GeoTIFFs, tiled reads, the fast interferogram path,
+    # UTM terrain correction, GeoTIFF output, and Copernicus predictors.
+    "tifffile>=2024.1.1",
+    "zarr>=3",
+    "numba>=0.59",
+    "pyproj>=3.6",
+    "rasterio>=1.3",
+    "imagecodecs>=2024.1.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "tifffile>=2024.1.1", "zarr>=3", "numba>=0.59"]
 slc = ["tifffile>=2024.1.1", "zarr>=3", "asf_search>=7"]
+# Numba speeds the interferogram product, the quality-guided walk, and the
+# Goldstein overlap-add. The batched Goldstein FFT itself is SciPy and does
+# not need this extra. Speed does not require the insardev package.
 fast = ["numba>=0.59"]
+# Upstream insardev is InSARdev-SAL-1.0. It is not vendored. Installing this
+# extra means the caller accepts that license, including a subscription for
+# funded academic use. insardev depends on insardev_toolkit (BSD-3-Clause).
+# insardev_pygmtsar (also BSD-3-Clause) is omitted here; install it yourself
+# for S1.align_ref / S1.align_rep. The package requires Python 3.12+.
+insardev = ["insardev>=2026.3.21; python_version>='3.12'"]
 
 [project.scripts]
 ai-insar = "ai_insar.cli:main"

@@ -14,9 +14,10 @@ import numpy as np
 from ai_insar.conventions import DEFAULT_MASK_FRACTION, phase_from_los
 from ai_insar.pipeline.coherence import coherence_stack
 from ai_insar.pipeline.detect import detect_displacement
-from ai_insar.pipeline.filtering import filter_stack
+from ai_insar.pipeline.filtering import filter_stack, goldstein_filter
 from ai_insar.pipeline.interferogram import date_pairs, form_interferograms
 from ai_insar.pipeline.synthetic import SLCStack
+from ai_insar.safe_stack import SafeInput
 from ai_insar.pipeline.timeseries import TIMESERIES_LABELS, TIMESERIES_METHODS, invert_timeseries
 from ai_insar.pipeline.unwrap import (
     UNWRAP_LABELS,
@@ -42,7 +43,9 @@ class PipelineConfig:
     goldstein_alpha: float = 0.5
     goldstein_window: int = 32
     goldstein_overlap: float = 0.5
+    goldstein_spectrum_smooth: int = 3
     coherence_window: int = 5
+    coherence_azimuth_window: int | None = None
     unwrap_min_coherence: float = 0.2
     ramp_border_px: int = 4
     detection_sigma: float = 3.5
@@ -53,8 +56,9 @@ class PipelineConfig:
     ps_da_max: float = 0.4
     ps_min_coherence: float = 0.5
     nsbas_weight: float = 0.25
-    unwrap_method: str = "quality"
+    unwrap_method: str = "separable"
     unwrap_sigma: float = 2.0
+    aoi_wkt: str = ""
 
     def __post_init__(self) -> None:
         if self.max_date_span < 1:
@@ -65,8 +69,12 @@ class PipelineConfig:
             raise ValueError("goldstein_window must be >= 8")
         if not 0.0 <= self.goldstein_overlap < 1.0:
             raise ValueError("goldstein_overlap must be in [0, 1)")
+        if self.goldstein_spectrum_smooth < 1:
+            raise ValueError("goldstein_spectrum_smooth must be >= 1")
         if self.coherence_window < 1:
             raise ValueError("coherence_window must be >= 1")
+        if self.coherence_azimuth_window is not None and self.coherence_azimuth_window < 1:
+            raise ValueError("coherence_azimuth_window must be >= 1")
         if not 0.0 <= self.unwrap_min_coherence <= 1.0:
             raise ValueError("unwrap_min_coherence must be between 0 and 1")
         if self.detection_sigma <= 0:
@@ -103,6 +111,27 @@ class Workspace:
     los_m: np.ndarray | None = None
     velocity_m_yr: np.ndarray | None = None
     mask: np.ndarray | None = None
+    dem_m: np.ndarray | None = None
+    topo_baseline_perp_m: float = 0.0
+    topo_slant_range_m: float = 800_000.0
+    topo_incidence_deg: float = 35.0
+    safe_inputs: list[SafeInput] = field(default_factory=list)
+    reference_index: int | None = None
+    swath_model: object | None = None
+    precise_orbit: object | None = None
+    secondary_orbit: object | None = None
+    reference_grid: object | None = None
+    secondary_grid: object | None = None
+    geocoded: np.ndarray | None = None
+    geocode_bounds: tuple | None = None
+    elevation: object | None = None
+    esd_azimuth_shift_s: float | None = None
+    crop_without_coregistration: bool = False
+    common_overlap_mask: np.ndarray | None = None
+    common_overlap_extent: tuple[int, int, int, int] | None = None
+    common_overlap_meta: dict | None = None
+    aoi: dict | None = None
+    aoi_stages: dict | None = None
 
     def clear_products(self) -> None:
         self.pairs = None
@@ -127,13 +156,92 @@ def _require_stack(workspace: Workspace) -> SLCStack:
     return workspace.stack
 
 
+def restrict_array(array: np.ndarray | None, mask: np.ndarray | None) -> np.ndarray | None:
+    """Zero every sample outside the common overlap. Other shapes are unchanged."""
+    if array is None or mask is None or array.shape[-2:] != mask.shape:
+        return array
+    return np.where(mask, array, 0)
+
+
+def apply_overlap_to_workspace(workspace: Workspace) -> None:
+    """Keep rasters that share the overlap grid inside that mask."""
+    mask = workspace.common_overlap_mask
+    if mask is None:
+        return
+    stack = workspace.stack
+    if stack is not None and stack.data.shape[-2:] == mask.shape:
+        stack.data = np.where(mask, stack.data, 0).astype(stack.data.dtype, copy=False)
+    for name in ("interferograms", "filtered", "coherence", "unwrapped", "los_m", "mean_coherence"):
+        setattr(workspace, name, restrict_array(getattr(workspace, name), mask))
+    for name in ("reference_grid", "secondary_grid"):
+        grid = getattr(workspace, name, None)
+        if grid is not None and getattr(grid, "data", None) is not None and grid.data.shape == mask.shape:
+            grid.data = np.where(mask, grid.data, 0).astype(grid.data.dtype, copy=False)
+
+
+def _overlap_crop(array: np.ndarray, workspace: Workspace) -> tuple[np.ndarray, tuple[int, int, int, int] | None]:
+    meta = workspace.common_overlap_meta
+    mask = workspace.common_overlap_mask
+    if not meta or mask is None or array.shape[-2:] != mask.shape or int(meta.get("count", 0)) == 0:
+        return array, None
+    row0, row1 = int(meta["row_start"]), int(meta["row_end"])
+    col0, col1 = int(meta["col_start"]), int(meta["col_end"])
+    tile_mask = mask[row0:row1, col0:col1]
+    if array.ndim == 2:
+        tile = np.where(tile_mask, array[row0:row1, col0:col1], 0)
+    else:
+        tile = np.where(tile_mask, array[..., row0:row1, col0:col1], 0)
+    return tile, (row0, row1, col0, col1)
+
+
+def _overlap_paste(shape: tuple[int, ...], tile: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+    out = np.zeros(shape, dtype=tile.dtype)
+    row0, row1, col0, col1 = box
+    if tile.ndim == 2:
+        out[row0:row1, col0:col1] = tile
+    else:
+        out[..., row0:row1, col0:col1] = tile
+    return out
+
+
 def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> None:
     """Stage 2. Form ``later * conj(earlier)`` on the small-baseline network."""
     stack = _require_stack(workspace)
     if stack.n_dates < 2:
         raise PipelineError("Need at least two SLC dates to form an interferogram.")
-    workspace.pairs = date_pairs(stack.n_dates, workspace.config.max_date_span)
-    workspace.interferograms = form_interferograms(stack.data, workspace.pairs)
+    reference = getattr(workspace, "reference_index", None)
+    if reference is None:
+        workspace.pairs = date_pairs(stack.n_dates, workspace.config.max_date_span)
+        workspace.interferograms = form_interferograms(stack.data, workspace.pairs)
+        relation = "Each is later × conjugate(earlier)."
+    else:
+        reference = int(reference)
+        if reference < 0 or reference >= stack.n_dates:
+            raise PipelineError(f"reference index {reference} is outside the stack.")
+        pairs: list[tuple[int, int]] = []
+        planes = []
+        for secondary in range(stack.n_dates):
+            if secondary == reference:
+                continue
+            earlier, later = sorted((secondary, reference))
+            pairs.append((earlier, later))
+            planes.append(stack.data[reference] * np.conj(stack.data[secondary]))
+        workspace.pairs = pairs
+        workspace.interferograms = np.stack(planes).astype(np.complex64)
+        chronological = all(
+            np.allclose(plane, stack.data[later] * np.conj(stack.data[earlier]))
+            for plane, (earlier, later) in zip(workspace.interferograms, pairs)
+        )
+        if chronological:
+            relation = "Each is later × conjugate(earlier)."
+        else:
+            relation = (
+                f"Each is reference date index {reference} × conjugate(secondary). "
+                "The selected reference is not the later date, so this is not later × conjugate(earlier)."
+            )
+    workspace.interferograms = restrict_array(workspace.interferograms, workspace.common_overlap_mask)
+    backend = getattr(form_interferograms, "last_backend", "numpy")
+    backend_label = {"insardev": "InSARdev", "numba": "Numba", "numpy": "NumPy"}.get(backend, backend)
     workspace.filtered = None
     workspace.coherence = None
     workspace.mean_coherence = None
@@ -142,13 +250,14 @@ def compute_interferograms(workspace: Workspace, log: LogFn | None = None) -> No
     workspace.velocity_m_yr = None
     workspace.mask = None
     times = stack.times_year()
-    spans = [times[later] - times[earlier] for earlier, later in workspace.pairs]
+    spans = [abs(times[later] - times[earlier]) for earlier, later in workspace.pairs]
     _log(
         log,
         f"Interferograms: {len(workspace.pairs)} pairs "
         f"(max date span {workspace.config.max_date_span}, "
         f"temporal baselines {min(spans) * 365.25:.0f}–{max(spans) * 365.25:.0f} days). "
-        "Each is later × conjugate(earlier).",
+        f"{relation} "
+        f"Backend: {backend_label}.",
     )
     _log_truth_phase(stack, workspace.pairs, workspace.interferograms, log)
 
@@ -158,12 +267,16 @@ def compute_filter(workspace: Workspace, log: LogFn | None = None) -> None:
     if workspace.interferograms is None:
         raise PipelineError("Form interferograms before filtering.")
     cfg = workspace.config
+    tile, box = _overlap_crop(workspace.interferograms, workspace)
     workspace.filtered = filter_stack(
-        workspace.interferograms,
+        tile,
         alpha=cfg.goldstein_alpha,
         window=cfg.goldstein_window,
         overlap=cfg.goldstein_overlap,
+        spectrum_smooth=cfg.goldstein_spectrum_smooth,
     )
+    if box is not None:
+        workspace.filtered = _overlap_paste(workspace.interferograms.shape, workspace.filtered, box)
     workspace.unwrapped = None
     workspace.los_m = None
     workspace.velocity_m_yr = None
@@ -172,11 +285,13 @@ def compute_filter(workspace: Workspace, log: LogFn | None = None) -> None:
         residue_count(np.angle(workspace.filtered[index]))
         for index in range(workspace.filtered.shape[0])
     ]
+    filter_backend = getattr(goldstein_filter, "last_backend", "numpy")
     _log(
         log,
         f"Goldstein filter: alpha={cfg.goldstein_alpha:.2f}, window={cfg.goldstein_window}. "
         f"Wrapped residues after filtering: {sum(residues)} "
-        f"(per pair min {min(residues)}, max {max(residues)}).",
+        f"(per pair min {min(residues)}, max {max(residues)}). "
+        f"Backend: batched FFT ({filter_backend}).",
     )
 
 
@@ -185,25 +300,43 @@ def compute_coherence(workspace: Workspace, log: LogFn | None = None) -> None:
     stack = _require_stack(workspace)
     if workspace.pairs is None:
         raise PipelineError("Form interferograms before estimating coherence.")
+    cfg = workspace.config
+    azimuth = cfg.coherence_azimuth_window
+    slc, box = _overlap_crop(stack.data, workspace)
     workspace.coherence = coherence_stack(
-        stack.data, workspace.pairs, workspace.config.coherence_window
+        slc,
+        workspace.pairs,
+        cfg.coherence_window,
+        azimuth_window=azimuth,
     )
+    if box is not None:
+        workspace.coherence = _overlap_paste(
+            (workspace.coherence.shape[0], stack.data.shape[-2], stack.data.shape[-1]),
+            workspace.coherence,
+            box,
+        )
     workspace.mean_coherence = np.mean(workspace.coherence, axis=0).astype(np.float32)
+    workspace.mean_coherence = restrict_array(workspace.mean_coherence, workspace.common_overlap_mask)
     workspace.unwrapped = None
     workspace.los_m = None
     workspace.velocity_m_yr = None
     workspace.mask = None
     finite = workspace.coherence[np.isfinite(workspace.coherence)]
+    azimuth_size = cfg.coherence_window if azimuth is None else int(azimuth)
     _log(
         log,
-        f"Coherence: {workspace.config.coherence_window}×{workspace.config.coherence_window} "
+        f"Coherence: {cfg.coherence_window}×{azimuth_size} "
         f"window on each SLC pair. Median {float(np.median(finite)):.3f}, "
         f"5th percentile {float(np.percentile(finite, 5)):.3f}.",
     )
 
 
 def compute_unwrap(workspace: Workspace, log: LogFn | None = None) -> None:
-    """Stage 5. Quality-guided unwrap of the filtered phase, then remove a border plane."""
+    """Stage 5. Unwrap the filtered phase, then remove a border plane.
+
+    The default method is the fast separable unwrap. Quality-guided remains
+    available by setting ``unwrap_method`` to ``quality``.
+    """
     if workspace.filtered is None or workspace.coherence is None:
         raise PipelineError("Filter the interferograms and estimate coherence before unwrapping.")
     cfg = workspace.config
@@ -321,6 +454,8 @@ def compute_detection(workspace: Workspace, log: LogFn | None = None) -> None:
 def run_all(workspace: Workspace, log: LogFn | None = None) -> None:
     """Run stages 2–7. The workspace must already hold an SLC stack."""
     stack = _require_stack(workspace)
+    if workspace.aoi and workspace.aoi.get("message"):
+        _log(log, str(workspace.aoi["message"]))
     _log(
         log,
         f"SLC stack {stack.data.shape} {stack.data.dtype}, "

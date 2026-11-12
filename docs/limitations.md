@@ -11,17 +11,27 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 - File → Open Sentinel-1 SAFE Product… (and Open SAFE folder…) reads a
   Sentinel-1 SLC SAFE zip, folder, or `manifest.safe` for metadata, a
   quick-look, and a window of one swath and polarisation (default IW1 VV).
-  File → Open SAFE stack… reads many SAFE zips, or a folder of them, into
-  one stack: the same band and the same pixel window, dates from each
-  product start time. A product without that band is skipped. The zips are
-  not extracted. That stack can run the interferogram stage. The window is
-  not coregistered to a DEM or to the other dates.
+  File → Open SAFE stack… reads many SAFE zips, without unzipping them,
+  into one time-sorted `complex64` cube. The same crop, swath, and
+  polarisation are used on every date. That is teaching crop-window
+  alignment: the same rows and columns, not a coregistered resample.
+  Pipeline → ALIGN SLC can then estimate one constant amplitude shift.
+  Pipeline → MAKE TOPO_RA removes topographic phase only when you load a
+  DEM and a non-zero perpendicular baseline. Pipeline → GEOCODE does not
+  resample the grid.
+  `pip install "ai-insar[insardev]"` prefers that package for
+  interferograms, `Stack.load`, and `Stack.align`. A successful result is
+  kept even when it differs from the NumPy product. The zip crop remains
+  when `Stack.load` fails. Funded academic use of `insardev` needs a
+  subscription. `AI_INSAR_BACKEND=numpy` forces the in-tree path.
   Data → Fetch Sentinel-1 SLC can search ASF and import that crop from a
   local zip, SAFE, measurement TIFF, or complex `.npy`. A downloaded zip
   does not have to be extracted first. Downloading needs Earthdata
-  credentials and the optional `asf_search` package. There is still no DEM,
-  no geocoding, no earth flattening, no calibration, no TOPS deburst, no
-  enhanced spectral diversity, and no burst stitching.
+  credentials and the optional `asf_search` package. There is still no
+  downloaded DEM, no map geocoding, no earth flattening, no calibration,
+  no TOPS deburst, no enhanced spectral diversity, and no burst stitching.
+  See
+  [the InSARdev notes](../README.md#insardev).
 - No multilook that changes the array shape. The coherence window and the
   Goldstein window are the spatial averaging.
 - Real arrays, non-finite values, and a date list whose length does not
@@ -40,11 +50,11 @@ MintPy, SNAP, SNAPHU, GMTSAR, or Doris.
 - The Goldstein filter and the SLC-pair coherence estimate each have their
   own menu. Coherence is computed from the SLC dates, not from the filtered
   interferogram, so a stronger Goldstein alpha cannot raise it.
-- The default unwrap is quality-guided path following. Fast unwrap is a
-  Gaussian smooth plus separable `numpy.unwrap`. Neither is SNAPHU or a
-  minimum-cost-flow unwrap. Dense residues can leave 2π islands. Low
-  coherence pixels are barriers in the quality-guided walk; a region the
-  seed cannot reach stays NaN and drops out of the time series.
+- The default unwrap is Fast unwrap: a Gaussian smooth plus separable
+  `numpy.unwrap`. Quality-guided path following is still in its own menu.
+  Neither is SNAPHU or a minimum-cost-flow unwrap. Dense residues can leave
+  2π islands. Low coherence pixels are barriers in the quality-guided walk;
+  a region the seed cannot reach stays NaN and drops out of the time series.
 - The default time series is SBAS: one displacement per date after the first,
   which is fixed at zero, then one linear LOS velocity. Stacking, NSBAS, PS
   linear, phase linking, and a one-year seasonal fit are separate menus.

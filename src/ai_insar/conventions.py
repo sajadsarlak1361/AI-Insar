@@ -52,23 +52,27 @@ ISCE, MintPy, SNAP, GMTSAR, Doris, or SNAPHU.
 - Inputs are in-memory SLC stacks on a radar grid. File → Open Sentinel-1
   SAFE Product reads a SAFE zip, folder, or manifest for metadata and a
   crop of one swath and polarisation (default IW1 VV). File → Open SAFE
-  stack reads many SAFE zips (or a folder of zips) into one stack: the
-  same band and the same pixel window, sorted by each product start time.
-  That stack is what Interferogram and Run all stages use. The products
-  are not coregistered. Data → Fetch Sentinel-1 SLC can search ASF and
-  import a crop, including a zip that has not been extracted. Downloading
-  the zip needs Earthdata credentials and the optional asf_search package.
-  There is still no DEM, geocoding, calibration, TOPS deburst,
+  stack… multi-selects many SAFE zips, without unzipping them, into one
+  time-sorted complex64 cube. The same crop, swath, and polarisation are
+  used for every date. That is teaching crop-window alignment: the crop
+  itself does not resample. Pipeline → ALIGN SLC can afterwards apply one
+  constant amplitude shift per date. Data → Fetch Sentinel-1 SLC can search
+  ASF and import that crop, including a zip that has not been extracted.
+  Downloading the zip needs Earthdata credentials and the optional
+  asf_search package. No DEM is downloaded. Pipeline → MAKE TOPO_RA removes
+  topographic phase only after you load a height array and a non-zero
+  perpendicular baseline. Pipeline → GEOCODE does not resample; products
+  stay on the radar grid. There is still no calibration, TOPS deburst,
   earth-flattening, ESD, or burst stitching.
 - There is no orbit download, ionospheric correction, or weather model.
   Each interferogram only has a plane removed, estimated on the image border.
 - The Goldstein filter and the SLC-pair coherence estimate each have their
   own menu. Coherence is computed from the SLC dates, not from the filtered
   interferogram.
-- Unwrapping is either quality-guided path following or a fast separable
-  numpy.unwrap after a Gaussian smooth (the Fast unwrap menu). Neither is
-  SNAPHU. Dense residues can leave 2*pi islands. Low-coherence pixels are
-  barriers in the quality-guided walk.
+- Unwrapping defaults to a fast separable numpy.unwrap after a Gaussian
+  smooth (the Fast unwrap menu). Quality-guided path following is still
+  available. Neither is SNAPHU. Dense residues can leave 2*pi islands.
+  Low-coherence pixels are barriers in the quality-guided walk.
 - Time series is one of SBAS, interferogram stacking, a linear NSBAS-style
   constraint, persistent-scatterer selection plus a linear rate, sequential
   phase linking, or a one-year sine and cosine (Seasonal). There is no

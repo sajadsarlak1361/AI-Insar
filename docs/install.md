@@ -81,3 +81,53 @@ PYTHONPATH=src python -m ai_insar check
 ```
 
 Prefer `pip install -e .` so `ai-insar` is on `PATH`.
+
+## Optional readers
+
+Measurement GeoTIFFs inside a SAFE zip need `tifffile` (and `zarr` for a
+large crop read in tiles):
+
+```bash
+pip install -e ".[slc]"
+```
+
+Numba speeds the interferogram product, the Goldstein overlap-add, and the
+quality-guided unwrap. The default Goldstein filter is a batched SciPy FFT
+and the default unwrap is the fast separable path, so a large stack is
+already faster without this extra. Neither step needs `insardev`.
+
+```bash
+pip install -e ".[fast]"
+```
+
+Time the synthetic path with `python scripts/bench_pipeline.py`. To run the
+same Goldstein FFT on PyTorch, install Torch yourself and set
+`AI_INSAR_FILTER=torch`. The default device is CPU
+(`AI_INSAR_FILTER_DEVICE=cpu`). GPU is not required, and the tests pass
+without Torch.
+
+## Optional InSARdev (InSARdev-SAL-1.0)
+
+`insardev` is not vendored. The extra installs the upstream package on
+Python 3.12 or newer:
+
+```bash
+pip install "ai-insar[insardev]"
+```
+
+Installing or using that package means you accept InSARdev-SAL-1.0,
+including a subscription for funded academic, institutional, and
+professional use. This MIT project does not grant the subscription. Read
+[NOTICE](../NOTICE) and the upstream
+[LICENSE](https://github.com/InSARdev/core/blob/main/insardev/LICENSE) and
+[SUBSCRIBE](https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE)
+pages before you install.
+
+With the package present, interferograms, `Stack.load`, and `Stack.align`
+prefer InSARdev. A returned interferogram cube is kept even when it
+differs from `later * conjugate(earlier)`. The NumPy/Numba product runs
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. A SAFE zip list uses the in-tree crop only after
+`Stack.load` fails. `insardev_pygmtsar` (BSD-3-Clause) is a separate
+install for `S1.align_ref` / `S1.align_rep`, and that call is also skipped
+when `AI_INSAR_BACKEND=numpy`. See [InSARdev](../README.md#insardev).

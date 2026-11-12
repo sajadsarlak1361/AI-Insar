@@ -9,15 +9,18 @@ and installs the local project.
 
 ## Download the Windows zip from Releases
 
-Stable package, tagged on `main` (SBAS only, no Sentinel-1 fetch menu):
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.1.0/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0)).
+Prerelease under test (SAFE readers installed by `run_windows.bat`, Create
+Stack resampling, same-track pair check, and a required analysis region):
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.1-rc.1/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.1-rc.1](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.1-rc.1)).
 
-Last uploaded prerelease (Sentinel-1 fetch menu, one menu per time-series
-method, fast unwrap, seasonal fit). It does not include the Goldstein and
-Coherence menus or map export:
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0-rc.4/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4)).
+Previous package on `main`:
+[v0.2.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0).
+
+Earlier stable package (SBAS only, no Sentinel-1 fetch menu):
+[v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0).
+The last prerelease before this tag is
+[v0.2.0-rc.4](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0-rc.4).
 
 Unzip either archive, open the `ai-insar` folder, and double-click
 `run_windows.bat`. Neither zip is stored in the git tree (`dist/` stays
@@ -64,6 +67,21 @@ The script always `cd`s to its own directory (`%~dp0`), then does only this:
 Leave the console open while the window is running. The first launch is the
 slow one. Later launches reuse `.venv` and only re-run pip if you start the
 batch file again (pip will see that the editable install is already there).
+
+## Parameter dialogs
+
+File → **Open SAFE stack…**, **Open SAFE folder…**, and **Open Sentinel-1
+SAFE Product…** use the same chooser. Select several SAFE folders and
+`.zip` files together (Ctrl or Shift). It is not a one-folder dialog.
+The table then shows File Name, Type, Acquisition, Track, and Orbit, and
+a counter such as `2 Products`. Run keeps every listed product in the
+stack. Manifest fields that cannot be read stay blank.
+
+The Interferogram, Coherence, Goldstein, Topographic Phase Removal, and
+Apply Orbit File menus open a dialog (I/O and Processing Parameters) and
+wait for Run. They do not start the stage until you confirm. Optional
+NumPy saves use the SNAP suffixes `_Ifg`, `_Coh`, `_Flt`, `_DInSAR`, and
+`_Orb`. Orbit files are not downloaded.
 
 If install or the GUI returns a non-zero status, the batch file `pause`s.
 If the window closes before you can read it, run `run_windows.bat` from

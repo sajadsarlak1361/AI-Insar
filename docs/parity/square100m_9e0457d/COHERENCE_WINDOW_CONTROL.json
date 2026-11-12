@@ -1,0 +1,234 @@
+{
+  "InterferogramOp": [
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        -1,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 1.038682017442985e-08,
+      "median_abs": 8.665848844069401e-09,
+      "max_abs": 3.6563526872868124e-08
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        11
+      ],
+      "scipy_origin": [
+        -1,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.03510743244578172,
+      "median_abs": 0.02166074472168003,
+      "max_abs": 0.18469492686102412
+    },
+    {
+      "kernel_az_rg": [
+        3,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 0.06737661707637504,
+      "median_abs": 0.05381718506732275,
+      "max_abs": 0.2752188719591334
+    },
+    {
+      "kernel_az_rg": [
+        3,
+        11
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.07800838623950794,
+      "median_abs": 0.06658891294451508,
+      "max_abs": 0.29339587774100284
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.13892155966568984,
+      "median_abs": 0.11769746548214166,
+      "max_abs": 0.37874506101925376
+    }
+  ],
+  "CoherenceOp_bias_off": [
+    {
+      "kernel_az_rg": [
+        3,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 9.019985752168195e-09,
+      "median_abs": 7.49587342196989e-09,
+      "max_abs": 3.637171530623817e-08
+    },
+    {
+      "kernel_az_rg": [
+        3,
+        11
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.03190255026226927,
+      "median_abs": 0.021783606474827077,
+      "max_abs": 0.17528233885729416
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        -1,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 0.06737661692656939,
+      "median_abs": 0.05381714924192703,
+      "max_abs": 0.27521888849946763
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        11
+      ],
+      "scipy_origin": [
+        -1,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.07187118594094107,
+      "median_abs": 0.05588819908769524,
+      "max_abs": 0.36702787111523505
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.11045363058887214,
+      "median_abs": 0.09410005892679058,
+      "max_abs": 0.3099677711291543
+    }
+  ],
+  "CoherenceOp_default_bias_on": [
+    {
+      "kernel_az_rg": [
+        3,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 0.013829242713832549,
+      "median_abs": 0.014269323193730782,
+      "max_abs": 0.016625178335772775
+    },
+    {
+      "kernel_az_rg": [
+        3,
+        11
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.030438438908126995,
+      "median_abs": 0.01773220068140005,
+      "max_abs": 0.18473080260838604
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        -1,
+        -1
+      ],
+      "count": 154,
+      "mean_abs": 0.07366537975318407,
+      "median_abs": 0.06467329202414551,
+      "max_abs": 0.29115965900632645
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        11
+      ],
+      "scipy_origin": [
+        -1,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.07690620852934593,
+      "median_abs": 0.06478135195402987,
+      "max_abs": 0.3817411286664283
+    },
+    {
+      "kernel_az_rg": [
+        2,
+        10
+      ],
+      "scipy_origin": [
+        0,
+        0
+      ],
+      "count": 154,
+      "mean_abs": 0.11233990755506496,
+      "median_abs": 0.10115098659880822,
+      "max_abs": 0.3226732136247984
+    }
+  ],
+  "requested_parameters": {
+    "cohWinAz": 2,
+    "cohWinRg": 10
+  },
+  "conclusion": "New AI exact2x10 forward window matches native InterferogramOp. The preserved native standalone CoherenceOp squarePixel control uses3x10 plus optional default bias correction; it is a different operator path, not the target Interferogram Formation coherence.",
+  "method": "Actual fresh native topography-removed IFG and original native SLC powers, no synthetic data and no AI resampling/phase residual in this kernel control.",
+  "native_square_pixel_adjustment": "CoherenceOp.initialize invokes getDerivedParameters; overrides cohWinAz to3 for this scene. InterferogramOp retains explicit2x10. Confirmed by real-data residuals at float32 rounding level.",
+  "prior_437b766_AI_kernel": [
+    3,
+    11
+  ],
+  "actual_AI_kernel": [
+    2,
+    10
+  ],
+  "native_controls_reused_from": "/workspace/dual-app-parity/square100m/final_437b766/COHERENCE_WINDOW_CONTROL.json"
+}

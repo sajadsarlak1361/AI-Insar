@@ -1,11 +1,11 @@
 # Data format
 
 AI Insar processes one SLC cube and optional JSON. A Sentinel-1 SAFE product
-can be opened for inspection, and many SAFE zips can be cropped into that
-cube as one date each. The cube is the radar grid that is processed. CEOS,
-a DEM, and orbit files are not read. Opening a SAFE product does not
-deburst or calibrate. Interferograms are a later pipeline stage on the
-cube, not part of opening the zip.
+can be opened for inspection and a crop of one swath and polarisation loaded
+into that cube. File → Open SAFE stack reads many zips into that same cube
+and can form interferograms from the shared crop. The cube is the radar
+grid that is processed. CEOS, a DEM, and orbit files are not read. Opening
+a SAFE product does not deburst or calibrate.
 
 ## Sentinel-1 SAFE
 
@@ -53,6 +53,31 @@ Install the optional reader with `pip install "ai-insar[slc]"`.
 File → **Fetch Sentinel-1 SLC…** can import that same zip, folder, or
 measurement TIFF. A zip downloaded from ASF does not have to be unzipped
 first.
+
+## SAFE stack
+
+File → **Open SAFE stack…** takes many product `.zip` files in one dialog.
+The user does not unzip them. Metadata is read from each `manifest.safe`,
+then one measurement window is read (default IW1 VV). The window row,
+column, height, and width are the same numbers on every date. Dates are
+sorted by the manifest start time. The array is `complex64`, shape
+`(n_dates, height, width)`.
+
+A progress dialog reports opening and reading file `i` of `N`.
+
+The checkbox forms interferograms on that stack:
+`slc[later] * conjugate(slc[earlier])`. Later pipeline stages use the same
+cube.
+
+This alignment is a teaching crop window. Pixels at the same row and column
+are not resampled onto a common radar grid. There is no coregistration,
+deburst, or orbit-based shift. Scenes that do not already share that window
+will not make a meaningful interferogram. With `insardev` installed,
+`Stack.load` is tried first and its cube replaces this crop when the call
+returns one. A failed load keeps the crop. Interferograms from that
+package are kept even when they differ from `later * conjugate(earlier)`.
+`AI_INSAR_BACKEND=numpy` keeps this crop and the NumPy/Numba product. See
+[NOTICE](../NOTICE).
 
 ## `slc.npy`
 
@@ -166,14 +191,14 @@ two-date illustration of the keys, not the eight-date demo (that run writes
     "detection_min_coherence": 0.3,
     "detection_min_pixels": 12,
     "timeseries_method": "sbas",
-    "unwrap_method": "quality"
+    "unwrap_method": "separable"
   }
 }
 ```
 
 `pairs` entries are `[earlier, later]`. The config block is the subset
 `save_products` writes. It includes `timeseries_method` (`sbas` by default)
-and `unwrap_method` (`quality` or `separable`). Overlap, the ramp border,
+and `unwrap_method` (`separable` by default, or `quality`). Overlap, the ramp border,
 the Fast-unwrap sigma, and the PS / NSBAS weights are not in the file.
 See [pipeline.md](pipeline.md).
 

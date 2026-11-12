@@ -1,0 +1,172 @@
+Third-party notices
+====================
+
+AI Insar is MIT. See LICENSE. The notes below are the attribution for
+InSARdev material this project uses.
+
+Ported fast kernels (owner authorized)
+--------------------------------------
+
+The repository owner authorized mapping and copying InSARdev algorithm
+source into this MIT tree after speaking with the InSARdev author, Alexey
+Pechnikov. The fast CPU path does not import ``insardev`` and does not
+need ``pip install insardev``.
+
+Adapted into ``src/ai_insar/pipeline/filtering.py`` from InSARdev
+``utils_goldstein.py`` (copyright (c) 2025 Alexey Pechnikov,
+https://github.com/InSARdev/core):
+
+- ``goldstein_numpy``: batched ``scipy.fft`` of interferogram patches,
+  weight ``|FFT| ** alpha``, triangular overlap-add.
+- ``goldstein_pytorch``: the same filter with the FFT on PyTorch when
+  ``AI_INSAR_FILTER=torch``. Torch is optional. Tests and the default
+  path run with NumPy/SciPy only.
+
+The in-tree filter keeps this project's function arguments (``alpha``,
+``window``, ``overlap``, ``spectrum_smooth``). ``alpha`` is the value from
+the Goldstein menu, not a per-patch coherence. A small floor on the
+triangular window keeps border pixels finite. Spectral smoothing is the
+existing ``spectrum_smooth`` argument, applied to ``|FFT|`` before the
+power. Overlap-add uses Numba when ``pip install "ai-insar[fast]"`` is
+installed, and a Python loop otherwise.
+
+The rest of the InSARdev-SAL-1.0 package (Stack, Batch, the DCT/IRLS
+unwrap, and the other ``utils_*`` modules) is not copied. Quality-guided
+unwrap stays the in-tree Numba walk. The default unwrap is the separable
+path below, which is faster on CPU for smooth phase and does not need
+that DCT solver.
+
+InSARdev/edu (MIT)
+------------------
+
+Copyright (c) 2026 InSARdev
+https://github.com/InSARdev/edu
+
+The MIT license requires this copyright and permission notice to travel
+with substantial portions of that software. The educational scripts are
+not pasted in as project files. These patterns are reimplemented:
+
+- Fast unwrap in `src/ai_insar/pipeline/unwrap.py` follows
+  `NISAR/nisar_numpy.py`: Gaussian smooth, then `numpy.unwrap` along range
+  and azimuth, splitting azimuth at the middle of the image.
+- Interferograms in `src/ai_insar/pipeline/interferogram.py` are the complex
+  product `later * conjugate(earlier)`, the same product as
+  `NISAR/nisar_numpy.py` (`ref * conj(rep)` with the later date as ref) and
+  `Sentinel-1/s1.py` (`rep_aligned * conj(slc_ref)`).
+
+`Sentinel-1/s1.py` also demonstrates TOPS deramp, OpenCV amplitude
+coregistration, OR-Tools branch cuts, and geocoding. Those steps need
+orbits, OpenCV, and OR-Tools. They are not included. The SAFE zip stack
+uses a teaching crop window instead of that coregistration.
+
+InSARdev/core `insardev` (InSARdev-SAL-1.0)
+-------------------------------------------
+
+Copyright (c) 2025 Aleksei Pechnikov (Alexey Pechnikov)
+https://github.com/InSARdev/core/blob/main/insardev/LICENSE
+SPDX-License-Identifier: InSARdev-SAL-1.0
+
+This is a source-available license. It is not an OSI open-source license.
+Section 4 permits non-commercial redistribution of the software only when
+the copy keeps the copyright notice, includes that license, and (for a
+modified copy) stays under InSARdev-SAL-1.0. Commercial redistribution
+needs a separate written agreement. Funded academic, institutional, and
+professional use needs a subscription even to run the software.
+
+Those terms conflict with redistributing the `insardev` package inside
+this MIT project. The package is not vendored and the fast path does not
+import it. The Goldstein kernel described above is the exception: the
+owner authorized that adaptation after speaking with the author. Do not
+commit the rest of the SAL tree (Stack, Batch, or the other utils modules).
+
+The repository owner has personally accepted InSARdev-SAL-1.0 for this
+optional academic integration. It is an install extra, not a vendored copy:
+
+    pip install "ai-insar[insardev]"
+
+On Python 3.12 or newer that extra installs the upstream `insardev`
+package. The same package is `pip install insardev` if you install it
+yourself. Installing it, importing it, or running the InSARdev-backed
+path means you accept InSARdev-SAL-1.0. Funded academic, institutional,
+and professional use needs a subscription even to run the software. This
+MIT repository does not grant that subscription and does not relicense
+`insardev` as MIT. Read:
+
+    https://github.com/InSARdev/core/blob/main/insardev/LICENSE
+    https://github.com/InSARdev/core/blob/main/insardev/SUBSCRIBE
+
+`src/ai_insar/insardev_optional.py` calls public entry points only when
+that install is present:
+
+- Interferograms call `Stack.pairs().interferogram()` first, with no
+  filter wavelength (single-look `reference * conjugate(repeat)`). The
+  later date is the reference. A returned complex cube is kept even when
+  its values differ from the NumPy/Numba product in
+  `src/ai_insar/pipeline/interferogram.py`. That in-tree product runs
+  when `insardev` is missing, the call fails, or `AI_INSAR_BACKEND=numpy`.
+- `Stack.load` is tried first for scene paths, including SAFE zip lists.
+  A returned complex cube is the stack. A failed call on zip paths uses
+  this project's crop reader. Upstream `Stack.load` asks for a dask
+  client, so a zip list often falls back after that failure.
+- `Stack.align` is tried when the loaded object has that method.
+  `AI_INSAR_BACKEND=numpy` skips `Stack.load` and `Stack.align`.
+
+InSARdev/core `insardev_pygmtsar` and `insardev_toolkit` (BSD-3-Clause)
+-----------------------------------------------------------------------
+
+Copyright (c) 2025, Alexey Pechnikov
+https://github.com/InSARdev/core
+
+BSD-3-Clause would allow a copy that keeps the copyright notice, the
+license conditions, and the disclaimer, and that does not use the author's
+name to endorse this project. Those packages are still not vendored. The
+`insardev` extra pulls `insardev_toolkit` because upstream declares that
+dependency. `insardev_pygmtsar` is not part of the extra.
+
+`insardev_toolkit.PyGMTSAR.safeload` translates SAFE burst products into
+the InSARdev layout when you pass burst ids. `insardev_pygmtsar.S1.align_ref`
+and `align_rep` are geometric coregistration and need a burst directory,
+orbits, and a DEM. The wrappers call those functions when the packages
+import and you pass those inputs. The SAFE zip crop does not call them
+and does not coregister the window. They scan GMTSAR-style burst
+directories. They do not replace the complex64 crop reader.
+
+GMTSAR (GPL-3.0) — workflow only
+---------------------------------
+
+David Sandwell, Rob Mellors, Xiaopeng Tong, and others, University of
+California San Diego / Scripps Institution of Oceanography.
+https://github.com/gmtsar/gmtsar
+SPDX-License-Identifier: GPL-3.0-only
+
+GMTSAR is GPL-3.0. No GMTSAR C, C++, or C-shell source is copied into this
+MIT tree, and this program does not link GMTSAR binaries. The six-stage
+pair order and the SBAS step that follows it are used only as a workflow
+outline:
+
+1. PREPROCESS
+2. ALIGN SLC
+3. MAKE TOPO_RA
+4. MAKE INTERFEROGRAMS
+5. UNWRAP PHASE
+6. GEOCODE
+
+Those names appear in the Pipeline menu, in Help → GMTSAR flowchart, in
+`src/ai_insar/gmtsar_flow.py`, in the README section "GMTSAR stage order",
+and in `docs/pipeline.md`. The implementations are original MIT code:
+amplitude cross-correlation and an FFT phase ramp in
+`src/ai_insar/pipeline/align.py`, and the standard small-baseline
+topographic phase in `src/ai_insar/pipeline/topo.py`. Interferograms,
+Goldstein, unwrap, and SBAS are the existing in-tree stages.
+
+ESA SNAP
+--------
+
+SNAP is GPL. None of its source is copied. The SAFE reader in
+`src/ai_insar/safe.py` is an independent reader of the public SAFE layout.
+
+Sentinel-1 SAFE test fixture
+----------------------------
+
+`tests/fixtures/safe/NOTICE` attributes the reduced Apache-2.0 snapshot
+from bopen/xarray-sentinel. That notice applies to the fixture only.

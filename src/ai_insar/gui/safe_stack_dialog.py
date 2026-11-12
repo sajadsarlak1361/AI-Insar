@@ -1,105 +1,194 @@
-"""Open many Sentinel-1 SAFE zips into one SLC stack."""
+"""Open several SAFE folders or zips, then load one crop-window stack.
+
+The product table matches SNAP's ProductSet-Reader. Create Stack parameters
+are on the second tab. Resampling NONE copies the same crop. Any other
+kernel uses the initial offset and the output extent.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
+from ai_insar.gui.product_set import OpenedPaths, ProductSetWidget
 from ai_insar.gui.qt import QtWidgets
+from ai_insar.pipeline.create_stack import EXTENTS, OFFSET_METHODS, RESAMPLING
 from ai_insar.safe import DEFAULT_POLARISATION, DEFAULT_SWATH
-from ai_insar.sentinel import SafeStackLoad, expand_safe_inputs, load_safe_slc_stack
+from ai_insar.snap_products import OPERATOR_HELP
+
+_SWATHS = ("IW1", "IW2", "IW3", "EW1", "EW2", "EW3", "EW4", "EW5", "WV1", "WV2")
+_POLARISATIONS = ("VV", "VH", "HH", "HV")
 
 
 class SafeStackDialog(QtWidgets.QDialog):
-    """Pick many SAFE zips, or a folder of them, and crop one band into a stack."""
+    """Product list plus the crop applied to every selected SAFE product."""
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        *,
+        n_files: int,
+        initial_paths: Sequence[Path | str] | None = None,
+        opened_paths: OpenedPaths | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add many SAFE zips to stack")
+        self.setWindowTitle("Open SAFE stack")
         self.setObjectName("safeStackDialog")
-        self.resize(720, 480)
-        self.paths: list[Path] = []
-        self.load_result: SafeStackLoad | None = None
-        self._build()
-
-    def _build(self) -> None:
+        self.resize(820, 640)
         layout = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            "Choose several Sentinel-1 SAFE .zip files, or a folder that contains them. "
-            ".SAFE folders are optional. The zip is read in place and is not extracted. "
-            "Each product contributes one date: the same swath and polarisation "
-            "(default IW1 VV) and the same pixel window. Dates come from the product "
-            "start time and are sorted. A product that does not contain that band is skipped."
+
+        help_line = QtWidgets.QLabel(OPERATOR_HELP["stack"])
+        help_line.setObjectName("operatorHelp")
+        help_line.setWordWrap(True)
+        layout.addWidget(help_line)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setObjectName("safeStackTabs")
+        self.product_set = ProductSetWidget(self, opened_paths=opened_paths)
+        self.product_set.changed.connect(self._sync_reference)
+        reader = QtWidgets.QWidget()
+        reader_layout = QtWidgets.QVBoxLayout(reader)
+        reader_note = QtWidgets.QLabel(
+            "Add SAFE folders or .zip files. The first row is the reference in this list. "
+            "The SLC cube is still sorted by the manifest start time. "
+            "Zip files stay zipped."
         )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-        note = QtWidgets.QLabel(
-            "The products are not coregistered. There is no DEM, no orbit download, "
-            "and no TOPS deburst. The shared window is a teaching crop. "
-            "Interferograms on the stack are later × conjugate(earlier), "
-            "the same as on a synthetic or .npy stack."
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        reader_note.setWordWrap(True)
+        reader_layout.addWidget(reader_note)
+        reader_layout.addWidget(self.product_set)
+        self.tabs.addTab(reader, "ProductSet-Reader")
+        self.tabs.addTab(self._create_tab(n_files), "Create Stack")
+        layout.addWidget(self.tabs, stretch=1)
 
         buttons = QtWidgets.QHBoxLayout()
-        choose_zips = QtWidgets.QPushButton("Choose SAFE zips…")
-        choose_zips.setObjectName("chooseSafeZipsButton")
-        choose_zips.clicked.connect(lambda _checked=False: self.choose_zips())
-        choose_folder = QtWidgets.QPushButton("Choose folder of zips…")
-        choose_folder.setObjectName("chooseSafeFolderButton")
-        choose_folder.clicked.connect(lambda _checked=False: self.choose_folder())
-        clear = QtWidgets.QPushButton("Clear list")
-        clear.clicked.connect(lambda _checked=False: self.clear_paths())
-        buttons.addWidget(choose_zips)
-        buttons.addWidget(choose_folder)
-        buttons.addWidget(clear)
         buttons.addStretch(1)
+        run = QtWidgets.QPushButton("Run")
+        run.setObjectName("safeStackRun")
+        run.clicked.connect(self._on_run)
+        close = QtWidgets.QPushButton("Close")
+        close.setObjectName("safeStackClose")
+        close.clicked.connect(self.reject)
+        buttons.addWidget(run)
+        buttons.addWidget(close)
         layout.addLayout(buttons)
 
-        self.files = QtWidgets.QListWidget()
-        self.files.setObjectName("safeStackFileList")
-        layout.addWidget(self.files, stretch=1)
+        if initial_paths:
+            self.product_set.add_paths(initial_paths)
+        self._sync_reference()
 
-        crop = QtWidgets.QHBoxLayout()
-        self.swath = QtWidgets.QComboBox()
-        self.swath.setObjectName("safeStackSwath")
-        self.swath.addItems(["IW1", "IW2", "IW3"])
-        self.swath.setEditable(True)
-        self.swath.setCurrentText(DEFAULT_SWATH)
-        self.pol = QtWidgets.QComboBox()
-        self.pol.setObjectName("safeStackPol")
-        self.pol.addItems(["VV", "VH", "HH", "HV"])
-        self.pol.setEditable(True)
-        self.pol.setCurrentText(DEFAULT_POLARISATION)
+    def _create_tab(self, n_files: int) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        note = QtWidgets.QLabel(
+            f"Read {n_files} Sentinel-1 SAFE zip(s) into one complex64 stack. "
+            "The zips stay zipped. Every date uses this swath, polarisation, "
+            "and crop, then the dates are sorted by the manifest start time.\n\n"
+            "Teaching crop-window alignment: the same row and column window "
+            "is taken from each measurement. There is no coregistration, "
+            "deburst, or calibration. The crop is not Split, Apply Orbit File, "
+            "Back Geocoding, or ESD. If interferograms are requested, each one "
+            "is the selected reference times the conjugate of another date. "
+            "That equals later × conjugate(earlier) only when the reference is "
+            "the later date. SAFE folders are accepted as well as .zip files."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("safeStackNote")
+        layout.addWidget(note)
+
+        form = QtWidgets.QFormLayout()
+        self.reference = QtWidgets.QComboBox()
+        self.reference.setObjectName("createStackReference")
+        self.reference.setToolTip(
+            "User-chosen reference. Every other selected product stays in the stack."
+        )
+        self.resampling = QtWidgets.QComboBox()
+        self.resampling.setObjectName("createStackResampling")
+        self.resampling.addItems(RESAMPLING)
+        self.resampling.setCurrentText("NONE")
+        self.resampling.currentTextChanged.connect(lambda _text: self._explain_stack())
+        self.initial_offset = QtWidgets.QComboBox()
+        self.initial_offset.setObjectName("createStackOffset")
+        self.initial_offset.addItems(OFFSET_METHODS)
+        self.initial_offset.setCurrentText("Orbit")
+        self.initial_offset.setToolTip(
+            "Orbit uses the state vectors. Product Geolocation uses the annotation grid. "
+            "GCP is listed because SNAP shows it; these SAFE products have no ground control points."
+        )
+        self.output_extents = QtWidgets.QComboBox()
+        self.output_extents.setObjectName("createStackExtents")
+        self.output_extents.addItems(EXTENTS)
+        self.output_extents.setCurrentText("Master")
+        self.find_reference = QtWidgets.QPushButton("Find Optimal Reference")
+        self.find_reference.setObjectName("createStackFindReference")
+        self.find_reference.setToolTip(
+            "Selects the product whose acquisition is closest to the median time in this list."
+        )
+        self.find_reference.clicked.connect(self._find_reference)
+        self.stack_note = QtWidgets.QLabel("")
+        self.stack_note.setObjectName("createStackExplain")
+        self.stack_note.setWordWrap(True)
+        self._explain_stack()
+        form.addRow("Reference:", self.reference)
+        form.addRow("Resampling Type", self.resampling)
+        form.addRow("Initial Offset Method", self.initial_offset)
+        form.addRow("Output Extents", self.output_extents)
+        form.addRow(self.find_reference)
+        form.addRow(self.stack_note)
+        self.aoi_button = QtWidgets.QPushButton("Processing area…")
+        self.aoi_button.setObjectName("createStackAoi")
+        self.aoi_button.clicked.connect(self._define_aoi)
+        self.aoi_status = QtWidgets.QLabel("Define an analysis region before Run when two products are listed.")
+        self.aoi_status.setObjectName("createStackAoiStatus")
+        self.aoi_status.setWordWrap(True)
+        self._aoi_report = None
+        form.addRow(self.aoi_button)
+        form.addRow(self.aoi_status)
+
+        self.swath_box = QtWidgets.QComboBox()
+        self.swath_box.setObjectName("safeStackSwath")
+        self.swath_box.setEditable(True)
+        self.swath_box.addItems(_SWATHS)
+        self.swath_box.setCurrentText(DEFAULT_SWATH)
+        self.pol_box = QtWidgets.QComboBox()
+        self.pol_box.setObjectName("safeStackPol")
+        self.pol_box.setEditable(True)
+        self.pol_box.addItems(_POLARISATIONS)
+        self.pol_box.setCurrentText(DEFAULT_POLARISATION)
         self.row = self._pixel(0)
         self.col = self._pixel(0)
         self.height = self._pixel(256)
         self.width = self._pixel(256)
-        for label, widget in (
-            ("Swath", self.swath),
-            ("Pol", self.pol),
-            ("Row", self.row),
-            ("Col", self.col),
-            ("Height", self.height),
-            ("Width", self.width),
-        ):
-            crop.addWidget(QtWidgets.QLabel(label))
-            crop.addWidget(widget)
-        crop.addStretch(1)
-        layout.addLayout(crop)
+        self.row.setObjectName("safeStackRow")
+        self.col.setObjectName("safeStackCol")
+        self.height.setObjectName("safeStackHeight")
+        self.width.setObjectName("safeStackWidth")
+        form.addRow("Swath", self.swath_box)
+        form.addRow("Polarisation", self.pol_box)
+        form.addRow("Row", self.row)
+        form.addRow("Column", self.col)
+        form.addRow("Height", self.height)
+        form.addRow("Width", self.width)
+        self.burst_first = self._pixel(0)
+        self.burst_last = self._pixel(0)
+        self.burst_first.setObjectName("safeStackBurstFirst")
+        self.burst_last.setObjectName("safeStackBurstLast")
+        self.burst_first.setToolTip("First burst, 1-based. 0 with last 0 means the burst range is not limited.")
+        self.burst_last.setToolTip("Last burst, 1-based. Checked against each product. The pixel crop is separate.")
+        form.addRow("First burst (0 = all)", self.burst_first)
+        form.addRow("Last burst (0 = all)", self.burst_last)
+        layout.addLayout(form)
 
-        self.status = QtWidgets.QLabel("No SAFE products selected.")
-        self.status.setObjectName("safeStackStatus")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-
-        actions = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        self.form_ifg = QtWidgets.QCheckBox("Form interferograms after the stack is loaded")
+        self.form_ifg.setObjectName("safeStackFormIfg")
+        self.form_ifg.setChecked(False)
+        self.form_ifg.setToolTip(
+            "Off by default. Checking it forms a teaching interferogram on this crop only. "
+            "It does not run Split, Apply Orbit File, Back Geocoding, or ESD. "
+            "There is no coregistration. The complex value is reference × conjugate(secondary)."
         )
-        actions.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("Build SLC stack")
-        actions.accepted.connect(self.build_stack)
-        actions.rejected.connect(self.reject)
-        layout.addWidget(actions)
+        layout.addWidget(self.form_ifg)
+        layout.addStretch(1)
+        return page
 
     def _pixel(self, value: int) -> QtWidgets.QSpinBox:
         box = QtWidgets.QSpinBox()
@@ -107,83 +196,160 @@ class SafeStackDialog(QtWidgets.QDialog):
         box.setValue(value)
         return box
 
-    def choose_zips(self) -> None:
-        paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "Add many SAFE zips to stack",
-            "",
-            "Sentinel-1 SAFE zip (*.zip);;Sentinel-1 manifest (manifest.safe)",
-        )
-        if not paths:
-            return
-        self._add(paths)
+    def swath(self) -> str:
+        return self.swath_box.currentText().strip().upper()
 
-    def choose_folder(self) -> None:
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Folder of SAFE zips")
-        if not directory:
-            return
-        self._add([directory])
+    def polarisation(self) -> str:
+        return self.pol_box.currentText().strip().upper()
 
-    def clear_paths(self) -> None:
-        self.paths = []
-        self.files.clear()
-        self.status.setText("No SAFE products selected.")
+    def paths(self) -> list[Path]:
+        return self.product_set.paths()
 
-    def add_paths(self, paths: list[Path]) -> None:
-        """Add zips, SAFE folders, or a folder that contains them."""
-        expanded = expand_safe_inputs([Path(path) for path in paths])
-        known = {path.resolve() for path in self.paths}
-        for path in expanded:
-            resolved = path.resolve()
-            if resolved in known:
-                continue
-            known.add(resolved)
-            self.paths.append(path)
-            self.files.addItem(path.name)
-        count = len(self.paths)
-        noun = "product" if count == 1 else "products"
-        self.status.setText(f"{count} SAFE {noun} selected. Zips are not extracted.")
+    def reference_path(self) -> Path | None:
+        data = self.reference.currentData()
+        if data:
+            return Path(str(data))
+        paths = self.paths()
+        return paths[0] if paths else None
 
-    def _add(self, paths: list[str | Path]) -> None:
-        try:
-            self.add_paths([Path(path) for path in paths])
-        except ValueError as exc:
-            self.status.setText(str(exc))
+    def burst_first_value(self) -> int:
+        return int(self.burst_first.value())
 
-    def build_stack(self) -> None:
-        if not self.paths:
-            self.status.setText("Choose one or more Sentinel-1 SAFE zips first.")
-            return
-        swath = self.swath.currentText().strip() or DEFAULT_SWATH
-        pol = self.pol.currentText().strip() or DEFAULT_POLARISATION
+    def burst_last_value(self) -> int:
+        return int(self.burst_last.value())
 
-        def progress(index: int, total: int, message: str) -> None:
-            text = f"SAFE stack {index}/{total}: {message}"
-            self.status.setText(text)
-            parent = self.parent()
-            if isinstance(parent, QtWidgets.QMainWindow):
-                parent.statusBar().showMessage(text)
-            QtWidgets.QApplication.processEvents()
-
-        try:
-            self.load_result = load_safe_slc_stack(
-                self.paths,
-                row=int(self.row.value()),
-                col=int(self.col.value()),
-                height=int(self.height.value()),
-                width=int(self.width.value()),
-                swath=swath,
-                pol=pol,
-                on_progress=progress,
+    def _explain_stack(self) -> None:
+        if self.resampling.currentText() == "NONE":
+            self.stack_note.setText(
+                "Resampling NONE copies this crop from every product. "
+                "Choose a kernel to apply the initial offset and the output extent. "
+                "GCP stays selectable; Run stops when the SAFE has no ground control points."
             )
-        except (OSError, ValueError, RuntimeError) as exc:
-            self.load_result = None
-            self.status.setText(str(exc))
             return
-        stack = self.load_result.stack
-        skipped = len(self.load_result.skipped)
-        extra = f" Skipped {skipped}." if skipped else ""
-        self.status.setText(
-            f"Loaded {stack.n_dates} dates, {stack.height}×{stack.width}.{extra}"
+        self.stack_note.setText(
+            f"{self.resampling.currentText()} resamples each secondary after the "
+            f"{self.initial_offset.currentText()} offset. "
+            "Master keeps this crop, Maximum is the union, and Minimum is the overlap."
         )
+
+    def _find_reference(self) -> None:
+        rows = self.product_set.rows()
+        if not rows:
+            return
+        dated = [(row.acquisition or "", row) for row in rows]
+        dated.sort(key=lambda item: item[0])
+        chosen = dated[len(dated) // 2][1]
+        index = self.reference.findData(str(chosen.path))
+        if index >= 0:
+            self.reference.setCurrentIndex(index)
+
+    def _define_aoi(self) -> None:
+        from ai_insar.gui.aoi_dialog import AoiDialog
+        from ai_insar.pipeline.aoi import AoiError, footprint_polygon, prepare_aoi
+        from ai_insar.safe import resolve_safe
+
+        paths = self.paths()
+        if len(paths) < 2:
+            self.aoi_status.setText("Add the reference and the secondary before defining the analysis region.")
+            return
+        try:
+            reference = resolve_safe(self.reference_path() or paths[0])
+            other = next(path for path in paths if Path(path) != Path(self.reference_path() or paths[0]))
+            secondary = resolve_safe(other)
+        except (OSError, ValueError) as exc:
+            self.aoi_status.setText(str(exc))
+            return
+        ref_ring = tuple((float(lon), float(lat)) for lat, lon in reference.footprint)
+        sec_ring = tuple((float(lon), float(lat)) for lat, lon in secondary.footprint)
+        dialog = AoiDialog(
+            self,
+            reference=ref_ring,
+            secondary=sec_ring,
+            wkt="" if self._aoi_report is None else (self._aoi_report.clipped_wkt or self._aoi_report.requested_wkt),
+            subswath=self.swath(),
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        report = dialog.report()
+        if report is None or report.outside:
+            self._aoi_report = None
+            self.aoi_status.setText(
+                "" if report is None else report.message
+            )
+            return
+        try:
+            checked = prepare_aoi(
+                report.requested_wkt,
+                reference=footprint_polygon(reference.footprint),
+                secondary=footprint_polygon(secondary.footprint),
+                subswath=self.swath(),
+                polarisation=self.polarisation(),
+            )
+        except AoiError as exc:
+            self._aoi_report = None
+            self.aoi_status.setText(str(exc))
+            return
+        if checked.outside:
+            self._aoi_report = None
+            self.aoi_status.setText(checked.message)
+            return
+        self._aoi_report = checked
+        self.aoi_status.setText(checked.message)
+
+    def _aoi_is_ready(self) -> bool:
+        report = self._aoi_report
+        return report is not None and not report.outside and bool(report.clipped_wkt)
+
+    def aoi_report(self):
+        return self._aoi_report
+
+    def _sync_reference(self) -> None:
+        current = self.reference.currentData()
+        self.reference.blockSignals(True)
+        self.reference.clear()
+        for row in self.product_set.rows():
+            self.reference.addItem(row.file_name, str(row.path))
+        if current is not None:
+            index = self.reference.findData(current)
+            if index >= 0:
+                self.reference.setCurrentIndex(index)
+        self.reference.blockSignals(False)
+
+    def _on_run(self) -> None:
+        from ai_insar.safe_stack import inspect_safe_products
+
+        paths = self.paths()
+        if not paths:
+            self.product_set.status.setText(
+                "Error: [NodeId: ProductSet-Reader] Please add a source product"
+            )
+            return
+        if self.resampling.currentText() == "GCP" or self.initial_offset.currentText() == "GCP":
+            self.product_set.status.setText(
+                "These SAFE products have no ground control points. "
+                "Choose Orbit or Product Geolocation."
+            )
+            return
+        if len(paths) >= 2 and not self._aoi_is_ready():
+            self._define_aoi()
+        if len(paths) >= 2 and not self._aoi_is_ready():
+            self.product_set.status.setText(
+                "Processing is blocked until the analysis region is inside the common overlap."
+            )
+            return
+        if int(self.height.value()) < 1 or int(self.width.value()) < 1:
+            self.product_set.status.setText("Crop height and width must be at least 1.")
+            return
+        try:
+            inspect_safe_products(
+                paths,
+                swath=self.swath(),
+                pol=self.polarisation(),
+                reference=self.reference_path(),
+                burst_first=self.burst_first_value(),
+                burst_last=self.burst_last_value(),
+            )
+        except ValueError as exc:
+            self.product_set.status.setText(str(exc))
+            return
         self.accept()

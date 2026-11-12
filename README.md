@@ -30,6 +30,37 @@ pip install -e ".[dev]"            # includes pytest
 package: install from this checkout. Runtime dependencies are PySide6, NumPy,
 and SciPy. If PySide6 cannot be imported, the GUI tries PyQt6.
 
+The fast CPU path is in-tree NumPy, SciPy FFT, and optional Numba. It does
+not need the `insardev` package. Install Numba for the compiled
+interferogram product, the quality-guided unwrap, and the Goldstein
+overlap-add:
+
+```bash
+pip install "ai-insar[fast]"
+```
+
+Measure a synthetic stack with `python scripts/bench_pipeline.py`.
+Goldstein can use PyTorch instead of SciPy when Torch is already installed
+and you set `AI_INSAR_FILTER=torch` (device `AI_INSAR_FILTER_DEVICE`,
+default `cpu`). The default is the NumPy/SciPy FFT.
+
+Optional academic extra, Python 3.12 or newer:
+
+```bash
+pip install "ai-insar[insardev]"
+```
+
+That installs upstream `insardev` (InSARdev-SAL-1.0). It is not required
+for speed. The batched Goldstein filter and the fast unwrap already run
+from this tree. Installing or using the extra means you accept that
+license, including a subscription for funded academic use. The repository
+owner has personally accepted that license for this academic extra, and
+authorized porting the Goldstein FFT kernel (see [NOTICE](NOTICE)). With
+the package installed, interferograms, `Stack.load`, and `Stack.align`
+use InSARdev first. A different numeric result is kept. NumPy/Numba runs
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. Details: [InSARdev](#insardev) and [NOTICE](NOTICE).
+
 Notes: [docs/install.md](docs/install.md).
 
 Windows without a clone: the stable zip is
@@ -74,7 +105,7 @@ ai-insar run --slc slc.npy --meta slc.json --output products
 
 Seven stage buttons, plus one top-level menu per technique. **Run all
 stages** and `ai-insar check` use the Goldstein default, a 5×5 coherence
-window, quality-guided unwrap, and SBAS. **Run** in another menu selects
+window, fast separable unwrap, and SBAS. **Run** in another menu selects
 that technique and computes the stage.
 
 | # | Stage | Menu | What it does |
@@ -83,11 +114,11 @@ that technique and computes the stage.
 | 2 | Interferogram | Pipeline | Pairs with date-index gap 1…3, each `later * conj(earlier)` |
 | 3 | Goldstein filter | Goldstein | Spectral filter. Light / Default / Strong set α to 0.3, 0.5, or 0.8 |
 | 4 | Coherence | Coherence | Boxcar on the SLC pair, not on the filtered phase. Presets 3×3, 5×5, 7×7 |
-| 5 | Unwrap | Quality-guided, Fast unwrap | Then a plane is removed on a 4 px border |
+| 5 | Unwrap | Fast unwrap (default), Quality-guided | Then a plane is removed on a 4 px border |
 | 6 | Time series | SBAS, Stacking, NSBAS, PS linear, Phase linking, Seasonal | LOS displacement and a linear velocity. Negative is away from the radar |
 | 7 | Displacement detection mask | Pipeline | Coherent pixels that are fast relative to the scene |
 | | Export map | File, View | Velocity or one displacement date: `.npy`, a PNG preview, and a float TIFF when `tifffile` is installed |
-| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or many zips into one stack; ASF search; crop one swath (default IW1 VV) |
+| | Sentinel-1 SLC | File, Data | Open one SAFE zip, or Open SAFE stack for many folders and zips (File Name, Type, Acquisition, Track, Orbit, N Products); ASF search; one crop and swath into the stack |
 
 Pipeline → Settings edits the date span, Goldstein α and window, coherence
 window, unwrap coherence floor, and two detection thresholds. The sample
@@ -96,10 +127,10 @@ peak is 0.22 m/yr of subsidence, stored as −0.22 m/yr.
 
 | Menu | What it does |
 | --- | --- |
-| Goldstein | Overlap-add of windowed FFTs. Default α = 0.5, 32 px window. Unwrapping uses this phase. |
+| Goldstein | Batched FFT overlap-add. Default α = 0.5, 32 px window. The kernel is the in-tree port of InSARdev `goldstein_numpy`. Unwrapping uses this phase. |
 | Coherence | Boxcar magnitude of later × conjugate(earlier), divided by the SLC powers. Filtering cannot raise it. |
 | Quality-guided | Coherence-ordered unwrap. Numba runs the walk with `pip install "ai-insar[fast]"`; otherwise it is a Python heap. |
-| Fast unwrap | Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
+| Fast unwrap | Default for **Run all stages** and `ai-insar check`. Gaussian smooth, then `numpy.unwrap` along range and azimuth. Reimplemented from the MIT example in [InSARdev/edu](https://github.com/InSARdev/edu) `NISAR/nisar_numpy.py`. |
 | SBAS | Coherence-weighted small-baseline inversion. Default for stage 6. |
 | Stacking | Mean LOS rate of the unwrapped interferograms, weighted by coherence squared. |
 | NSBAS | SBAS plus a light constraint that displacement follows one velocity. No seasonal term. |
@@ -112,12 +143,46 @@ SBAS and NSBAS build the normal equations with NumPy `einsum` and
 InSAR.dev.
 
 [InSARdev/core](https://github.com/InSARdev/core) (`insardev`,
-InSARdev-SAL-1.0) is source-available. Its code is not in this repository.
-Seasonal exists because that project decomposes series with STL; this fit is
-a small least-squares harmonic, not a copy of that routine. TOPS deramp,
-OpenCV coregistration, OR-Tools branch cuts, and geocoding from
+InSARdev-SAL-1.0) is source-available. Its source stays upstream.
+`pip install "ai-insar[insardev]"` opts into that package. Seasonal exists
+because that project decomposes series with STL; this fit is a small
+least-squares harmonic, written here. TOPS deramp, OpenCV coregistration,
+OR-Tools branch cuts, and geocoding from
 [InSARdev/edu](https://github.com/InSARdev/edu) `Sentinel-1/s1.py` need orbits
-and a DEM, so they are not included.
+and a DEM, so this workbench leaves that full chain out. ALIGN SLC is only
+a constant FFT shift. GEOCODE does not build a map.
+
+## GMTSAR stage order
+
+The menus follow the public GMTSAR pair flowchart (David Sandwell and
+others, UCSD). GMTSAR is GPL-3.0. None of its source is in this repository.
+The steps below are MIT code. Help → GMTSAR flowchart shows the same list.
+Details and the stage table: [docs/pipeline.md](docs/pipeline.md).
+
+```mermaid
+flowchart TD
+  preprocess["1 PREPROCESS: Load SLC or Open SAFE stack"]
+  align["2 ALIGN SLC: amplitude cross-correlation"]
+  topo["3 MAKE TOPO_RA: optional DEM phase"]
+  ifg["4 MAKE INTERFEROGRAMS: Interferogram, Goldstein, Coherence"]
+  unwrap["5 UNWRAP PHASE: Fast unwrap or Quality-guided"]
+  geocode["6 GEOCODE: radar grid unless a transform exists"]
+  sbas["SBAS time series, then the displacement mask"]
+  preprocess --> align --> topo --> ifg --> unwrap --> geocode --> sbas
+```
+
+| GMTSAR stage | Where it is in AI Insar |
+| --- | --- |
+| PREPROCESS | Button 1, File → Load SLC stack, Open SAFE stack |
+| ALIGN SLC | Pipeline → ALIGN SLC |
+| MAKE TOPO_RA | Pipeline → MAKE TOPO_RA, only with a DEM and a non-zero baseline |
+| MAKE INTERFEROGRAMS | Buttons 2–4, or Pipeline → MAKE INTERFEROGRAMS |
+| UNWRAP PHASE | Button 5. Fast unwrap is the default. Quality-guided stays available |
+| GEOCODE | Pipeline → GEOCODE. Products stay on the radar grid |
+| SBAS | Button 6, then button 7 |
+
+**Run all stages** and `ai-insar check` start from the loaded stack and run
+interferograms through the mask. They skip ALIGN SLC, MAKE TOPO_RA, and GEOCODE.
 
 Stage inputs, outputs, and the default table: [docs/pipeline.md](docs/pipeline.md).
 
@@ -146,30 +211,49 @@ the same sign convention.
 
 ## Sentinel-1 SLC
 
-**File → Open Sentinel-1 SAFE Product…** opens one Sentinel-1 `.zip` without
-extracting it. **Open SAFE folder…** and `manifest.safe` are optional.
+**File → Open SAFE stack…**, **Open SAFE folder…**, and **Open Sentinel-1
+SAFE Product…** use one chooser. Ctrl or Shift selects several SAFE folders
+and `.zip` files together. It is not a single-folder dialog and it is not
+zip-only. A folder that contains several SAFE products adds every product.
+The table columns are File Name, Type, Acquisition, Track, and Orbit, with
+an **N Products** counter. Type, acquisition, track (relative orbit), and
+absolute orbit are read from the manifest when they are present, and left
+blank otherwise. The reference row is chosen in the dialog. Closing the
+list loads nothing. Run reads every listed product into the SLC cube.
+Zips are not unzipped. Create Stack parameters on that dialog keep
+Resampling **NONE**, Initial Offset **Orbit** (not applied), and Output
+Extents **Master**. A progress dialog then reads every product with the
+same swath, polarisation, and crop (default IW1 VV, 256×256), sorts dates
+by the manifest start time, and stores one `complex64` stack
+`(n_dates, height, width)`. With two or more dates the dialog can run the
+interferogram stage: each pair is later × conjugate(earlier). The window
+is the same rows and columns in each measurement. That is teaching
+crop-window alignment. The crop is not Back Geocoding.
+Radar → S-1 Back Geocoding resamples a secondary split window onto the
+reference by range-Doppler when both windows and both orbits are loaded.
+Pipeline → ALIGN SLC can estimate one constant amplitude shift afterwards.
+It does not run as part of the crop or of **Run all stages**.
+
+**Interferogram**, **Coherence**, **Goldstein**, **Topographic Phase
+Removal**, and **Apply Orbit File** open a parameter dialog and wait.
+Each dialog has an I/O tab, a Processing Parameters tab, a one-line
+formula, and Run / Close. Run uses the in-tree pipeline when the required rasters and orbits are
+loaded. Optional saves use the SNAP product suffixes `_Ifg`, `_Coh`,
+`_Flt`, `_DInSAR`, `_Stack`, and `_Orb` on NumPy files. BEAM-DIMAP is not
+written. Apply Orbit File does not download orbits; a local EOF replaces
+the annotation state vectors and reports the metre shift. Line-of-sight
+displacement follows `d = −(λ/4π) Δφ` (suffix `_Disp`).
+
+`manifest.safe` inside a selected folder is accepted. Zips stay zipped.
+The Product Explorer is separate from this list: the stack keeps every
+selected product. See [15-step coverage](docs/snap-chain.md).
 The Product Explorer shows manifest metadata, IW bands (`i_`, `q_`,
 `Intensity_`), and the quick-look. Double-click a band for a decimated
 amplitude preview. **Add to SLC stack (crop…)** reads one window (default
-IW1 VV) from that product. The date is the manifest start time. The
-wavelength is `c / radarFrequency` from the annotation when that value is
-present.
-
-**File → Open SAFE stack…** (the same entry is under **Data**) builds a
-multi-date stack from many SAFE `.zip` files, or from a folder of those
-zips. `.SAFE` folders are optional. The zips are not extracted. Every
-product is read at the same swath and polarisation (default IW1 VV) and the
-same pixel window. The result is one `complex64` cube,
-`(n_dates, height, width)`. Each date is that product's start time, and
-the cube is sorted in time. A product that cannot supply the band is
-skipped. The status line reports progress as the files are read
-(`SAFE stack i/N`). You do not open Product Explorer once per zip.
-
-**Interferogram** and **Run all stages** then use that stack the same way
-they use a synthetic or `.npy` stack: pairs follow the date-gap setting,
-and each interferogram is later × conjugate(earlier). The SAFE products
-are not coregistered. There is no DEM, no orbit download, and no deburst.
-The shared window is a teaching crop, not a TOPS interferogram.
+IW1 VV) into the `complex64` stack. The date comes from the manifest start
+time, and the wavelength from the annotation radar frequency when it is
+present. Opening a product does not deburst or coregister it. Radar →
+S-1 TOPS Deburst does that overlap cut when a split window is stored.
 
 **File** and **Data** → **Fetch Sentinel-1 SLC…** search the public ASF
 catalog. Search does not need a login. Import a crop from a local SAFE
@@ -211,13 +295,16 @@ including every displacement date. See
 | [docs/data-format.md](docs/data-format.md) | `slc.npy`, sidecar JSON, `products.json`, map export |
 | [docs/cli.md](docs/cli.md) | `ai-insar --help`, exit codes, example `check` output |
 | [docs/limitations.md](docs/limitations.md) | What the chain does not do |
+| [docs/parity/square100m_9e0457d/README.md](docs/parity/square100m_9e0457d/README.md) | SNAP 14 vs `9e0457d` on a 100 m square |
+| [docs/parity/square200m_burst56/README.md](docs/parity/square200m_burst56/README.md) | 200 m AOI on the IW1 burst 5/6 boundary |
 | [WINDOWS.md](WINDOWS.md) | Release zip, `run_windows.bat`, and how to rebuild `dist/ai-insar-windows.zip` |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and how to keep docs honest |
 
 ## Limitations
 
-- One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model. Many SAFE zips share one pixel window; that stack is not coregistered.
-- Unwrap is quality-guided path following or a fast separable `numpy.unwrap`. Neither is SNAPHU.
+- One complex stack in memory, on the radar grid. No geocoding, DEM, orbit download, burst stitching, or weather model.
+- A multi-zip SAFE stack uses one shared crop window when `Stack.load` is absent or fails. That crop is teaching alignment, not coregistration. A successful `Stack.load` replaces the crop with the InSARdev cube.
+- Unwrap defaults to a fast separable `numpy.unwrap`. Quality-guided path following is still available. Neither is SNAPHU.
 - Time series is one linear LOS velocity. Seasonal adds a one-year sine and cosine. There is no earthquake step.
 - The displacement mask is a coherence-gated robust test on the velocity image, not a trained model.
 - Map export is the radar grid. The TIFF has no CRS.
@@ -240,6 +327,55 @@ scene with no deformation. `tests/test_cli.py` runs `check` and `run`.
 `QT_QPA_PLATFORM=offscreen` when PySide6 is installed. `tests/test_docs.py`
 checks that links in these pages point at files in the tree.
 
+## InSARdev
+
+[InSARdev/edu](https://github.com/InSARdev/edu) is MIT. Fast unwrap follows
+`NISAR/nisar_numpy.py`. Interferograms are the same complex product as that
+file and `Sentinel-1/s1.py`: later × conjugate(earlier). Those files are
+reimplemented, not pasted in as project files. TOPS deramp, OpenCV
+coregistration, OR-Tools branch cuts, and geocoding from `s1.py` are not
+included.
+
+Speed on CPU comes from that in-tree product, the batched Goldstein FFT,
+and the fast unwrap. None of them require `pip install insardev`. The
+Goldstein filter is adapted from InSARdev `utils_goldstein.py` (Alexey
+Pechnikov). The repository owner authorized that port. Set
+`AI_INSAR_FILTER=torch` only if you already have PyTorch and want that FFT.
+`python scripts/bench_pipeline.py` prints timings on a synthetic stack.
+`pip install "ai-insar[fast]"` adds Numba.
+
+[InSARdev/core](https://github.com/InSARdev/core) `insardev` is
+InSARdev-SAL-1.0. That license allows non-commercial redistribution only
+when the copy stays under SAL. This repository is MIT. The Goldstein kernel
+above is the owner-authorized adaptation. The rest of the package is not
+vendored, and it is not required for speed. `pip install "ai-insar[insardev]"`
+(Python 3.12+) installs the upstream package. Installing or using it is
+your acceptance of SAL, including the subscription for funded academic use.
+The same package is `pip install insardev` if you install it yourself.
+
+When that import succeeds, interferograms call
+`Stack.pairs().interferogram()` first, with the later date as the reference
+(single-look, no filter). That cube is the stage result even when the
+values differ from `later × conjugate(earlier)`. NumPy/Numba runs only
+when the package is missing, the call fails, or you set
+`AI_INSAR_BACKEND=numpy`. `ai-insar check` scores the chain that actually
+ran, so an installed `insardev` can change the bowl score. Set
+`AI_INSAR_BACKEND=numpy` to score the in-tree product.
+
+`Stack.load` is tried first for scene lists, including SAFE zips. A
+returned cube is kept. If that call fails, a zip list still uses this
+project's shared crop window, which is not coregistration. `Stack.align`
+runs on a loaded stack when the method exists. `AI_INSAR_BACKEND=numpy`
+skips both.
+
+`insardev_toolkit` (BSD-3-Clause) comes in with the extra because upstream
+depends on it. `PyGMTSAR.safeload` translates SAFE bursts when you pass
+burst ids. `insardev_pygmtsar` is BSD-3-Clause and is not part of the
+extra. Install it yourself if you want `S1.align_ref` and `S1.align_rep`.
+Those calls need a burst directory, orbits, and a DEM. They are not copied
+into this tree, and they do not resample the zip crop. ESA SNAP is GPL and
+is not copied. Full wording: [NOTICE](NOTICE).
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Third-party notes: [NOTICE](NOTICE).
