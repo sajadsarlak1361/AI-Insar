@@ -9,7 +9,13 @@ from ai_insar.gui.qt import Qt, QtGui, QtWidgets
 
 
 def main() -> int:
+    from ai_insar.dependencies import dependency_report, missing_modules
+
+    report = dependency_report()
+    print(report)
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    if missing_modules():
+        QtWidgets.QMessageBox.critical(None, "AI Insar dependencies", report)
     app.setApplicationName("AI Insar")
     app.setStyle("Fusion")
     app.setWindowIcon(_icon())

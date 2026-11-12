@@ -95,6 +95,8 @@ class SwathModel:
     geolocation_pixel: np.ndarray = field(default_factory=lambda: np.empty(0))
     geolocation_height_m: np.ndarray = field(default_factory=lambda: np.empty(0))
     geolocation_incidence_rad: np.ndarray = field(default_factory=lambda: np.empty(0))
+    geolocation_latitude: np.ndarray = field(default_factory=lambda: np.empty(0))
+    geolocation_longitude: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def line_time(self, absolute_line: int) -> np.datetime64:
         burst_index = int(absolute_line) // self.lines_per_burst
@@ -286,6 +288,8 @@ def read_swath_annotation_bytes(payload: bytes) -> SwathModel:
         geolocation_pixel=grid["pixel"],
         geolocation_height_m=grid["height"],
         geolocation_incidence_rad=grid["incidence"],
+        geolocation_latitude=grid["latitude"],
+        geolocation_longitude=grid["longitude"],
     )
 
 
@@ -353,6 +357,8 @@ def _geolocation_columns(root: ET.Element) -> dict[str, np.ndarray]:
     pixel: list[float] = []
     height: list[float] = []
     incidence: list[float] = []
+    latitude: list[float] = []
+    longitude: list[float] = []
     for element in root.iter():
         if _local(element.tag) != "geolocationGridPoint":
             continue
@@ -360,11 +366,15 @@ def _geolocation_columns(root: ET.Element) -> dict[str, np.ndarray]:
         pixel.append(float(_child_text(element, "pixel")))
         height.append(float(_child_text(element, "height")))
         incidence.append(float(np.deg2rad(float(_child_text(element, "incidenceAngle")))))
+        latitude.append(float(_child_text(element, "latitude")))
+        longitude.append(float(_child_text(element, "longitude")))
     return {
         "line": np.asarray(line, dtype=np.float64),
         "pixel": np.asarray(pixel, dtype=np.float64),
         "height": np.asarray(height, dtype=np.float64),
         "incidence": np.asarray(incidence, dtype=np.float64),
+        "latitude": np.asarray(latitude, dtype=np.float64),
+        "longitude": np.asarray(longitude, dtype=np.float64),
     }
 
 

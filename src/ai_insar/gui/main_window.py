@@ -569,9 +569,10 @@ class MainWindow(QtWidgets.QMainWindow):
         paths = dialog.paths()
         if not paths:
             raise RuntimeError("ProductSet-Reader: please add a source product.")
-        if dialog.resampling.currentText() != "NONE":
-            raise RuntimeError("InSAR requires Resampling Type NONE.")
         self._log(dialog.product_set.summary())
+        report = dialog.aoi_report()
+        if report is not None:
+            self._remember_aoi(report)
         self._product_status = f"{len(paths)} Products"
         self.load_safe_stack(
             paths,
@@ -585,6 +586,9 @@ class MainWindow(QtWidgets.QMainWindow):
             reference=dialog.reference_path(),
             burst_first=dialog.burst_first_value(),
             burst_last=dialog.burst_last_value(),
+            resampling=dialog.resampling.currentText(),
+            initial_offset=dialog.initial_offset.currentText(),
+            output_extents=dialog.output_extents.currentText(),
         )
 
     def load_safe_stack(
@@ -601,6 +605,9 @@ class MainWindow(QtWidgets.QMainWindow):
         reference=None,
         burst_first: int = 0,
         burst_last: int = 0,
+        resampling: str = "NONE",
+        initial_offset: str = "Orbit",
+        output_extents: str = "Master",
     ) -> None:
         """Read every path, then optionally form interferograms. All products stay in the cube."""
         from pathlib import Path
@@ -650,6 +657,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 height=height,
                 width=width,
                 progress=progress,
+                resampling=resampling,
+                initial_offset=initial_offset,
+                output_extents=output_extents,
+                reference=reference,
             )
         except SafeStackCancelled:
             self._log("SAFE stack read cancelled.")
@@ -678,10 +689,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{stack.description}"
         )
         if len(tracks) > 1:
-            self._log(
-                "These products do not share one relative orbit (track): "
-                + ", ".join(f"{item.file_name} track {item.track}" for item in records)
-                + ". All of them stay in the stack."
+            raise RuntimeError(
+                "These products do not share one relative orbit (track). Processing is blocked."
             )
         if records[0].burst_first is not None:
             self._log(
@@ -980,7 +989,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.workspace.aoi_stages = chain_aoi(report)
         self._log(report.message)
 
+    def _analysis_region_ready(self) -> bool:
+        if len(self.safe_products) < 2:
+            return True
+        report = self.workspace.aoi or {}
+        if report.get("outside"):
+            return False
+        return bool(report.get("clipped_wkt") or self.workspace.config.aoi_wkt)
+
+    def _require_analysis_region(self) -> bool:
+        """Block the chain until two SAFE products have an overlap AOI."""
+        if len(self.safe_products) < 2:
+            return True
+        if not self._analysis_region_ready():
+            self.open_aoi_dialog()
+        if self._analysis_region_ready():
+            return True
+        self._log("Processing is blocked until an analysis region is inside the common overlap.")
+        return False
+
     def open_split_dialog(self) -> None:
+        if not self._require_analysis_region():
+            return
         dialog = TopsSplitDialog(self)
         self._bind_split_dialog(dialog)
         reference, secondary = self._aoi_footprints()
@@ -1035,6 +1065,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_deburst(dialog.parameters())
 
     def open_esd_dialog(self) -> None:
+        if not self._require_analysis_region():
+            return
         ready = self.workspace.reference_grid is not None and self.workspace.secondary_grid is not None
         dialog = EsdDialog(self, sources=self._source_names(), can_run=ready)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -1042,6 +1074,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_esd(dialog.parameters())
 
     def open_backgeocoding_dialog(self) -> None:
+        if not self._require_analysis_region():
+            return
         dialog = BackGeocodingDialog(self, runner=self.apply_backgeocoding)
         paths = self._opened_safe_paths()
         if paths:
@@ -1435,6 +1469,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._product_status = format_product_status(reference)
 
     def open_interferogram_dialog(self) -> None:
+        if not self._require_analysis_region():
+            return
         dialog = InterferogramDialog(self, sources=self._source_names())
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
@@ -1465,6 +1501,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_goldstein_params(dialog.parameters())
 
     def open_orbit_dialog(self) -> None:
+        if not self._require_analysis_region():
+            return
         dialog = ApplyOrbitDialog(self, sources=self._orbit_sources())
         line = dialog.source.lineEdit()
         if line is not None:

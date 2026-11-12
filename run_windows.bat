@@ -30,6 +30,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+python -c "from ai_insar.dependencies import require_runtime; require_runtime()"
+if errorlevel 1 (
+    echo A package required for SAFE processing is missing.
+    if not defined AI_INSAR_NONINTERACTIVE pause
+    exit /b 1
+)
+
+if defined AI_INSAR_NONINTERACTIVE (
+    echo Dependencies are installed. The GUI was not started.
+    exit /b 0
+)
+
 echo Starting AI Insar...
 python -m ai_insar
 if errorlevel 1 pause

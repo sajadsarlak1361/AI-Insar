@@ -25,7 +25,6 @@ import numpy as np
 
 from ai_insar.conventions import C_BAND_WAVELENGTH_M, SPEED_OF_LIGHT_M_S
 from ai_insar.io_stack import default_dates
-from ai_insar.pipeline.synthetic import SLCStack
 from ai_insar.safe import (
     DEFAULT_POLARISATION,
     DEFAULT_SWATH,
@@ -259,6 +258,8 @@ def import_slc_paths(
     ``wavelength_m`` is omitted, that frequency sets the stack wavelength.
     Manifest ``startTime`` supplies the date when it is present.
     """
+    from ai_insar.pipeline.synthetic import SLCStack
+
     if not paths:
         raise ValueError("no SLC files were selected")
     sources = _expand_sources([Path(path) for path in paths], swath=swath, pol=pol)
@@ -513,7 +514,8 @@ def read_tiff_window(path: Path, row: int, col: int, height: int, width: int) ->
         import tifffile
     except ImportError as exc:
         raise RuntimeError(
-            'Reading a measurement TIFF needs tifffile: pip install "ai-insar[slc]".'
+            "Reading a measurement TIFF needs tifffile. "
+            "Install the project with pip install -e . or run run_windows.bat."
         ) from exc
     with tifffile.TiffFile(path) as tiff:
         return read_open_tiff_window(tiff, row, col, height, width, name=path.name)
@@ -552,8 +554,8 @@ def read_open_tiff_window(
         if nbytes > 512 * 1024 * 1024:
             raise RuntimeError(
                 f"{name} is about {nbytes / 1e9:.1f} GB. "
-                'Install the slc extra (tifffile and zarr) so the crop is read in tiles: '
-                'pip install "ai-insar[slc]".'
+                "Install the project (tifffile and zarr) so the crop is read in tiles: "
+                "pip install -e . or run run_windows.bat."
             ) from None
         raw = np.asarray(page.asarray())[selector]
     return to_complex64(raw)

@@ -9,10 +9,13 @@ and installs the local project.
 
 ## Download the Windows zip from Releases
 
-Current package, tagged on `main` (processing-area selection and the
-SNAP-parity ESD chain):
-[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.0/ai-insar-windows.zip)
-(`ai-insar-windows.zip`, [v0.2.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0)).
+Prerelease under test (SAFE readers installed by `run_windows.bat`, Create
+Stack resampling, same-track pair check, and a required analysis region):
+[Download the Windows zip from Releases](https://github.com/sajadsarlak1361/AI-Insar/releases/download/v0.2.1-rc.1/ai-insar-windows.zip)
+(`ai-insar-windows.zip`, [v0.2.1-rc.1](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.1-rc.1)).
+
+Previous package on `main`:
+[v0.2.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.2.0).
 
 Earlier stable package (SBAS only, no Sentinel-1 fetch menu):
 [v0.1.0](https://github.com/sajadsarlak1361/AI-Insar/releases/tag/v0.1.0).
