@@ -2878,11 +2878,19 @@ def geocode_window(
     return sampled, (west, south, east, north)
 
 
-def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, float] | None = None) -> None:
+def write_geotiff(
+    path,
+    image: np.ndarray,
+    bounds: tuple[float, float, float, float] | None = None,
+    *,
+    bounds_are_centers: bool = False,
+) -> None:
     """Write a float32 GeoTIFF. Bounds are west, south, east, north in degrees.
 
-    When bounds are present the file is EPSG:4326 via rasterio. Complex data
-    is two bands, real then imaginary.
+    When bounds are present the file is EPSG:4326, north-up, and pixel-is-area.
+    ``bounds_are_centers`` means the corners are the centres of the corner
+    pixels, which is what range-Doppler geocoding returns. Non-finite samples
+    are nodata. Complex data is two bands, real then imaginary.
     """
     from pathlib import Path
 
@@ -2910,7 +2918,12 @@ def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, fl
     from rasterio.transform import from_bounds
 
     west, south, east, north = bounds
+    if bounds_are_centers:
+        from ai_insar.pipeline.ps_export import geographic_edges
+
+        west, south, east, north = geographic_edges((west, south, east, north), height, width)
     transform = from_bounds(west, south, east, north, width, height)
+    stored = np.where(np.isfinite(stored), stored, np.float32(np.nan))
     with rasterio.open(
         destination,
         "w",
@@ -2921,8 +2934,10 @@ def write_geotiff(path, image: np.ndarray, bounds: tuple[float, float, float, fl
         dtype="float32",
         crs="EPSG:4326",
         transform=transform,
+        nodata=np.float32(np.nan),
     ) as dataset:
         dataset.write(stored)
+        dataset.update_tags(AREA_OR_POINT="Area")
 
 
 def write_kmz(path, image: np.ndarray, bounds: tuple[float, float, float, float]) -> None:

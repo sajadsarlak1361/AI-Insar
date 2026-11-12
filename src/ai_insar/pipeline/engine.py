@@ -111,6 +111,7 @@ class Workspace:
     los_m: np.ndarray | None = None
     velocity_m_yr: np.ndarray | None = None
     mask: np.ndarray | None = None
+    ps_mask: np.ndarray | None = None
     dem_m: np.ndarray | None = None
     topo_baseline_perp_m: float = 0.0
     topo_slant_range_m: float = 800_000.0
@@ -143,6 +144,7 @@ class Workspace:
         self.los_m = None
         self.velocity_m_yr = None
         self.mask = None
+        self.ps_mask = None
 
 
 def _log(log: LogFn | None, message: str) -> None:
@@ -405,6 +407,21 @@ def compute_timeseries(workspace: Workspace, log: LogFn | None = None) -> None:
     workspace.los_m = los_m
     workspace.velocity_m_yr = velocity
     workspace.mask = None
+    workspace.ps_mask = None
+    if method == "ps":
+        from ai_insar.pipeline.timeseries import persistent_scatterer_mask
+
+        mean_coherence = np.nanmean(np.asarray(workspace.coherence, dtype=np.float64), axis=0)
+        selected, _dispersion = persistent_scatterer_mask(
+            stack.data,
+            mean_coherence,
+            da_max=workspace.config.ps_da_max,
+            min_coherence=workspace.config.ps_min_coherence,
+        )
+        workspace.ps_mask = selected
+        workspace.velocity_m_yr = np.where(selected, velocity, np.nan)
+        workspace.los_m = np.where(selected[None, :, :], los_m, np.nan)
+        velocity = workspace.velocity_m_yr
     finite = velocity[np.isfinite(velocity)]
     label = TIMESERIES_LABELS.get(method, method)
     if finite.size == 0:

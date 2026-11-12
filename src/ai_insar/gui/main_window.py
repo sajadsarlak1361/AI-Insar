@@ -42,6 +42,7 @@ from ai_insar.gui.operator_dialog import (
     TopoPhaseDialog,
 )
 from ai_insar.gui.product_explorer import ProductExplorer, SlcCropDialog
+from ai_insar.gui.ps_export_dialog import PsExportDialog
 from ai_insar.gui.safe_stack_dialog import SafeStackDialog
 from ai_insar.gui.settings import SettingsDialog
 from ai_insar.gui.viewer import ColorBar, ImageView
@@ -2746,7 +2747,7 @@ class MainWindow(QtWidgets.QMainWindow):
             np.save(path, np.asarray(array))
         elif format_name == "GeoTIFF":
             path = folder / f"{stem}.tif"
-            write_geotiff(path, np.asarray(array), bounds)
+            write_geotiff(path, np.asarray(array), bounds, bounds_are_centers=bounds is not None)
         elif format_name == "Google Earth KMZ":
             if bounds is None:
                 raise RuntimeError("KMZ needs latitude/longitude bounds from terrain correction.")
@@ -3032,6 +3033,10 @@ class MainWindow(QtWidgets.QMainWindow):
             run = menu.addAction(f"Run {label}")
             run.setObjectName(f"runMethod_{key}")
             run.triggered.connect(self._click(lambda name=key: self.run_named_timeseries(name), 5))
+            if key == "ps":
+                export_ps = menu.addAction("Export PS linear…")
+                export_ps.setObjectName("exportPsLinear")
+                export_ps.triggered.connect(self._click(self.export_ps_linear, None))
             about = menu.addAction("What this method does")
             about.triggered.connect(
                 lambda _checked=False, name=key: self._show_text(
@@ -3078,6 +3083,59 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         raise RuntimeError(
             "Run a time-series method first. Export writes the velocity map, or one displacement date."
+        )
+
+    def export_ps_linear(self) -> None:
+        """Write only the selected PS pixels: float GeoTIFF, RGBA GeoTIFF, PNG, legend, and KMZ."""
+        if self.workspace.velocity_m_yr is None or self.workspace.ps_mask is None:
+            raise RuntimeError("Run PS linear before exporting its points.")
+        dialog = PsExportDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Export PS linear")
+        if not directory:
+            return
+        self.export_ps_linear_to(directory, dialog.settings())
+
+    def export_ps_linear_to(self, directory: str, settings: dict) -> None:
+        from ai_insar.pipeline.ps_export import export_ps_linear, radar_pixel_latlon
+
+        grid = self.workspace.reference_grid
+        orbit = self.workspace.precise_orbit
+        if grid is None or orbit is None or grid.shape != self.workspace.velocity_m_yr.shape:
+            raise RuntimeError(
+                "PS export needs the split radar window and its orbit, at the same shape as the velocity. "
+                "Coordinates are not invented for a radar-grid array."
+            )
+        latitude, longitude = radar_pixel_latlon(grid, orbit if orbit is not None else grid.model.orbit)
+        values = self.workspace.velocity_m_yr
+        quantity = "LOS velocity"
+        if settings["quantity"] == "displacement":
+            if self.workspace.los_m is None:
+                raise RuntimeError("PS displacement export needs the displacement series.")
+            values = self.workspace.los_m[int(settings["date_index"])]
+            quantity = "LOS displacement"
+        coherence = None
+        if self.workspace.coherence is not None and self.workspace.coherence.shape[-2:] == values.shape:
+            coherence = np.nanmean(np.asarray(self.workspace.coherence, dtype=np.float64), axis=0)
+        written = export_ps_linear(
+            values,
+            self.workspace.ps_mask,
+            latitude,
+            longitude,
+            directory,
+            unit=settings["unit"],
+            scale=float(settings["scale"]),
+            vmin=settings["vmin"],
+            vmax=settings["vmax"],
+            coherence=coherence,
+            quantity=quantity,
+        )
+        self._log(
+            "PS linear export wrote only the selected points. "
+            "Non-PS pixels are nodata or fully transparent. "
+            + ", ".join(path.name for path in written.values())
+            + "."
         )
 
     def export_velocity_map(self) -> None:
@@ -3167,18 +3225,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._configure_slider(layer)
         index = int(self.slider.value())
         image, values, vmin, vmax, cmap, caption = self._compose(layer, index)
-        self.viewer.set_raster(image, values)
+        self.viewer.set_raster(image, values, smooth=cmap != "subsidence")
         self.caption.setText(caption)
         if image is None or cmap is None:
             self.colorbar.set_bar(None, "", "", "")
         else:
             row = np.linspace(vmin, vmax, 256, dtype=np.float64)[None, :]
-            self.colorbar.set_bar(
-                colorize(row, vmin=vmin, vmax=vmax, cmap=cmap),
-                _fmt(vmin),
-                _fmt(vmax),
-                _LAYER_UNITS.get(layer, ""),
-            )
+            if cmap == "subsidence":
+                from ai_insar.pipeline.ps_export import subsidence_rgb
+
+                bar = subsidence_rgb(row, vmin, vmax)
+                unit = "m/yr"
+            else:
+                bar = colorize(row, vmin=vmin, vmax=vmax, cmap=cmap)
+                unit = _LAYER_UNITS.get(layer, "")
+            self.colorbar.set_bar(bar, _fmt(vmin), _fmt(vmax), unit)
 
     def _configure_slider(self, layer: str) -> None:
         stack = self.workspace.stack
@@ -3283,6 +3344,21 @@ class MainWindow(QtWidgets.QMainWindow):
         if layer == "LOS velocity":
             if self.workspace.velocity_m_yr is None:
                 return None, None, 0.0, 1.0, None, missing
+            if self.workspace.ps_mask is not None:
+                from ai_insar.pipeline.ps_export import subsidence_rgba, symmetric_limits as ps_limits
+
+                field = np.where(self.workspace.ps_mask, self.workspace.velocity_m_yr, np.nan)
+                vmin, vmax = ps_limits(field)
+                rgba = subsidence_rgba(field, self.workspace.ps_mask, vmin, vmax)
+                return (
+                    rgba,
+                    field,
+                    vmin,
+                    vmax,
+                    "subsidence",
+                    "PS linear points only. Red is subsidence (away from the satellite); blue is uplift. "
+                    "Empty pixels are transparent. The dense stacking field is not shown.",
+                )
             field = self.workspace.velocity_m_yr
             vmin, vmax = symmetric_limits(field)
             rgb = colorize(field, vmin=vmin, vmax=vmax, cmap="velocity")
