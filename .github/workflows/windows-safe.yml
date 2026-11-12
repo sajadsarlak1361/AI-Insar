@@ -47,7 +47,7 @@ jobs:
         run: |
           $py = "$env:AI_INSAR_HOME\.venv\Scripts\python.exe"
           $env:PYTHONPATH = "$env:AI_INSAR_HOME\src"
-          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QPA_FONTDIR = "C:\Windows\Fonts"
           New-Item -ItemType Directory -Force -Path screenshots | Out-Null
           & $py "$env:AI_INSAR_HOME\scripts\screenshot_create_stack.py" screenshots/create-stack.png
 
