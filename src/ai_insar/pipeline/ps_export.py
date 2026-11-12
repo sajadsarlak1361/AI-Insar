@@ -22,6 +22,8 @@ import numpy as np
 from ai_insar.export_maps import write_png
 
 _NODATA = np.float32(np.nan)
+# PS products quote LOS in millimetres. 50 mm/yr is 5 cm/yr and 0.05 m/yr.
+METRES_TO_MILLIMETRES = 1000.0
 
 
 def symmetric_limits(values: np.ndarray, low: float = 2.0, high: float = 98.0) -> tuple[float, float]:
@@ -141,8 +143,18 @@ def geographic_edges(bounds: tuple[float, float, float, float], height: int, wid
     return west - dlon / 2.0, south - dlat / 2.0, east + dlon / 2.0, north + dlat / 2.0
 
 
-def write_float_geotiff(path: Path, values: np.ndarray, bounds: tuple[float, float, float, float]) -> None:
-    """EPSG:4326 float32 GeoTIFF. ``bounds`` are corner-pixel centres. Nodata is NaN."""
+def write_float_geotiff(
+    path: Path,
+    values: np.ndarray,
+    bounds: tuple[float, float, float, float],
+    *,
+    unit: str | None = None,
+) -> None:
+    """EPSG:4326 float32 GeoTIFF. ``bounds`` are corner-pixel centres. Nodata is NaN.
+
+    ``unit`` is stored as a TIFF tag so a value of ``-50`` is read as mm/yr
+    rather than as metres per year.
+    """
     import rasterio
     from rasterio.transform import from_bounds
 
@@ -168,7 +180,10 @@ def write_float_geotiff(path: Path, values: np.ndarray, bounds: tuple[float, flo
         nodata=_NODATA,
     ) as dataset:
         dataset.write(stored, 1)
-        dataset.update_tags(AREA_OR_POINT="Area")
+        tags = {"AREA_OR_POINT": "Area"}
+        if unit:
+            tags["UNIT"] = str(unit)
+        dataset.update_tags(**tags)
 
 
 def write_rgba_geotiff(path: Path, rgba: np.ndarray, bounds: tuple[float, float, float, float]) -> None:
@@ -279,7 +294,7 @@ def export_ps_linear(
     directory: Path | str,
     *,
     unit: str = "mm/yr",
-    scale: float = 1000.0,
+    scale: float = METRES_TO_MILLIMETRES,
     vmin: float | None = None,
     vmax: float | None = None,
     coherence: np.ndarray | None = None,
@@ -310,7 +325,7 @@ def export_ps_linear(
     png_path = folder / f"{stem}.png"
     legend_path = folder / f"{stem}_legend.png"
     kmz_path = folder / f"{stem}.kmz"
-    write_float_geotiff(float_path, grid, bounds)
+    write_float_geotiff(float_path, grid, bounds, unit=unit)
     write_rgba_geotiff(rgba_path, rgba, bounds)
     write_png(png_path, rgba)
     write_png(legend_path, legend_image(float(vmin), float(vmax), unit))
@@ -361,7 +376,20 @@ def _step(latitude: np.ndarray, longitude: np.ndarray) -> tuple[float, float]:
 
 
 def _tick(value: float, unit: str) -> str:
-    return f"{value:.3g} {unit}"
+    """Plain decimal plus the unit.
+
+    ``.3g`` prints 1000 as ``1e+03``. The legend font has no plus sign, so
+    that label is drawn as ``1e 03`` and reads as 1. A 5 cm/yr subsidence
+    rate is 50 mm/yr and must stay the digits 50, not a one.
+    """
+    number = float(value)
+    if number == 0.0:
+        text = "0"
+    else:
+        text = f"{number:.4f}".rstrip("0").rstrip(".")
+        if text in {"", "-", "-0"}:
+            text = "0"
+    return f"{text} {unit}"
 
 
 def _text(image: np.ndarray, x: int, y: int, text: str) -> None:

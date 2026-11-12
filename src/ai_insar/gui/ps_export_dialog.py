@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ai_insar.gui.qt import QtWidgets
+from ai_insar.pipeline.ps_export import METRES_TO_MILLIMETRES
 
 
 class PsExportDialog(QtWidgets.QDialog):
@@ -55,11 +56,11 @@ class PsExportDialog(QtWidgets.QDialog):
     def _sync_unit(self) -> None:
         self.unit.clear()
         if self.quantity.currentData() == "displacement":
-            self.unit.addItem("mm", ("mm", 1000.0))
+            self.unit.addItem("mm", ("mm", METRES_TO_MILLIMETRES))
             self.unit.addItem("m", ("m", 1.0))
             self.date_index.setEnabled(True)
             return
-        self.unit.addItem("mm/yr", ("mm/yr", 1000.0))
+        self.unit.addItem("mm/yr", ("mm/yr", METRES_TO_MILLIMETRES))
         self.unit.addItem("m/yr", ("m/yr", 1.0))
         self.date_index.setEnabled(False)
 
