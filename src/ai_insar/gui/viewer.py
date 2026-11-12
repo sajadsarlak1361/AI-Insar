@@ -58,9 +58,43 @@ class ImageView(QtWidgets.QWidget):
             painter.end()
             return
         target = self._target_rect()
-        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, self._smooth)
-        painter.drawImage(target, self._image)
+        if not self._smooth and self._image.hasAlphaChannel():
+            # drawImage samples one source pixel per screen pixel. A PS point is
+            # a single opaque sample, so a view smaller than the raster skips it.
+            self._paint_persistent_points(painter, target)
+        else:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, self._smooth)
+            painter.drawImage(target, self._image)
         painter.end()
+
+    def _paint_persistent_points(self, painter: QtGui.QPainter, target: QtCore.QRectF) -> None:
+        """Draw every finite sample at a size that survives downscaling."""
+        values = self._values
+        image = self._image
+        if values is None or image is None or target.width() <= 0 or target.height() <= 0:
+            if image is not None:
+                painter.drawImage(target, image)
+            return
+        finite = np.isfinite(np.asarray(values, dtype=np.float64))
+        if finite.ndim != 2 or finite.shape[0] != image.height() or finite.shape[1] != image.width():
+            painter.drawImage(target, image)
+            return
+        rows, cols = np.nonzero(finite)
+        if rows.size == 0:
+            return
+        height, width = finite.shape
+        sx = target.width() / width
+        sy = target.height() / height
+        mark = max(sx, sy, 3.0)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for row, col in zip(rows.tolist(), cols.tolist()):
+            colour = image.pixelColor(int(col), int(row))
+            if colour.alpha() == 0:
+                continue
+            painter.setBrush(colour)
+            cx = target.x() + (float(col) + 0.5) * sx
+            cy = target.y() + (float(row) + 0.5) * sy
+            painter.drawRect(QtCore.QRectF(cx - mark / 2.0, cy - mark / 2.0, mark, mark))
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
         pixel = self._pixel_at(event.position())

@@ -3354,14 +3354,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 field = np.where(self.workspace.ps_mask, self.workspace.velocity_m_yr, np.nan)
                 vmin, vmax = ps_limits(field)
-                rgba = subsidence_rgba(field, self.workspace.ps_mask, vmin, vmax)
-                # Colour in m/yr, then show the same mm/yr numbers the GeoTIFF and KMZ use.
+                # Colour the points in the same millimetres the colour bar labels.
                 shown = field * METRES_TO_MILLIMETRES
+                vmin_mm = vmin * METRES_TO_MILLIMETRES
+                vmax_mm = vmax * METRES_TO_MILLIMETRES
+                rgba = subsidence_rgba(shown, self.workspace.ps_mask, vmin_mm, vmax_mm)
                 return (
                     rgba,
                     shown,
-                    vmin * METRES_TO_MILLIMETRES,
-                    vmax * METRES_TO_MILLIMETRES,
+                    vmin_mm,
+                    vmax_mm,
                     "subsidence",
                     "PS linear points only, in mm/yr (50 mm/yr is 5 cm/yr). "
                     "Red is subsidence (away from the satellite); blue is uplift. "

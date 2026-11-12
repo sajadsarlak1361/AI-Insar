@@ -6,6 +6,6 @@ The processing chain reads a complex SLC stack, forms interferograms as
 
 from __future__ import annotations
 
-__version__ = "0.2.2rc1"
+__version__ = "0.2.2rc2"
 
 __all__ = ["__version__"]
