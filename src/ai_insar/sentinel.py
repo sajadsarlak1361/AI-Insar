@@ -5,11 +5,9 @@ Downloading the zip from the ASF datapool needs Earthdata credentials and the
 optional ``asf_search`` package. A SAFE folder, ``manifest.safe``, product
 ``.zip``, measurement GeoTIFF, or complex ``.npy`` that is already on disk
 can be cropped into the same ``complex64`` stack the rest of the workbench
-uses. Several SAFE zips (or a folder of them) become one stack: the same
-swath, polarisation, and pixel window on every date. SAFE metadata comes
-from :mod:`ai_insar.safe`. Passwords are read from the environment or
-``~/.netrc`` and are never written into the stack or the log messages this
-module raises.
+uses. SAFE metadata comes from :mod:`ai_insar.safe`. Passwords are read from
+the environment or ``~/.netrc`` and are never written into the stack or the
+log messages this module raises.
 """
 
 from __future__ import annotations
@@ -20,8 +18,6 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -308,148 +304,6 @@ def import_slc_paths(
     )
 
 
-@dataclass(frozen=True)
-class SafeStackLoad:
-    """One SLC stack built from several SAFE products, and what was left out."""
-
-    stack: SLCStack
-    skipped: tuple[tuple[str, str], ...]
-
-
-def expand_safe_inputs(paths: list[Path]) -> list[Path]:
-    """Resolve SAFE zips, ``.SAFE`` folders, manifests, and a folder of those.
-
-    A directory that is not itself a SAFE product contributes the Sentinel-1
-    ``.zip`` files and ``.SAFE`` folders directly inside it. Nested folders
-    are not searched. The zip is the primary input and is not extracted.
-    """
-    if not paths:
-        raise ValueError("no Sentinel-1 SAFE products were selected")
-    found: list[Path] = []
-    for raw in paths:
-        path = Path(raw)
-        if not path.exists():
-            raise ValueError(f"{path} does not exist")
-        if _is_safe_container(path):
-            found.append(path)
-            continue
-        if path.is_dir():
-            children = _direct_safe_products(path)
-            if not children:
-                raise ValueError(
-                    f"{path.name} has no Sentinel-1 SAFE zip or .SAFE folder. "
-                    "Choose the product zips, or a folder that contains them."
-                )
-            found.extend(children)
-            continue
-        raise ValueError(
-            f"{path.name} is not a Sentinel-1 SAFE zip, .SAFE folder, or manifest.safe"
-        )
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in found:
-        key = path.resolve()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(path)
-    return unique
-
-
-def load_safe_slc_stack(
-    paths: list[Path],
-    *,
-    row: int = 0,
-    col: int = 0,
-    height: int = 256,
-    width: int = 256,
-    wavelength_m: float | None = None,
-    swath: str = DEFAULT_SWATH,
-    pol: str = DEFAULT_POLARISATION,
-    on_progress: Callable[[int, int, str], None] | None = None,
-) -> SafeStackLoad:
-    """Build a ``complex64`` stack from many Sentinel-1 SAFE products.
-
-    Every product is read at the same ``(row, col, height, width)`` window
-    and the same swath and polarisation (default IW1 VV). The date is the
-    manifest start time. The stack is sorted so the date index increases.
-    A product that cannot supply that band, or whose crop does not match
-    the others, is skipped. Zips stay zipped: an uncompressed measurement
-    TIFF is read by seeking to the zip entry.
-
-    Products are not coregistered. The shared window is a pixel crop for
-    teaching, not a TOPS interferogram.
-    """
-    products = expand_safe_inputs([Path(path) for path in paths])
-    band = f"{swath.strip().upper()} {pol.strip().upper()}"
-    skipped: list[tuple[str, str]] = []
-    prepared: list[_SlcSource] = []
-    total = len(products)
-    for index, path in enumerate(products, start=1):
-        _notify_progress(on_progress, index, total, f"Opening {path.name}")
-        try:
-            prepared.append(_safe_source(path, swath=swath, pol=pol))
-        except Exception as exc:
-            skipped.append((path.name, str(exc) or exc.__class__.__name__))
-    dated: list[_SlcSource] = []
-    for source in prepared:
-        if source.date is None:
-            skipped.append((source.label, "manifest start time has no calendar date"))
-            continue
-        dated.append(source)
-    ordered = _order_sources(dated)
-    unique_dates: list[_SlcSource] = []
-    for source in ordered:
-        if any(source.date == earlier.date for earlier in unique_dates):
-            skipped.append((source.label, f"start date {source.date} is already in the stack"))
-            continue
-        unique_dates.append(source)
-    read: list[tuple[_SlcSource, np.ndarray]] = []
-    readable = len(unique_dates)
-    for index, source in enumerate(unique_dates, start=1):
-        _notify_progress(on_progress, index, readable, f"Reading {source.label}")
-        try:
-            plane = _read_source(source, row, col, height, width)
-        except Exception as exc:
-            skipped.append((source.label, str(exc) or exc.__class__.__name__))
-            continue
-        read.append((source, np.asarray(plane, dtype=np.complex64)))
-    if not read:
-        detail = "; ".join(f"{name}: {reason}" for name, reason in skipped[:8]) or "no products"
-        raise ValueError(f"no SAFE product contributed {band}. {detail}")
-    chosen = _majority_shape([plane.shape for _source, plane in read])
-    loaded: list[_SlcSource] = []
-    planes: list[np.ndarray] = []
-    for source, plane in read:
-        if plane.shape != chosen:
-            skipped.append(
-                (
-                    source.label,
-                    f"crop is {plane.shape[0]}×{plane.shape[1]}, stack is {chosen[0]}×{chosen[1]}",
-                )
-            )
-            continue
-        loaded.append(source)
-        planes.append(plane)
-    data = np.stack(planes, axis=0).astype(np.complex64)
-    stack = SLCStack(
-        data=data,
-        dates=_dates_for_sources(loaded, count=data.shape[0]),
-        wavelength_m=_stack_wavelength(loaded, wavelength_m),
-        sensor="Sentinel-1 SLC",
-        description=_safe_stack_description(
-            loaded,
-            skipped_count=len(skipped),
-            band=band,
-            row=row,
-            col=col,
-            height=int(data.shape[1]),
-            width=int(data.shape[2]),
-        ),
-    )
-    return SafeStackLoad(stack=stack, skipped=tuple(skipped))
-
-
 def discover_slc_rasters(
     paths: list[Path],
     *,
@@ -506,62 +360,6 @@ def _is_safe_container(path: Path) -> bool:
     if path.is_file():
         return path.suffix.lower() == ".zip" or path.name.lower() == "manifest.safe"
     return path.is_dir() and (path / "manifest.safe").is_file()
-
-
-def _direct_safe_products(directory: Path) -> list[Path]:
-    """Sentinel-1 zips and SAFE folders that sit directly in ``directory``."""
-    children: list[Path] = []
-    for item in sorted(directory.iterdir(), key=lambda path: path.name.lower()):
-        name = item.name.lower()
-        if item.is_file() and item.suffix.lower() == ".zip" and name.startswith("s1"):
-            children.append(item)
-        elif item.is_dir() and (name.endswith(".safe") or (item / "manifest.safe").is_file()):
-            children.append(item)
-        elif item.is_file() and name == "manifest.safe":
-            children.append(item)
-    return children
-
-
-def _notify_progress(
-    on_progress: Callable[[int, int, str], None] | None,
-    index: int,
-    total: int,
-    message: str,
-) -> None:
-    if on_progress is not None and total > 0:
-        on_progress(index, total, message)
-
-
-def _majority_shape(shapes: list[tuple[int, ...]]) -> tuple[int, ...]:
-    """Most common crop shape. A tie keeps the earliest one in the list."""
-    counts = Counter(shapes)
-    best = max(counts.values())
-    for shape in shapes:
-        if counts[shape] == best:
-            return shape
-    return shapes[0]
-
-
-def _safe_stack_description(
-    sources: list[_SlcSource],
-    *,
-    skipped_count: int,
-    band: str,
-    row: int,
-    col: int,
-    height: int,
-    width: int,
-) -> str:
-    labels = [source.label for source in sources]
-    names = ", ".join(labels[:4])
-    if len(labels) > 4:
-        names += f", +{len(labels) - 4} more"
-    skipped = f" Skipped {skipped_count} product(s) with no matching {band} window." if skipped_count else ""
-    return (
-        f"SAFE SLC stack, {band}, rows {row}:{row + height}, cols {col}:{col + width}, "
-        f"{len(sources)} dates ({names}).{skipped} "
-        "Same pixel window on each product. Not coregistered, deburst, or calibrated."
-    )
 
 
 def _safe_source(path: Path, *, swath: str, pol: str) -> _SlcSource:
