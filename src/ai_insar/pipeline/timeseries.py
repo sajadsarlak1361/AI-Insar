@@ -223,9 +223,11 @@ def persistent_scatterer_velocity(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Stacking velocity restricted to persistent-scatterer candidates.
 
-    Pixels that fail the amplitude or coherence test are NaN in both the
-    displacement series and the velocity. The third return is the boolean
-    selection mask.
+    The stacking rate itself is dense. Residual range phase that is steady
+    in azimuth draws vertical stripes through that dense field. Those
+    stripes are not a PS product: pixels that fail the amplitude or
+    coherence test are NaN, and export must use the selection mask rather
+    than interpolating the dense rate. The third return is the boolean mask.
     """
     los_m, velocity = stack_interferograms(
         unwrapped_phase, pairs, times_year, wavelength_m, weights

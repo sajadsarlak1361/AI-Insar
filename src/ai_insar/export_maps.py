@@ -104,13 +104,14 @@ def map_preview(
     return np.concatenate([rgb, gap, bar], axis=0)
 
 
-def write_png(path: Path, rgb: np.ndarray) -> None:
-    """Write an 8-bit RGB PNG. Uses the standard library only."""
+def write_png(path: Path | object, rgb: np.ndarray) -> None:
+    """Write an 8-bit RGB or RGBA PNG. RGBA alpha 0 is fully transparent."""
     array = np.ascontiguousarray(rgb, dtype=np.uint8)
-    if array.ndim != 3 or array.shape[2] != 3:
-        raise ValueError("PNG preview expects an RGB uint8 image")
-    height, width, _channels = array.shape
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    if array.ndim != 3 or array.shape[2] not in (3, 4):
+        raise ValueError("PNG preview expects an RGB or RGBA uint8 image")
+    height, width, channels = array.shape
+    colour_type = 2 if channels == 3 else 6
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, colour_type, 0, 0, 0)
     raw = b"".join(b"\x00" + array[row].tobytes() for row in range(height))
     payload = (
         b"\x89PNG\r\n\x1a\n"
@@ -118,6 +119,9 @@ def write_png(path: Path, rgb: np.ndarray) -> None:
         + _png_chunk(b"IDAT", zlib.compress(raw, 9))
         + _png_chunk(b"IEND", b"")
     )
+    if hasattr(path, "write"):
+        path.write(payload)
+        return
     Path(path).write_bytes(payload)
 
 

@@ -22,13 +22,21 @@ class ImageView(QtWidgets.QWidget):
         self._image: QtGui.QImage | None = None
         self._values: np.ndarray | None = None
         self._empty_text = empty_text
+        self._smooth = True
         self.setMinimumSize(360, 280)
         self.setMouseTracking(True)
 
     def has_raster(self) -> bool:
         return self._image is not None and not self._image.isNull()
 
-    def set_raster(self, rgb: np.ndarray | None, values: np.ndarray | None) -> None:
+    def set_raster(
+        self,
+        rgb: np.ndarray | None,
+        values: np.ndarray | None,
+        *,
+        smooth: bool = True,
+    ) -> None:
+        self._smooth = bool(smooth)
         if rgb is None:
             self._image = None
             self._values = None
@@ -50,7 +58,7 @@ class ImageView(QtWidgets.QWidget):
             painter.end()
             return
         target = self._target_rect()
-        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, self._smooth)
         painter.drawImage(target, self._image)
         painter.end()
 
@@ -135,9 +143,15 @@ class ColorBar(QtWidgets.QWidget):
 def _rgb_to_qimage(rgb: np.ndarray) -> QtGui.QImage:
     array = np.ascontiguousarray(rgb, dtype=np.uint8)
     height, width, channels = array.shape
-    if channels != 3:
-        raise ValueError("expected an RGB image")
+    if channels == 4:
+        image_format = QtGui.QImage.Format.Format_RGBA8888
+        stride = 4 * width
+    elif channels == 3:
+        image_format = QtGui.QImage.Format.Format_RGB888
+        stride = 3 * width
+    else:
+        raise ValueError("expected an RGB or RGBA image")
     buffer = array.tobytes()
-    view = QtGui.QImage(buffer, width, height, 3 * width, QtGui.QImage.Format.Format_RGB888)
+    view = QtGui.QImage(buffer, width, height, stride, image_format)
     # copy() detaches from ``buffer``, which is released when this function returns.
     return view.copy()
