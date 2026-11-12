@@ -56,7 +56,10 @@ jobs:
         run: |
           $py = "$env:AI_INSAR_HOME\.venv\Scripts\python.exe"
           $env:PYTHONPATH = "$env:AI_INSAR_HOME\src"
+          & $py -m pip install pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $py -m pytest "$env:AI_INSAR_HOME\tests\test_ps_export.py" -q --tb=short
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           @'
           import tempfile
           from pathlib import Path
@@ -81,6 +84,7 @@ jobs:
           print("overlay", written["overlay"].name)
           '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\alpha_check.py"
           & $py "$env:RUNNER_TEMP\alpha_check.py"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v4
         with:
