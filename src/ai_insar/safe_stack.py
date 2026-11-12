@@ -18,7 +18,6 @@ from pathlib import Path
 
 import numpy as np
 
-from ai_insar.pipeline.synthetic import SLCStack
 from ai_insar.safe import resolve_safe, select_measurement
 from ai_insar.sentinel import (
     _dates_for_sources,
@@ -56,6 +55,10 @@ def stack_safe_zips(
     width: int = 256,
     wavelength_m: float | None = None,
     progress: ProgressFn | None = None,
+    resampling: str = "NONE",
+    initial_offset: str = "Orbit",
+    output_extents: str = "Master",
+    reference: Path | str | None = None,
 ) -> SLCStack:
     """Read many SAFE zips or folders into one ``(n_dates, height, width)`` ``complex64`` stack.
 
@@ -92,10 +95,22 @@ def stack_safe_zips(
             "SAFE product has no acquisition date in the manifest start time: " + ", ".join(missing)
         )
     ordered = _order_sources(opened)
-    planes: list[np.ndarray] = []
-    for index, source in enumerate(ordered, start=1):
-        _report(progress, total + index, steps, f"Reading {index} of {total}: {source.label}")
-        planes.append(_read_source(source, int(row), int(col), int(height), int(width)))
+    planes, used_row, used_col, used_height, used_width, placement = _read_stack_planes(
+        ordered,
+        row=int(row),
+        col=int(col),
+        height=int(height),
+        width=int(width),
+        resampling=resampling,
+        initial_offset=initial_offset,
+        output_extents=output_extents,
+        reference=reference,
+        progress=progress,
+        total=total,
+        steps=steps,
+    )
+    from ai_insar.pipeline.synthetic import SLCStack
+
     shapes = {plane.shape for plane in planes}
     if len(shapes) != 1:
         raise ValueError(f"cropped SLC dates do not share a shape: {sorted(shapes)}")
@@ -111,11 +126,15 @@ def stack_safe_zips(
         description=_stack_description(
             [source.label for source in ordered],
             band=band or f"{swath.strip().upper()} {pol.strip().upper()}",
-            row=int(row),
-            col=int(col),
+            row=int(used_row),
+            col=int(used_col),
             height=int(data.shape[1]),
             width=int(data.shape[2]),
             container=_container_label(files),
+            resampling=resampling,
+            initial_offset=initial_offset,
+            output_extents=output_extents,
+            placement=placement,
         ),
     )
 
@@ -142,6 +161,10 @@ def _stack_description(
     height: int,
     width: int,
     container: str,
+    resampling: str = "NONE",
+    initial_offset: str = "Orbit",
+    output_extents: str = "Master",
+    placement: str = "",
 ) -> str:
     names = ", ".join(labels[:4])
     if len(labels) > 4:
@@ -150,7 +173,9 @@ def _stack_description(
         f"{container}, {band}, crop rows {row}:{row + height}, cols {col}:{col + width}, "
         f"from {names}. Time-sorted by manifest start time. "
         "Teaching crop-window alignment: the same row and column window in each "
-        "measurement. There is no coregistration."
+        "measurement. There is no coregistration. "
+        f"Create Stack resampling {resampling}, initial offset {initial_offset}, "
+        f"output extents {output_extents}. {placement}"
     )
 
 
@@ -304,7 +329,31 @@ def inspect_safe_products(
         )
     if ref_key is not None and not any(item.is_reference for item in records):
         raise ValueError("The reference product is not in the selected list.")
+    _require_common_track(records)
     return records
+
+
+def _require_common_track(records: list[SafeInput]) -> None:
+    """Two or more products must share one relative orbit, mode, swath, and polarisation."""
+    if len(records) < 2:
+        return
+    tracks = {item.track for item in records}
+    modes = {item.mode for item in records}
+    swaths = {item.swath for item in records}
+    pols = {item.polarisation for item in records}
+    if len(tracks) == 1 and "" not in tracks and len(modes) == 1 and len(swaths) == 1 and len(pols) == 1:
+        return
+    detail = "; ".join(
+        f"{item.file_name} track {item.track or 'missing'} orbit {item.orbit or 'missing'} "
+        f"{item.mode} {item.swath} {item.polarisation}"
+        for item in records
+    )
+    raise ValueError(
+        "These products do not share one relative orbit (track), sensor mode, swath, and polarisation. "
+        "Processing is blocked. "
+        + detail
+        + ". Absolute orbit numbers are metadata and are not the pair rule."
+    )
 
 
 def _burst_bounds(burst_first: int, burst_last: int) -> tuple[int, int] | None:
@@ -315,6 +364,76 @@ def _burst_bounds(burst_first: int, burst_last: int) -> tuple[int, int] | None:
     if first < 1 or last < first:
         raise ValueError("Burst range must be 0 and 0, or a first..last range with first >= 1.")
     return first, last
+
+
+def _read_stack_planes(
+    ordered,
+    *,
+    row: int,
+    col: int,
+    height: int,
+    width: int,
+    resampling: str,
+    initial_offset: str,
+    output_extents: str,
+    reference: Path | str | None,
+    progress: ProgressFn | None,
+    total: int,
+    steps: int,
+):
+    """Read one crop per date. A resampling kernel collocates onto the reference."""
+    method = str(resampling or "NONE").strip().upper()
+    if method == "NONE":
+        planes = []
+        for index, source in enumerate(ordered, start=1):
+            _report(progress, total + index, steps, f"Reading {index} of {total}: {source.label}")
+            planes.append(_read_source(source, row, col, height, width))
+        return planes, row, col, height, width, "Resampling NONE copies this crop. Offset and extents are not applied."
+    from ai_insar.pipeline.create_stack import initial_offset as offset_of
+    from ai_insar.pipeline.create_stack import output_window, resample_crop
+    from ai_insar.pipeline.s1_annotation import read_swath_from_product
+
+    models = []
+    for source in ordered:
+        if source.product is None or source.measurement is None:
+            raise ValueError(f"{source.label} has no SAFE annotation for Create Stack resampling.")
+        models.append(read_swath_from_product(source.product, source.measurement))
+    ref_index = 0
+    if reference is not None:
+        key = Path(reference).resolve(strict=False)
+        for index, source in enumerate(ordered):
+            if source.path.resolve(strict=False) == key:
+                ref_index = index
+    offsets: list[tuple[float, float]] = []
+    for index, model in enumerate(models):
+        if index == ref_index:
+            offsets.append((0.0, 0.0))
+        else:
+            offsets.append(
+                offset_of(
+                    models[ref_index],
+                    model,
+                    row=row,
+                    col=col,
+                    height=height,
+                    width=width,
+                    method=initial_offset,
+                )
+            )
+    row0, col0, out_h, out_w = output_window(height, width, offsets, output_extents)
+    planes = []
+    for index, (source, (dy, dx)) in enumerate(zip(ordered, offsets), start=1):
+        _report(progress, total + index, steps, f"Reading {index} of {total}: {source.label}")
+        plane = _read_source(source, row, col, height, width)
+        planes.append(
+            resample_crop(plane, (dy, dx), origin=(row0, col0), shape=(out_h, out_w), method=method)
+        )
+    placement = (
+        f"Initial offset method {initial_offset} shifted secondaries by "
+        + ", ".join(f"({dy:.3f}, {dx:.3f}) px" for dy, dx in offsets)
+        + f". Output extent {output_extents}."
+    )
+    return planes, row + row0, col + col0, out_h, out_w, placement
 
 
 def _report(progress: ProgressFn | None, step: int, steps: int, label: str) -> None:

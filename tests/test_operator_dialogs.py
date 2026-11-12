@@ -209,15 +209,16 @@ def test_operator_dialogs_expose_snap_controls(qapp):
     orbit.close()
 
     stack = SafeStackDialog(window, n_files=0)
-    assert "NONE" in stack.findChild(QLabel, "operatorHelp").text()
+    assert "NONE" in stack.findChild(QLabel, "operatorHelp").text() or "NONE" in stack.stack_note.text()
     assert stack.resampling.currentText() == "NONE"
     assert stack.initial_offset.currentText() == "Orbit"
     assert stack.output_extents.currentText() == "Master"
-    assert not stack.find_reference.isEnabled()
-    assert not stack.initial_offset.isEnabled()
-    assert "not applied" in stack.initial_offset.toolTip().lower()
-    bilinear = stack.resampling.model().item(stack.resampling.findText("BILINEAR_INTERPOLATION"))
-    assert bilinear is not None and not bilinear.isEnabled()
+    assert stack.find_reference.isEnabled()
+    assert stack.initial_offset.isEnabled()
+    assert stack.resampling.findText("BISINC_5_POINT_INTERPOLATION") >= 0
+    stack.resampling.setCurrentText("BILINEAR_INTERPOLATION")
+    assert stack.resampling.currentText() == "BILINEAR_INTERPOLATION"
+    assert "BILINEAR_INTERPOLATION" in stack.stack_note.text()
     assert window.findChild(QAction, "applyOrbitAction") is not None
     assert window.findChild(QAction, "interferogramFormationAction") is not None
     assert window.findChild(QAction, "runGoldstein") is not None

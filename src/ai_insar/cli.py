@@ -54,6 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
         "package-windows",
         help="Write dist/ai-insar-windows.zip (source plus run_windows.bat)",
     )
+    pair = commands.add_parser(
+        "pair",
+        help="Check the track, clip an AOI, then run Split, Orbit, Back Geocoding, and Interferogram",
+    )
+    pair.add_argument("--reference", type=Path, required=True)
+    pair.add_argument("--secondary", type=Path, required=True)
+    pair.add_argument("--output", type=Path, required=True)
+    pair.add_argument("--aoi", help="WKT polygon. The default is an inset of the common overlap.")
     return parser
 
 
@@ -68,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run(args)
     if args.command == "package-windows":
         return _package()
+    if args.command == "pair":
+        return _pair(args)
     parser.error(f"unknown command {args.command}")
     return 2
 
@@ -141,6 +151,18 @@ def _package() -> int:
 
     path = make_windows_zip()
     print(path)
+    return 0
+
+
+def _pair(args: argparse.Namespace) -> int:
+    from ai_insar.pipeline.safe_pair import run_safe_pair
+
+    result = run_safe_pair(args.reference, args.secondary, args.output, aoi=args.aoi)
+    print(
+        f"Pair track {result['track']}, split {result['split_shape']}, "
+        f"interferogram {result['interferogram']}"
+    )
+    print(result["aoi"])
     return 0
 
 

@@ -47,8 +47,8 @@ OPERATOR_HELP = {
         "Output suffix _Orb."
     ),
     "stack": (
-        "Collocate secondaries onto the reference. InSAR resampling is NONE "
-        "(same crop, no complex resampling). Output suffix _Stack."
+        "Collocate secondaries onto the reference. Resampling NONE copies the crop. "
+        "A kernel applies the initial offset and the output extent. Output suffix _Stack."
     ),
     "displacement": (
         "d = −(λ/4π)·Δφ_d, with d the slant-range displacement in metres. "

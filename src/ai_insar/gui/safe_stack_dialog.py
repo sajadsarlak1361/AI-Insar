@@ -1,8 +1,8 @@
 """Open several SAFE folders or zips, then load one crop-window stack.
 
 The product table matches SNAP's ProductSet-Reader. Create Stack parameters
-are on the second tab. Resampling stays NONE: the same crop is read from
-each product, with no complex resampling.
+are on the second tab. Resampling NONE copies the same crop. Any other
+kernel uses the initial offset and the output extent.
 """
 
 from __future__ import annotations
@@ -12,30 +12,12 @@ from pathlib import Path
 
 from ai_insar.gui.product_set import OpenedPaths, ProductSetWidget
 from ai_insar.gui.qt import QtWidgets
+from ai_insar.pipeline.create_stack import EXTENTS, OFFSET_METHODS, RESAMPLING
 from ai_insar.safe import DEFAULT_POLARISATION, DEFAULT_SWATH
 from ai_insar.snap_products import OPERATOR_HELP
 
 _SWATHS = ("IW1", "IW2", "IW3", "EW1", "EW2", "EW3", "EW4", "EW5", "WV1", "WV2")
 _POLARISATIONS = ("VV", "VH", "HH", "HV")
-_RESAMPLING = (
-    "NONE",
-    "NEAREST_NEIGHBOUR",
-    "BILINEAR_INTERPOLATION",
-    "CUBIC_CONVOLUTION",
-)
-_OFFSETS = ("Orbit", "Product Geolocation", "GCP")
-_EXTENTS = ("Master", "Maximum", "Minimum")
-
-
-def _disable_items(box: QtWidgets.QComboBox, allowed: str, note: str) -> None:
-    model = box.model()
-    for index in range(box.count()):
-        if box.itemText(index) == allowed:
-            continue
-        item = model.item(index) if hasattr(model, "item") else None
-        if item is not None:
-            item.setEnabled(False)
-            item.setToolTip(note)
 
 
 class SafeStackDialog(QtWidgets.QDialog):
@@ -121,46 +103,46 @@ class SafeStackDialog(QtWidgets.QDialog):
         )
         self.resampling = QtWidgets.QComboBox()
         self.resampling.setObjectName("createStackResampling")
-        self.resampling.addItems(_RESAMPLING)
+        self.resampling.addItems(RESAMPLING)
         self.resampling.setCurrentText("NONE")
-        _disable_items(
-            self.resampling,
-            "NONE",
-            "Not implemented. InSAR keeps Resampling NONE (the same crop window).",
-        )
+        self.resampling.currentTextChanged.connect(lambda _text: self._explain_stack())
         self.initial_offset = QtWidgets.QComboBox()
         self.initial_offset.setObjectName("createStackOffset")
-        self.initial_offset.addItems(_OFFSETS)
+        self.initial_offset.addItems(OFFSET_METHODS)
         self.initial_offset.setCurrentText("Orbit")
-        _disable_items(
-            self.initial_offset,
-            "Orbit",
-            "Only Orbit is listed. The orbit offset is not applied; the crop window is shared.",
-        )
-        self.initial_offset.setEnabled(False)
         self.initial_offset.setToolTip(
-            "Initial Offset Method Orbit is not applied. Resampling NONE reads the same crop from each product."
+            "Orbit uses the state vectors. Product Geolocation uses the annotation grid. "
+            "GCP is listed because SNAP shows it; these SAFE products have no ground control points."
         )
         self.output_extents = QtWidgets.QComboBox()
         self.output_extents.setObjectName("createStackExtents")
-        self.output_extents.addItems(_EXTENTS)
+        self.output_extents.addItems(EXTENTS)
         self.output_extents.setCurrentText("Master")
-        _disable_items(
-            self.output_extents,
-            "Master",
-            "Not implemented. Output Extents stays Master: the crop window below.",
-        )
         self.find_reference = QtWidgets.QPushButton("Find Optimal Reference")
         self.find_reference.setObjectName("createStackFindReference")
         self.find_reference.setToolTip(
-            "Not implemented. The SLC cube is time-sorted by the manifest start time."
+            "Selects the product whose acquisition is closest to the median time in this list."
         )
-        self.find_reference.setEnabled(False)
+        self.find_reference.clicked.connect(self._find_reference)
+        self.stack_note = QtWidgets.QLabel("")
+        self.stack_note.setObjectName("createStackExplain")
+        self.stack_note.setWordWrap(True)
+        self._explain_stack()
         form.addRow("Reference:", self.reference)
         form.addRow("Resampling Type", self.resampling)
         form.addRow("Initial Offset Method", self.initial_offset)
         form.addRow("Output Extents", self.output_extents)
         form.addRow(self.find_reference)
+        form.addRow(self.stack_note)
+        self.aoi_button = QtWidgets.QPushButton("Processing area…")
+        self.aoi_button.setObjectName("createStackAoi")
+        self.aoi_button.clicked.connect(self._define_aoi)
+        self.aoi_status = QtWidgets.QLabel("Define an analysis region before Run when two products are listed.")
+        self.aoi_status.setObjectName("createStackAoiStatus")
+        self.aoi_status.setWordWrap(True)
+        self._aoi_report = None
+        form.addRow(self.aoi_button)
+        form.addRow(self.aoi_status)
 
         self.swath_box = QtWidgets.QComboBox()
         self.swath_box.setObjectName("safeStackSwath")
@@ -236,6 +218,91 @@ class SafeStackDialog(QtWidgets.QDialog):
     def burst_last_value(self) -> int:
         return int(self.burst_last.value())
 
+    def _explain_stack(self) -> None:
+        if self.resampling.currentText() == "NONE":
+            self.stack_note.setText(
+                "Resampling NONE copies this crop from every product. "
+                "Choose a kernel to apply the initial offset and the output extent. "
+                "GCP stays selectable; Run stops when the SAFE has no ground control points."
+            )
+            return
+        self.stack_note.setText(
+            f"{self.resampling.currentText()} resamples each secondary after the "
+            f"{self.initial_offset.currentText()} offset. "
+            "Master keeps this crop, Maximum is the union, and Minimum is the overlap."
+        )
+
+    def _find_reference(self) -> None:
+        rows = self.product_set.rows()
+        if not rows:
+            return
+        dated = [(row.acquisition or "", row) for row in rows]
+        dated.sort(key=lambda item: item[0])
+        chosen = dated[len(dated) // 2][1]
+        index = self.reference.findData(str(chosen.path))
+        if index >= 0:
+            self.reference.setCurrentIndex(index)
+
+    def _define_aoi(self) -> None:
+        from ai_insar.gui.aoi_dialog import AoiDialog
+        from ai_insar.pipeline.aoi import AoiError, footprint_polygon, prepare_aoi
+        from ai_insar.safe import resolve_safe
+
+        paths = self.paths()
+        if len(paths) < 2:
+            self.aoi_status.setText("Add the reference and the secondary before defining the analysis region.")
+            return
+        try:
+            reference = resolve_safe(self.reference_path() or paths[0])
+            other = next(path for path in paths if Path(path) != Path(self.reference_path() or paths[0]))
+            secondary = resolve_safe(other)
+        except (OSError, ValueError) as exc:
+            self.aoi_status.setText(str(exc))
+            return
+        ref_ring = tuple((float(lon), float(lat)) for lat, lon in reference.footprint)
+        sec_ring = tuple((float(lon), float(lat)) for lat, lon in secondary.footprint)
+        dialog = AoiDialog(
+            self,
+            reference=ref_ring,
+            secondary=sec_ring,
+            wkt="" if self._aoi_report is None else (self._aoi_report.clipped_wkt or self._aoi_report.requested_wkt),
+            subswath=self.swath(),
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        report = dialog.report()
+        if report is None or report.outside:
+            self._aoi_report = None
+            self.aoi_status.setText(
+                "" if report is None else report.message
+            )
+            return
+        try:
+            checked = prepare_aoi(
+                report.requested_wkt,
+                reference=footprint_polygon(reference.footprint),
+                secondary=footprint_polygon(secondary.footprint),
+                subswath=self.swath(),
+                polarisation=self.polarisation(),
+            )
+        except AoiError as exc:
+            self._aoi_report = None
+            self.aoi_status.setText(str(exc))
+            return
+        if checked.outside:
+            self._aoi_report = None
+            self.aoi_status.setText(checked.message)
+            return
+        self._aoi_report = checked
+        self.aoi_status.setText(checked.message)
+
+    def _aoi_is_ready(self) -> bool:
+        report = self._aoi_report
+        return report is not None and not report.outside and bool(report.clipped_wkt)
+
+    def aoi_report(self):
+        return self._aoi_report
+
     def _sync_reference(self) -> None:
         current = self.reference.currentData()
         self.reference.blockSignals(True)
@@ -257,8 +324,18 @@ class SafeStackDialog(QtWidgets.QDialog):
                 "Error: [NodeId: ProductSet-Reader] Please add a source product"
             )
             return
-        if self.resampling.currentText() != "NONE":
-            self.product_set.status.setText("InSAR requires Resampling Type NONE.")
+        if self.resampling.currentText() == "GCP" or self.initial_offset.currentText() == "GCP":
+            self.product_set.status.setText(
+                "These SAFE products have no ground control points. "
+                "Choose Orbit or Product Geolocation."
+            )
+            return
+        if len(paths) >= 2 and not self._aoi_is_ready():
+            self._define_aoi()
+        if len(paths) >= 2 and not self._aoi_is_ready():
+            self.product_set.status.setText(
+                "Processing is blocked until the analysis region is inside the common overlap."
+            )
             return
         if int(self.height.value()) < 1 or int(self.width.value()) < 1:
             self.product_set.status.setText("Crop height and width must be at least 1.")

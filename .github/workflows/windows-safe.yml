@@ -1,0 +1,57 @@
+name: windows-safe
+
+on:
+  pull_request:
+  push:
+    branches:
+      - cursor/windows-safe-flow-9501
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the Windows zip
+        run: python scripts/make_windows_zip.py
+
+      - name: Install from the zip in a clean directory
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "ai-insar-unzipped"
+          Expand-Archive -Path dist/ai-insar-windows.zip -DestinationPath $dest -Force
+          Add-Content -Path $env:GITHUB_ENV -Value "AI_INSAR_HOME=$dest\ai-insar"
+          $env:AI_INSAR_NONINTERACTIVE = "1"
+          cmd /c "set AI_INSAR_NONINTERACTIVE=1&& cd /d $dest\ai-insar && run_windows.bat"
+
+      - name: Import the SAFE runtime
+        shell: pwsh
+        run: |
+          & "$env:AI_INSAR_HOME\.venv\Scripts\python.exe" -c "import tifffile,zarr,numba,scipy,pyproj,rasterio,imagecodecs; from ai_insar.dependencies import require_runtime; require_runtime()"
+
+      - name: Reject a mismatched track and run the pair chain
+        shell: pwsh
+        run: |
+          $py = "$env:AI_INSAR_HOME\.venv\Scripts\python.exe"
+          $env:PYTHONPATH = "$env:AI_INSAR_HOME\src"
+          & $py -m pytest "$env:AI_INSAR_HOME\tests\test_windows_pair.py" -q --tb=short
+          & $py -m ai_insar pair --reference "$env:AI_INSAR_HOME\tests\fixtures\pair\S1B_IW_SLC__1SDV_20210401T052622_20210401T052650_026269_032297_EFA4.zip" --secondary "$env:AI_INSAR_HOME\tests\fixtures\pair\S1B_IW_SLC__1SDV_20210413T052622_20210413T052650_026269_032297_EFA4.zip" --output "$env:RUNNER_TEMP\pair-out"
+
+      - name: Screenshot the Create Stack dialog
+        shell: pwsh
+        run: |
+          $py = "$env:AI_INSAR_HOME\.venv\Scripts\python.exe"
+          $env:PYTHONPATH = "$env:AI_INSAR_HOME\src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          New-Item -ItemType Directory -Force -Path screenshots | Out-Null
+          & $py "$env:AI_INSAR_HOME\scripts\screenshot_create_stack.py" screenshots/create-stack.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: create-stack-dialog
+          path: screenshots/create-stack.png

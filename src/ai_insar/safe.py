@@ -903,7 +903,8 @@ def _require_tifffile():
         import tifffile
     except ImportError as exc:
         raise RuntimeError(
-            'Reading a measurement TIFF needs tifffile: pip install "ai-insar[slc]".'
+            "Reading a measurement TIFF needs tifffile. "
+            "Install the project with pip install -e . or run run_windows.bat."
         ) from exc
     return tifffile
 
