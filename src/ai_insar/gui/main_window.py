@@ -3235,7 +3235,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 from ai_insar.pipeline.ps_export import subsidence_rgb
 
                 bar = subsidence_rgb(row, vmin, vmax)
-                unit = "m/yr"
+                # Same millimetres the PS export writes. 0.05 m/yr is 50 mm/yr.
+                unit = "mm/yr"
             else:
                 bar = colorize(row, vmin=vmin, vmax=vmax, cmap=cmap)
                 unit = _LAYER_UNITS.get(layer, "")
@@ -3345,18 +3346,25 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.workspace.velocity_m_yr is None:
                 return None, None, 0.0, 1.0, None, missing
             if self.workspace.ps_mask is not None:
-                from ai_insar.pipeline.ps_export import subsidence_rgba, symmetric_limits as ps_limits
+                from ai_insar.pipeline.ps_export import (
+                    METRES_TO_MILLIMETRES,
+                    subsidence_rgba,
+                    symmetric_limits as ps_limits,
+                )
 
                 field = np.where(self.workspace.ps_mask, self.workspace.velocity_m_yr, np.nan)
                 vmin, vmax = ps_limits(field)
                 rgba = subsidence_rgba(field, self.workspace.ps_mask, vmin, vmax)
+                # Colour in m/yr, then show the same mm/yr numbers the GeoTIFF and KMZ use.
+                shown = field * METRES_TO_MILLIMETRES
                 return (
                     rgba,
-                    field,
-                    vmin,
-                    vmax,
+                    shown,
+                    vmin * METRES_TO_MILLIMETRES,
+                    vmax * METRES_TO_MILLIMETRES,
                     "subsidence",
-                    "PS linear points only. Red is subsidence (away from the satellite); blue is uplift. "
+                    "PS linear points only, in mm/yr (50 mm/yr is 5 cm/yr). "
+                    "Red is subsidence (away from the satellite); blue is uplift. "
                     "Empty pixels are transparent. The dense stacking field is not shown.",
                 )
             field = self.workspace.velocity_m_yr
@@ -3425,7 +3433,13 @@ class MainWindow(QtWidgets.QMainWindow):
             millimetres = ", ".join(f"{float(item) * 1000.0:.2f}" for item in series)
             text += f"    LOS mm by date: {millimetres}"
         if self.workspace.velocity_m_yr is not None:
-            text += f"    velocity {float(self.workspace.velocity_m_yr[row, col]):.5f} m/yr"
+            rate_m = float(self.workspace.velocity_m_yr[row, col])
+            if self.workspace.ps_mask is not None:
+                from ai_insar.pipeline.ps_export import METRES_TO_MILLIMETRES
+
+                text += f"    velocity {rate_m * METRES_TO_MILLIMETRES:.2f} mm/yr"
+            else:
+                text += f"    velocity {rate_m:.5f} m/yr"
         self.readout.setText(text)
         self.statusBar().showMessage(text)
 
