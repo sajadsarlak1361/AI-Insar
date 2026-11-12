@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-insar"
-version = "0.2.1rc2"
+version = "0.2.1"
 description = "SLC-first desktop InSAR workbench: interferograms, coherence, unwrapping, SBAS, and a displacement mask"
 readme = "README.md"
 requires-python = ">=3.10"
